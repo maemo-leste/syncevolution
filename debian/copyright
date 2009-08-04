@@ -1,5 +1,8 @@
-Upstream: This package created from sources at 
-	  
+Upstream Source: 
+	  This package created from a tarball at 
+	  http://downloads.syncevolution.org/syncevolution/sources/
+and from upstream git repo
+	  git://git.moblin.org/syncevolution
 
 
 Files: *

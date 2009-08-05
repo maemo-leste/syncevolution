@@ -52,6 +52,21 @@ License: LGPL2.1 | LGPL3
     this program; if not, write to the Free Software Foundation, Inc.,
     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+Files: src/synthesis/*
+Copyright: © 2001-2009 Synthesis AG
+License: LGPL2.1|LGPL3 (with some BSD)
+ .
+    Unless noted otherwise, all files are dual-licensed 
+    (LICENSE.LGPL-2.1) and 3.0 (LICENSE.LGPL-3). For a commercial
+    license, please contact Synthesis (sales@synthesis.ch).
+ 
+    Files in the following directories are under a different license:
+    src/expat           : public domain (src/expat/copying.txt)
+    doc, src/sysync_SDK : BSD (LICENSE.BSD)
+    src/syncml_tk       : BSD-like license (src/syncml_tk/opensource_license.txt)
+    src/zlib            : BSD-like (src/zlib/README)
+
+
 Files: debian/*
 Copyright: © 2009 David Bremner
 License: same as upstream, LGPL2.1 or LGPL3

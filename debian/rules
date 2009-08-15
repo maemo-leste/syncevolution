@@ -1,8 +1,17 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
+UPSTREAMTAG=syncevolution-0-9
+
+SOURCEPKG=$(shell dpkg-parsechangelog | sed  -n 's/^Source: \(.*\)/\1/p')
+UPSTREAM=$(shell dpkg-parsechangelog |  sed -n 's/^Version: \(.*\)-[^-]*/\1/p')
+ORIG=${SOURCEPKG}_${UPSTREAM}.orig.tar.gz
 
 %: 
 	dh $@
 
 override_dh_auto_configure: 
 	./configure --with-synthesis-src=none --prefix=/usr --sysconfdir=/etc
+
+get-orig-source: 
+	echo ${UPSTREAM}
+	git archive --format=tar ${UPSTREAMTAG} | gzip -9 > ../${ORIG}

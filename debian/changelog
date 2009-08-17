@@ -1,5 +1,5 @@
-syncevolution (0.9~b3+20090723-1) unstable; urgency=low
+syncevolution (0.9-1) unstable; urgency=low
 
   * Initial release (Closes: #404942)  
 
- -- David Bremner <bremner@unb.ca>  Tue, 04 Aug 2009 08:33:13 -0300
+ -- David Bremner <bremner@unb.ca>  Sun, 16 Aug 2009 23:53:47 -0300

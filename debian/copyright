@@ -1,9 +1,9 @@
-Upstream Source: 
-	  This package created from a tarball at 
-	  http://downloads.syncevolution.org/syncevolution/sources/
-and from upstream git repo
-	  git://git.moblin.org/syncevolution
+Source: http://downloads.syncevolution.org/syncevolution/sources/
+	git://git.moblin.org/syncevolution
 
+	Currently the tarball is built from a tag in the moblin repo to avoid the 
+	embedded copy of libsynthesis. For details, see the get-orig-source rule
+	in debian/rules.
 
 Files: *
 Copyright: © 2005-2008 Patrick Ohly <patrick.ohly@gmx.de>
@@ -51,21 +51,6 @@ License: LGPL2.1 | LGPL3
     You should have received a copy of the GNU Lesser General Public License along with
     this program; if not, write to the Free Software Foundation, Inc.,
     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
-
-Files: src/synthesis/*
-Copyright: © 2001-2009 Synthesis AG
-License: LGPL2.1|LGPL3 (with some BSD)
- .
-    Unless noted otherwise, all files are dual-licensed 
-    (LICENSE.LGPL-2.1) and 3.0 (LICENSE.LGPL-3). For a commercial
-    license, please contact Synthesis (sales@synthesis.ch).
- 
-    Files in the following directories are under a different license:
-    src/expat           : public domain (src/expat/copying.txt)
-    doc, src/sysync_SDK : BSD (LICENSE.BSD)
-    src/syncml_tk       : BSD-like license (src/syncml_tk/opensource_license.txt)
-    src/zlib            : BSD-like (src/zlib/README)
-
 
 Files: debian/*
 Copyright: © 2009 David Bremner

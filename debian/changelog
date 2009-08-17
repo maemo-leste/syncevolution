@@ -1,4 +1,4 @@
-syncevolution (0.9-1) unstable; urgency=low
+syncevolution (0.9+ds1-1) unstable; urgency=low
 
   * Initial release (Closes: #404942)  
 

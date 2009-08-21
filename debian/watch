@@ -1,3 +1,4 @@
 version=3
 
-http://downloads.syncevolution.org/syncevolution/sources/syncevolution-(.*).tar.gz 
+opts=dversionmangle=s/\+ds\d+$// \
+  http://downloads.syncevolution.org/syncevolution/sources/syncevolution-(.*).tar.gz 

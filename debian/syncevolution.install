@@ -1,0 +1,12 @@
+debian/tmp/etc/default/syncevolution/Funambol/config.ini /etc/syncevolution/Funambol/
+debian/tmp/etc/default/syncevolution/Funambol/sources/calendar/config.ini /etc/syncevolution/Funambol/sources/calender
+debian/tmp/etc/default/syncevolution/Funambol/sources/todo/config.ini /etc/syncevolution/Funambol/sources/todo
+debian/tmp/etc/default/syncevolution/Funambol/sources/memo/config.ini /etc/syncevolution/Funambol/sources/memo
+debian/tmp/etc/default/syncevolution/Funambol/sources/addressbook/config.ini /etc/syncevolution/Funambol/sources/addressbook
+debian/tmp/etc/default/syncevolution/ScheduleWorld/config.ini /etc/syncevolution/ScheduleWorld/
+debian/tmp/etc/default/syncevolution/ScheduleWorld/sources/calendar/config.ini /etc/syncevolution/ScheduleWorld/sources/calendar
+debian/tmp/etc/default/syncevolution/ScheduleWorld/sources/todo/config.ini /etc/syncevolution/ScheduleWorld/sources/calendar
+debian/tmp/etc/default/syncevolution/ScheduleWorld/sources/memo/config.ini /etc/syncevolution/ScheduleWorld/sources/memo
+debian/tmp/etc/default/syncevolution/ScheduleWorld/sources/addressbook/config.ini /etc/syncevolution/ScheduleWorld/sources/addressbook
+debian/tmp/usr/bin/syncevolution /usr/bin
+debian/tmp/usr/bin/synccompare  /usr/bin

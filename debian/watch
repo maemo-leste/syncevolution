@@ -1,0 +1,3 @@
+version=3
+
+http://downloads.syncevolution.org/syncevolution/sources/syncevolution-(.*).tar.gz 

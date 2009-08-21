@@ -9,6 +9,9 @@ ORIG=${SOURCEPKG}_${UPSTREAM}.orig.tar.gz
 %: 
 	dh $@
 
+override_dh_auto_install:
+	make install DESTDIR=$(CURDIR)/debian/tmp
+
 override_dh_auto_configure: 
 	sh autogen.sh
 	./configure --with-synthesis-src=none --prefix=/usr --sysconfdir=/etc \

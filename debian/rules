@@ -11,7 +11,8 @@ ORIG=${SOURCEPKG}_${UPSTREAM}.orig.tar.gz
 
 override_dh_auto_configure: 
 	sh autogen.sh
-	./configure --with-synthesis-src=none --prefix=/usr --sysconfdir=/etc
+	./configure --with-synthesis-src=none --prefix=/usr --sysconfdir=/etc \
+			--libexecdir=/usr/lib/syncevolution
 
 get-orig-source: 
 	echo ${UPSTREAM}

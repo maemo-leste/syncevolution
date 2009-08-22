@@ -6,7 +6,6 @@ config.h.in
 config.sub
 configure
 configure.in
-debian/clean
 depcomp
 install-sh
 intltool-extract.in

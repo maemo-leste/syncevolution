@@ -15,7 +15,7 @@ override_dh_auto_install:
 override_dh_auto_configure: 
 	sh autogen.sh
 	./configure --with-synthesis-src=none --prefix=/usr --sysconfdir=/etc \
-			--libexecdir=/usr/lib/syncevolution
+			--libexecdir=/usr/lib/syncevolution --enable-gui
 
 get-orig-source: 
 	echo ${UPSTREAM}

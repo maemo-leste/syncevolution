@@ -10,26 +10,3 @@ debian/tmp/etc/default/syncevolution/ScheduleWorld/sources/memo/config.ini /etc/
 debian/tmp/etc/default/syncevolution/ScheduleWorld/sources/addressbook/config.ini /etc/syncevolution/ScheduleWorld/sources/addressbook
 debian/tmp/usr/bin/syncevolution /usr/bin
 debian/tmp/usr/bin/synccompare  /usr/bin
-debian/tmp/usr/bin/sync-ui  /usr/bin
-debian/tmp/usr/lib/syncevolution/syncevo-dbus-server
-debian/tmp/usr/share/syncevolution/close.png
-debian/tmp/usr/share/syncevolution/settings_hover.png
-debian/tmp/usr/share/syncevolution/close_hover.png
-debian/tmp/usr/share/syncevolution/settings.png
-debian/tmp/usr/share/syncevolution/sync-ui.rc
-debian/tmp/usr/share/syncevolution/sync-generic.png
-debian/tmp/usr/share/syncevolution/ui.xml
-debian/tmp/usr/share/applications/sync.desktop
-debian/tmp/usr/share/dbus-1/services/org.Moblin.SyncEvolution.service
-debian/tmp/usr/share/locale/it/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/es/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/fr/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/zh_CN/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/ja/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/zh_TW/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/pt_BR/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/sv/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/fi/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/ko/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/pl/LC_MESSAGES/syncevolution.mo
-debian/tmp/usr/share/locale/de/LC_MESSAGES/syncevolution.mo

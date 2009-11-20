@@ -28,15 +28,19 @@ using namespace std;
 // include first, it sets HANDLE_LIBICAL_MEMORY for us
 #include "libical/icalstrdup.h"
 
-#include "EvolutionSyncClient.h"
+#include <syncevo/SyncContext.h>
+#include <syncevo/SmartPtr.h>
+#include <syncevo/Logging.h>
+
 #include "EvolutionCalendarSource.h"
 #include "EvolutionMemoSource.h"
-#include "EvolutionSmartPtr.h"
 #include "e-cal-check-timezones.h"
 
-#include "Logging.h"
 
 #include <boost/foreach.hpp>
+
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
 
 static const string
 EVOLUTION_CALENDAR_PRODID("PRODID:-//ACME//NONSGML SyncEvolution//EN"),
@@ -52,22 +56,49 @@ class unrefECalObjectList {
     }
 };
 
+static int granularity()
+{
+    // This long delay is necessary in combination
+    // with Evolution Exchange Connector: when updating
+    // a child event, it seems to take a while until
+    // the change really is effective.
+    static int secs = 5;
+    static bool checked = false;
+    if (!checked) {
+        // allow setting the delay (used during testing to shorten runtime)
+        const char *delay = getenv("SYNC_EVOLUTION_EVO_CALENDAR_DELAY");
+        if (delay) {
+            secs = atoi(delay);
+        }
+        checked = true;
+    }
+    return secs;
+}
 
 EvolutionCalendarSource::EvolutionCalendarSource(ECalSourceType type,
-                                                 const EvolutionSyncSourceParams &params) :
-    TrackingSyncSource(params),
+                                                 const SyncSourceParams &params) :
+    EvolutionSyncSource(params, granularity()),
     m_type(type)
 {
     switch (m_type) {
      case E_CAL_SOURCE_TYPE_EVENT:
+        SyncSourceLogging::init(InitList<std::string>("SUMMARY") + "LOCATION",
+                                ", ",
+                                m_operations);
         m_typeName = "calendar";
         m_newSystem = e_cal_new_system_calendar;
         break;
      case E_CAL_SOURCE_TYPE_TODO:
+        SyncSourceLogging::init(InitList<std::string>("SUMMARY"),
+                                ", ",
+                                m_operations);
         m_typeName = "task list";
         m_newSystem = e_cal_new_system_tasks;
         break;
      case E_CAL_SOURCE_TYPE_JOURNAL:
+        SyncSourceLogging::init(InitList<std::string>("SUBJECT"),
+                                ", ",
+                                m_operations);
         m_typeName = "memo list";
         // This is not available in older Evolution versions.
         // A configure check could detect that, but as this isn't
@@ -75,20 +106,12 @@ EvolutionCalendarSource::EvolutionCalendarSource(ECalSourceType type,
         m_newSystem = NULL /* e_cal_new_system_memos */;
         break;
      default:
-        EvolutionSyncClient::throwError("internal error, invalid calendar type");
+        SyncContext::throwError("internal error, invalid calendar type");
         break;
     }
 }
 
-EvolutionCalendarSource::EvolutionCalendarSource( const EvolutionCalendarSource &other ) :
-    TrackingSyncSource(other),
-    m_type(other.m_type),
-    m_typeName(other.m_typeName),
-    m_newSystem(other.m_newSystem)
-{
-}
-
-EvolutionSyncSource::Databases EvolutionCalendarSource::getDatabases()
+SyncSource::Databases EvolutionCalendarSource::getDatabases()
 {
     ESourceList *sources = NULL;
     GError *gerror = NULL;
@@ -136,9 +159,9 @@ char *EvolutionCalendarSource::authenticate(const char *prompt,
 {
     const char *passwd = getPassword();
 
-    SE_LOG_DEBUG(this, NULL, "%s: authentication requested, prompt \"%s\", key \"%s\" => %s",
-              getName(), prompt, key,
-              passwd && passwd[0] ? "returning configured password" : "no password configured");
+    SE_LOG_DEBUG(this, NULL, "authentication requested, prompt \"%s\", key \"%s\" => %s",
+                 prompt, key,
+                 passwd && passwd[0] ? "returning configured password" : "no password configured");
     return passwd && passwd[0] ? strdup(passwd) : NULL;
 }
 
@@ -182,7 +205,7 @@ void EvolutionCalendarSource::open()
 
     g_signal_connect_after(m_calendar,
                            "backend-died",
-                           G_CALLBACK(EvolutionSyncClient::fatalError),
+                           G_CALLBACK(SyncContext::fatalError),
                            (void *)"Evolution Data Server has died unexpectedly, database no longer available.");
 }
 
@@ -213,46 +236,22 @@ void EvolutionCalendarSource::listAllItems(RevisionMap_t &revisions)
 
 void EvolutionCalendarSource::close()
 {
-    // This long delay is necessary in combination
-    // with Evolution Exchange Connector: when updating
-    // a child event, it seems to take a while until
-    // the change really is effective.
-    static int secs = 5;
-    static bool checked = false;
-    if (!checked) {
-        // allow setting the delay (used during testing to shorten runtime)
-        const char *delay = getenv("SYNC_EVOLUTION_EVO_CALENDAR_DELAY");
-        if (delay) {
-            secs = atoi(delay);
-        }
-        checked = true;
-    }
-
-    sleepSinceModification(secs);
-
     m_calendar = NULL;
 }
 
-SyncItem *EvolutionCalendarSource::createItem(const string &luid, const char *type)
+void EvolutionCalendarSource::readItem(const string &luid, std::string &item, bool raw)
 {
-    logItem( luid, "extracting from EV", true );
-
     ItemID id(luid);
-    string icalstr = retrieveItemAsString(id);
-
-    cxxptr<SyncItem> item(new SyncItem(), "SyncItem");
-    item->setKey(luid);
-    item->setData(icalstr.c_str(), icalstr.size());
-    return item.release();
+    item = retrieveItemAsString(id);
 }
 
-EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(const string &luid, const SyncItem &item)
+EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(const string &luid, const std::string &item, bool raw)
 {
     bool update = !luid.empty();
     bool merged = false;
     bool detached = false;
     string newluid = luid;
-    string data = (const char *)item.getData();
+    string data = item;
     string modTime;
 
     /*
@@ -363,7 +362,6 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
         // which should never happen.
         newluid = id.getLUID();
         if (m_allLUIDs.find(newluid) != m_allLUIDs.end()) {
-            logItem(item, "exists already, updating instead");
             merged = true;
         } else {
             // if this is a detached recurrence, then we
@@ -405,7 +403,7 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
                     if (!e_cal_modify_object(m_calendar, *icalcomp,
                                              CALOBJ_MOD_THIS,
                                              &gerror)) {
-                        throwError(string("recreating item ") + item.getKey(), gerror);
+                        throwError(string("recreating item ") + newluid, gerror);
                     }
                 }
             }
@@ -445,7 +443,7 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
                 // Parent is gone, too, and needs to be recreated.
                 const char *uid = NULL;
                 if(!e_cal_create_object(m_calendar, subcomp, (char **)&uid, &gerror)) {
-                    throwError(string("creating updated item ") + item.getKey(), gerror);
+                    throwError(string("creating updated item ") + luid, gerror);
                 }
 
                 // Recreate any children removed earlier: when we get here,
@@ -454,7 +452,7 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
                     if (!e_cal_modify_object(m_calendar, *icalcomp,
                                              CALOBJ_MOD_THIS,
                                              &gerror)) {
-                        throwError(string("recreating item ") + item.getKey(), gerror);
+                        throwError(string("recreating item ") + luid, gerror);
                     }
                 }
             } else {
@@ -462,7 +460,7 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
                 if (!e_cal_modify_object(m_calendar, subcomp,
                                          CALOBJ_MOD_ALL,
                                          &gerror)) {
-                    throwError(string("updating item ") + item.getKey(), gerror);
+                    throwError(string("updating item ") + luid, gerror);
                 }
             }
         } else {
@@ -470,7 +468,7 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
             if (!e_cal_modify_object(m_calendar, subcomp,
                                      CALOBJ_MOD_THIS,
                                      &gerror)) {
-                throwError(string("updating item ") + item.getKey(), gerror);
+                throwError(string("updating item ") + luid, gerror);
             }
         }
 
@@ -508,8 +506,8 @@ EvolutionCalendarSource::ICalComps_t EvolutionCalendarSource::removeEvents(const
                             &gerror)) {
         if (gerror->domain == E_CALENDAR_ERROR &&
             gerror->code == E_CALENDAR_STATUS_OBJECT_NOT_FOUND) {
-            SE_LOG_DEBUG(this, NULL, "%s: %s: request to delete non-existant item ignored",
-                      getName(), uid.c_str());
+            SE_LOG_DEBUG(this, NULL, "%s: request to delete non-existant item ignored",
+                         uid.c_str());
             g_clear_error(&gerror);
         } else {
             throwError(string("deleting item " ) + uid, gerror);
@@ -519,7 +517,7 @@ EvolutionCalendarSource::ICalComps_t EvolutionCalendarSource::removeEvents(const
     return events;
 }
 
-void EvolutionCalendarSource::deleteItem(const string &luid)
+void EvolutionCalendarSource::removeItem(const string &luid)
 {
     GError *gerror = NULL;
     ItemID id(luid);
@@ -557,52 +555,6 @@ void EvolutionCalendarSource::deleteItem(const string &luid)
         }
     }
     m_allLUIDs.erase(luid);
-}
-
-void EvolutionCalendarSource::logItem(const string &luid, const string &info, bool debug)
-{
-    if (getLevel() >= (debug ? Logger::DEBUG : Logger::INFO)) {
-        SE_LOG(debug ? Logger::DEBUG : Logger::INFO, this, NULL, "%s: %s", luid.c_str(), info.c_str());
-    }
-}
-
-/**
- * quick and dirty parser for simple, single-line properties
- * @param keyword   must include leading \n and trailing :
- */
-static string extractProp(const char *data, const char *keyword)
-{
-    string prop;
-
-    const char *keyptr = strstr(data, keyword);
-    if (keyptr) {
-        const char *end = strpbrk(keyptr + 1, "\n\r");
-        if (end) {
-            prop.assign(keyptr + strlen(keyword), end - keyptr - strlen(keyword));
-        } else {
-            prop.assign(keyptr + strlen(keyword));
-        }
-    }
-    return prop;
-}
-
-void EvolutionCalendarSource::logItem(const SyncItem &item, const string &info, bool debug)
-{
-    if (getLevel() >= (debug ? Logger::DEBUG : Logger::INFO)) {
-        string key = item.getKey();
-        if (key.empty()) {
-            // get UID from data via simple string search; doesn't have to be perfect
-            const char *data = (const char *)item.getData();
-            string uid = extractProp(data, "\nUID:");
-            string rid = extractProp(data, "\nRECURRENCE-ID:");
-            if (uid.empty()) {
-                key = "<<no UID>>";
-            } else {
-                key = ItemID::getLUID(uid, rid);
-            }
-        }
-        SE_LOG(debug ? Logger::DEBUG : Logger::INFO, this, NULL, "%s: %s", key.c_str(), info.c_str());
-    }
 }
 
 icalcomponent *EvolutionCalendarSource::retrieveItem(const ItemID &id)
@@ -668,6 +620,55 @@ string EvolutionCalendarSource::retrieveItemAsString(const ItemID &id)
     return data;
 }
 
+std::string EvolutionCalendarSource::getDescription(const string &luid)
+{
+    try {
+        eptr<icalcomponent> comp(retrieveItem(ItemID(luid)));
+        std::string descr;
+
+        const char *summary = icalcomponent_get_summary(comp);
+        if (summary && summary[0]) {
+            descr += summary;
+        }
+        
+        if (m_type == E_CAL_SOURCE_TYPE_EVENT) {
+            const char *location = icalcomponent_get_location(comp);
+            if (location && location[0]) {
+                if (!descr.empty()) {
+                    descr += ", ";
+                }
+                descr += location;
+            }
+        }
+
+        if (m_type == E_CAL_SOURCE_TYPE_JOURNAL &&
+            descr.empty()) {
+            // fallback to first line of body text
+            icalproperty *desc = icalcomponent_get_first_property(comp, ICAL_DESCRIPTION_PROPERTY);
+            if (desc) {
+                const char *text = icalproperty_get_description(desc);
+                if (text) {
+                    const char *eol = strchr(text, '\n');
+                    if (eol) {
+                        descr.assign(text, eol - text);
+                    } else {
+                        descr = text;
+                    }
+                }
+            }
+        }
+
+        return descr;
+    } catch (...) {
+        // Instead of failing we log the error and ask
+        // the caller to log the UID. That way transient
+        // errors or errors in the logging code don't
+        // prevent syncs.
+        handleException();
+        return "";
+    }
+}
+
 string EvolutionCalendarSource::ItemID::getLUID() const
 {
     return getLUID(m_uid, m_rid);
@@ -713,7 +714,7 @@ string EvolutionCalendarSource::getItemModTime(ECalComponent *ecomp)
 {
     struct icaltimetype *modTime;
     e_cal_component_get_last_modified(ecomp, &modTime);
-    eptr<struct icaltimetype, struct icaltimetype, EvolutionUnrefFree<struct icaltimetype> > modTimePtr(modTime);
+    eptr<struct icaltimetype, struct icaltimetype, UnrefFree<struct icaltimetype> > modTimePtr(modTime);
     if (!modTimePtr) {
         return "";
     } else {
@@ -746,6 +747,8 @@ string EvolutionCalendarSource::icalTime2Str(const icaltimetype &tt)
         return timestr.get();
     }
 }
+
+SE_END_CXX
 
 #endif /* ENABLE_ECAL */
 

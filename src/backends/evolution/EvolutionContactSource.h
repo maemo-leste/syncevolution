@@ -21,61 +21,60 @@
 #ifndef INCL_EVOLUTIONCONTACTSOURCE
 #define INCL_EVOLUTIONCONTACTSOURCE
 
-#include <config.h>
-#include "TrackingSyncSource.h"
-#include "EvolutionSmartPtr.h"
+#include "config.h"
+#include "EvolutionSyncSource.h"
+#include <syncevo/SmartPtr.h>
+
+#include <boost/noncopyable.hpp>
 
 #ifdef ENABLE_EBOOK
 
 #include <set>
 
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
+
 /**
  * Implements access to Evolution address books.
  */
-class EvolutionContactSource : public TrackingSyncSource
+class EvolutionContactSource : public EvolutionSyncSource,
+    public SyncSourceLogging,
+    private boost::noncopyable
 {
   public:
-    EvolutionContactSource(const EvolutionSyncSourceParams &params,
+    EvolutionContactSource(const SyncSourceParams &params,
                            EVCardFormat vcardFormat = EVC_FORMAT_VCARD_30);
-    EvolutionContactSource(const EvolutionContactSource &other);
     virtual ~EvolutionContactSource() { close(); }
 
-    // utility function: extract vcard from item in format suitable for Evolution
-    string preparseVCard(SyncItem& item);
-
     //
-    // implementation of EvolutionSyncSource
+    // implementation of SyncSource
     //
     virtual Databases getDatabases();
     virtual void open();
     virtual void close();
-    virtual void exportData(ostream &out);
-    virtual string fileSuffix() const { return "vcf"; }
     virtual const char *getMimeType() const;
     virtual const char *getMimeVersion() const;
-    virtual const char *getSupportedTypes() const { return "text/vcard:3.0,text/x-vcard:2.1"; }
    
-    virtual SyncItem *createItem(const string &uid, const char *type = NULL);
-    
   protected:
     //
     // implementation of TrackingSyncSource callbacks
     //
     virtual void listAllItems(RevisionMap_t &revisions);
-    virtual InsertItemResult insertItem(const string &uid, const SyncItem &item);
-    virtual void deleteItem(const string &uid);
-    virtual void logItem(const string &uid, const string &info, bool debug = false);
-    virtual void logItem(const SyncItem &item, const string &info, bool debug = false);
+    virtual InsertItemResult insertItem(const string &uid, const std::string &item, bool raw);
+    void readItem(const std::string &luid, std::string &item, bool raw);
+    virtual void removeItem(const string &uid);
+
+    // implementation of SyncSourceLogging callback
+    virtual std::string getDescription(const string &luid);
 
     // need to override native format: it is always vCard 3.0
-    void getSynthesisInfo(string &profile,
-                          string &datatypes,
-                          string &native,
+    void getSynthesisInfo(SynthesisInfo &info,
                           XMLConfigFragments &fragments)
     {
-        TrackingSyncSource::getSynthesisInfo(profile, datatypes, native, fragments);
-        profile = "\"vCard\", 2";
-        native = "vCard30";
+        TrackingSyncSource::getSynthesisInfo(info, fragments);
+        info.m_profile = "\"vCard\", 2";
+        info.m_native = "vCard30";
+        info.m_beforeWriteScript = "$VCARD_BEFOREWRITE_SCRIPT_EVOLUTION;";
     }
 
   private:
@@ -128,6 +127,7 @@ class EvolutionContactSource : public TrackingSyncSource
     } m_uniqueProperties;
 };
 
-#endif // ENABLE_EBOOK
+SE_END_CXX
 
+#endif // ENABLE_EBOOK
 #endif // INCL_EVOLUTIONCONTACTSOURCE

@@ -17,7 +17,7 @@
  * 02110-1301  USA
  */
 
-/* This is an implementation of EvolutionSyncClient
+/* This is an implementation of SyncContext
  * that is a DBus service. Internally it uses a 
  * SyncevoDBusServer GObject to handle the DBus side
  * of things.
@@ -27,16 +27,18 @@
 #ifndef INCL_DBUSSYNCCLIENT
 #define INCL_DBUSSYNCCLIENT
 
-#include <config.h>
+#include "config.h"
 
 #include <synthesis/sync_declarations.h>
-#include "EvolutionSyncClient.h"
+#include <syncevo/SyncContext.h>
 
 #include <string>
 #include <set>
 #include <map>
 
-class DBusSyncClient : public EvolutionSyncClient {
+using namespace SyncEvo;
+
+class DBusSyncClient : public SyncContext {
 
 public:
 	DBusSyncClient(const string &server,
@@ -50,11 +52,11 @@ public:
 	~DBusSyncClient();
 
 protected:
-	virtual void prepare(const std::vector<EvolutionSyncSource *> &sources);
+	virtual void prepare(const std::vector<SyncSource *> &sources);
 
 	virtual bool getPrintChanges() const;
 
-	virtual string askPassword(const string &descr);
+	virtual string askPassword(const string &passwordName, const string &descr, const ConfigPasswordKey &key);
 
 	virtual void displayServerMessage(const string &message);
 
@@ -62,10 +64,12 @@ protected:
 	                                 int32_t extra1, int32_t extra2, int32_t extra3);
 
 	virtual void displaySourceProgress(sysync::TProgressEventEnum type,
-	                                   EvolutionSyncSource &source,
+	                                   SyncSource &source,
 	                                   int32_t extra1, int32_t extra2, int32_t extra3);
 
 	virtual bool checkForSuspend();
+
+    virtual int sleep (int intervals);
 
 private:
 	map<string, int> m_source_map;
@@ -87,6 +91,5 @@ private:
 		return sources;
 	}
 };
-
 
 #endif

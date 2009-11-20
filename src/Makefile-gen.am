@@ -19,8 +19,8 @@ if COND_GUI
 GUI_DIR = gtk-ui
 endif
 
-SUBDIRS = $(SYNTHESIS_SUBDIR) $(DBUS_DIR) core $(BACKENDS) $(GUI_DIR)
-DIST_SUBDIRS = dbus core $(BACKENDS) gtk-ui
+SUBDIRS = $(SYNTHESIS_SUBDIR) $(DBUS_DIR) syncevo $(BACKENDS) $(GUI_DIR)
+DIST_SUBDIRS = dbus syncevo $(BACKENDS) gtk-ui
 BUILT_SOURCES =
 
 AM_CPPFLAGS = $(SUBDIRS:%=-I$(srcdir)/%) -I$(srcdir)/../test -I$(top_srcdir) $(BACKEND_CPPFLAGS) $(GLIB_CFLAGS)
@@ -74,8 +74,8 @@ CORE_SOURCES += $(BACKEND_REGISTRIES)
 endif
 
 CORE_CXXFLAGS = $(SYNTHESIS_CFLAGS)
-CORE_LDADD = $(SYNCEVOLUTION_LDADD) core/libsyncevolution.la $(GLIB_LIBS) $(LIBS)
-CORE_DEP = $(SYNCEVOLUTION_DEP) core/libsyncevolution.la $(SYNTHESIS_DEP)
+CORE_LDADD = $(SYNCEVOLUTION_LDADD) syncevo/libsyncevolution.la $(GLIB_LIBS) $(LIBS)
+CORE_DEP = $(SYNCEVOLUTION_DEP) syncevo/libsyncevolution.la $(SYNTHESIS_DEP)
 CORE_LD_FLAGS = -uSyncEvolution_Module_Version -Wl,--export-dynamic
 
 # put link to static c++ library into current directory, needed if compiling with --enable-static-c++
@@ -84,15 +84,17 @@ libstdc++.a :
 
 syncevolution_SOURCES = \
 	syncevolution.cpp \
+	CmdlineSyncClient.h \
+	CmdlineSyncClient.cpp \
 	$(CORE_SOURCES)
 nodist_syncevolution_SOURCES = ../test/test.cpp
 
 # SYNCEVOLUTION_LDADD will be replaced with libsyncebook.la/libsyncecal.la/libsyncsqlite.la
 # if linking statically against them, empty otherwise;
 # either way this does not lead to a dependency on those libs - done explicitly
-syncevolution_LDADD = $(CORE_LDADD)
+syncevolution_LDADD = $(CORE_LDADD) $(KEYRING_LIBS)
 syncevolution_LDFLAGS = $(CORE_LD_FLAGS)
-syncevolution_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS)
+syncevolution_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(KEYRING_CFLAGS)
 syncevolution_DEPENDENCIES = $(EXTRA_LTLIBRARIES) $(CORE_DEP) # $(SYNTHESIS_DEP)
 
 # rule which is only relevant when compiling Synthesis in subdirectory
@@ -169,9 +171,11 @@ nodist_client_test_SOURCES = ../test/test.cpp
 # ENABLE_INTEGRATION_TESTS.  This works without undefined references
 # because client-test is linked against all shared backend libraries
 # (non-portable, but works).
-if ENABLE_MODULES
-client_test_SOURCES += $(BACKEND_REGISTRIES)
-endif
+# Disabled now, the client test can also be dynamically loaded and registered
+# just the same as syncevolution
+# if ENABLE_MODULES
+# client_test_SOURCES += $(BACKEND_REGISTRIES)
+# endif
 
 # list of test file base files
 #
@@ -196,8 +200,8 @@ CLIENT_LIB_TEST_FILES += $(TEST_FILES_GENERATED)
 
 client_test_CPPFLAGS = -DHAVE_CONFIG_H -DENABLE_INTEGRATION_TESTS -DENABLE_UNIT_TESTS $(AM_CPPFLAGS)
 client_test_CXXFLAGS = `cppunit-config --cflags` $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS)
-client_test_LDFLAGS = `cppunit-config --libs` `nm core/.libs/libsyncevolution.a | grep funambolAutoRegisterRegistry | sed -e 's/.* /-u /'` $(CORE_LD_FLAGS)
-client_test_LDADD = $(CORE_LDADD) $(SYNCSOURCES)
+client_test_LDFLAGS = `cppunit-config --libs` `nm synccevo/.libs/libsyncevolution.a | grep funambolAutoRegisterRegistry | sed -e 's/.* /-u /'` $(CORE_LD_FLAGS)
+client_test_LDADD = $(CORE_LDADD) 
 # These dependencies are intentionally a bit too broad:
 # they ensure that all files are in place to *run* client-test.
 

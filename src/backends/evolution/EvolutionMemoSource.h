@@ -20,8 +20,11 @@
 #ifndef INCL_EVOLUTIONMEMOSOURCE
 #define INCL_EVOLUTIONMEMOSOURCE
 
-#include <config.h>
-#include "EvolutionCalendarSource.h"
+#include "config.h"
+#include <EvolutionCalendarSource.h>
+
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
 
 #ifdef ENABLE_ECAL
 
@@ -33,17 +36,17 @@
 class EvolutionMemoSource : public EvolutionCalendarSource
 {
   public:
-    EvolutionMemoSource(const EvolutionSyncSourceParams &params) :
+    EvolutionMemoSource(const SyncSourceParams &params) :
         EvolutionCalendarSource(E_CAL_SOURCE_TYPE_JOURNAL, params) {}
     
     //
-    // implementation of EvolutionSyncSource
+    // implementation of SyncSource
     //
-    virtual SyncItem *createItem(const string &uid, const char *type = NULL);
-    virtual InsertItemResult insertItem(const string &luid, const SyncItem &item);
+    virtual InsertItemResult insertItem(const string &uid, const std::string &item, bool raw);
+    void readItem(const std::string &luid, std::string &item, bool raw);
     virtual const char *getMimeType() const { return "text/plain"; }
     virtual const char *getMimeVersion() const { return "1.0"; }
-    virtual const char *getSupportedTypes() const { return "text/plain:1.0"; }
+    virtual const char *getSupportedTypes() const { return "text/plain:1.0"; }    
 
  private:
     bool isNativeType(const char *type);
@@ -51,4 +54,6 @@ class EvolutionMemoSource : public EvolutionCalendarSource
 
 #endif // ENABLE_ECAL
 
+
+SE_END_CXX
 #endif // INCL_EVOLUTIONMEMOSOURCE

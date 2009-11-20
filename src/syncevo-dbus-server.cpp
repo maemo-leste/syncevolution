@@ -19,7 +19,7 @@
 
 
 #ifdef HAVE_CONFIG_H
-#include <config.h>
+#include "config.h"
 #endif
 
 #include <unistd.h>
@@ -633,16 +633,16 @@ syncevo_get_servers (SyncevoDBusServer *obj,
 
 	*servers = g_ptr_array_new ();
 
-	EvolutionSyncConfig::ServerList list = EvolutionSyncConfig::getServers();
+	SyncConfig::ServerList list = SyncConfig::getServers();
 
-	BOOST_FOREACH(const EvolutionSyncConfig::ServerList::value_type &server,list) {
+	BOOST_FOREACH(const SyncConfig::ServerList::value_type &server,list) {
 		char *name = NULL;
 		char *url = NULL;
 		char *icon = NULL;
 		gboolean ready = TRUE;
 		SyncevoServer *srv;
 
-		boost::shared_ptr<EvolutionSyncConfig> config (EvolutionSyncConfig::createServerTemplate (server.first));
+		boost::shared_ptr<SyncConfig> config (SyncConfig::createServerTemplate (server.first));
 		url = icon = NULL;
 		if (config.get()) {
 			url = g_strdup (config->getWebURL().c_str());
@@ -674,14 +674,14 @@ syncevo_get_templates (SyncevoDBusServer *obj,
 
 	*templates = g_ptr_array_new ();
 
-	EvolutionSyncConfig::ServerList list = EvolutionSyncConfig::getServerTemplates();
+	SyncConfig::ServerList list = SyncConfig::getServerTemplates();
 
-	BOOST_FOREACH(const EvolutionSyncConfig::ServerList::value_type &server,list) {
+	BOOST_FOREACH(const SyncConfig::ServerList::value_type &server,list) {
 		char *name, *url, *icon;
 		gboolean ready;
 		SyncevoServer *temp;
 
-		boost::shared_ptr<EvolutionSyncConfig> config (EvolutionSyncConfig::createServerTemplate (server.first));
+		boost::shared_ptr<SyncConfig> config (SyncConfig::createServerTemplate (server.first));
 		name = g_strdup (server.first.c_str());
 		url = g_strdup (config->getWebURL().c_str());
 		icon = g_strdup (config->getIconURI().c_str());
@@ -715,7 +715,7 @@ syncevo_get_template_config (SyncevoDBusServer *obj,
 		return FALSE;
 	}
 
-	boost::shared_ptr<EvolutionSyncConfig> config (EvolutionSyncConfig::createServerTemplate (string (templ)));
+	boost::shared_ptr<SyncConfig> config (SyncConfig::createServerTemplate (string (templ)));
 	if (!config.get()) {
 		*options = NULL;
 		*error = g_error_new (SYNCEVO_DBUS_ERROR,
@@ -745,7 +745,7 @@ syncevo_get_template_config (SyncevoDBusServer *obj,
 	BOOST_FOREACH(const string &name, sources) {
 		gboolean local;
 
-		boost::shared_ptr<EvolutionSyncSourceConfig> source_config = config->getSyncSourceConfig(name);
+		boost::shared_ptr<SyncSourceConfig> source_config = config->getSyncSourceConfig(name);
 
 		option = syncevo_option_new (g_strdup (name.c_str()), g_strdup ("sync"), g_strdup (source_config->getSync()));
 		g_ptr_array_add (*options, option);
@@ -753,8 +753,8 @@ syncevo_get_template_config (SyncevoDBusServer *obj,
 		g_ptr_array_add (*options, option);
 
 		/* check whether we have support locally */
-		EvolutionSyncSourceParams params(name, config->getSyncSourceNodes(name), "");
-		auto_ptr<EvolutionSyncSource> syncSource(EvolutionSyncSource::createSource(params, false));
+		SyncSourceParams params(name, config->getSyncSourceNodes(name), "");
+		auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false));
 		try {
 			local = FALSE;
 			if (syncSource.get()) {
@@ -790,11 +790,11 @@ syncevo_get_server_config (SyncevoDBusServer *obj,
 		return FALSE;
 	}
 
-	boost::shared_ptr<EvolutionSyncConfig> from;
-	boost::shared_ptr<EvolutionSyncConfig> config(new EvolutionSyncConfig (string (server)));
+	boost::shared_ptr<SyncConfig> from;
+	boost::shared_ptr<SyncConfig> config(new SyncConfig (string (server)));
 	/* if config does not exist, create from template */
 	if (!config->exists()) {
-		from = EvolutionSyncConfig::createServerTemplate( string (server));
+		from = SyncConfig::createServerTemplate( string (server));
 		if (!from.get()) {
 			*options = NULL;
 			*error = g_error_new (SYNCEVO_DBUS_ERROR,
@@ -812,7 +812,7 @@ syncevo_get_server_config (SyncevoDBusServer *obj,
 	g_ptr_array_add (*options, option);
 
 	/* get template options if template exists */
-	boost::shared_ptr<EvolutionSyncConfig> templ = EvolutionSyncConfig::createServerTemplate( string (server));
+	boost::shared_ptr<SyncConfig> templ = SyncConfig::createServerTemplate( string (server));
 	if (templ.get()) {
 		const char *ready;
 
@@ -832,7 +832,7 @@ syncevo_get_server_config (SyncevoDBusServer *obj,
 	BOOST_FOREACH(const string &name, sources) {
 		gboolean local;
 
-		boost::shared_ptr<EvolutionSyncSourceConfig> source_config = config->getSyncSourceConfig(name);
+		boost::shared_ptr<SyncSourceConfig> source_config = config->getSyncSourceConfig(name);
 
 		option = syncevo_option_new (g_strdup (name.c_str()), g_strdup ("sync"), g_strdup (source_config->getSync()));
 		g_ptr_array_add (*options, option);
@@ -840,8 +840,8 @@ syncevo_get_server_config (SyncevoDBusServer *obj,
 		g_ptr_array_add (*options, option);
 
 		/* check whether we have support locally */
-		EvolutionSyncSourceParams params(name, config->getSyncSourceNodes(name), "");
-		auto_ptr<EvolutionSyncSource> syncSource(EvolutionSyncSource::createSource(params, false));
+		SyncSourceParams params(name, config->getSyncSourceNodes(name), "");
+		auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false));
 		try {
 			local = FALSE;
 			if (syncSource.get()) {
@@ -884,15 +884,15 @@ syncevo_set_server_config (SyncevoDBusServer *obj,
 		return FALSE;
 	}
 
-	boost::shared_ptr<EvolutionSyncConfig> from(new EvolutionSyncConfig (string (server)));
+	boost::shared_ptr<SyncConfig> from(new SyncConfig (string (server)));
 	/* if config does not exist, create from template */
 	if (!from->exists()) {
-		from = EvolutionSyncConfig::createServerTemplate( string (server));
+		from = SyncConfig::createServerTemplate( string (server));
 		if (!from.get()) {
-			from = EvolutionSyncConfig::createServerTemplate( string ("default"));
+			from = SyncConfig::createServerTemplate( string ("default"));
 		}
 	}
-	boost::shared_ptr<EvolutionSyncConfig> config(new EvolutionSyncConfig(string (server)));
+	boost::shared_ptr<SyncConfig> config(new SyncConfig(string (server)));
 	config->copy(*from, NULL);
 	
 	for (i = 0; i < (int)options->len; i++) {
@@ -914,7 +914,7 @@ syncevo_set_server_config (SyncevoDBusServer *obj,
 				config->setIconURI (string (value));
 			}
 		} else if (ns && key) {
-			boost::shared_ptr<EvolutionSyncSourceConfig> source_config = config->getSyncSourceConfig(ns);
+			boost::shared_ptr<SyncSourceConfig> source_config = config->getSyncSourceConfig(ns);
 			if (strcmp (key, "sync") == 0) {
 				source_config->setSync (string (value));
 			} else if (strcmp (key, "uri") == 0) {
@@ -948,7 +948,7 @@ syncevo_remove_server_config (SyncevoDBusServer *obj,
 		return FALSE;
 	}
 
-	boost::shared_ptr<EvolutionSyncConfig> config(new EvolutionSyncConfig (string (server)));
+	boost::shared_ptr<SyncConfig> config(new SyncConfig (string (server)));
 	if (!config->exists()) {
 		*error = g_error_new (SYNCEVO_DBUS_ERROR,
 		                      SYNCEVO_DBUS_ERROR_NO_SUCH_SERVER,
@@ -983,7 +983,7 @@ syncevo_get_sync_reports (SyncevoDBusServer *obj,
 		return FALSE;
 	}
 
-	EvolutionSyncClient client (string (server), false);
+	SyncContext client (string (server), false);
 	vector<string> dirs;
 	*reports = g_ptr_array_new ();
 

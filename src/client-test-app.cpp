@@ -18,7 +18,7 @@
  * 02110-1301  USA
  */
 
-#include <config.h>
+#include "config.h"
 
 #include <ClientTest.h>
 
@@ -35,10 +35,13 @@
 # include <execinfo.h>
 #endif
 
-#include "EvolutionSyncClient.h"
+#include <syncevo/SyncContext.h>
 #include "EvolutionSyncSource.h"
-#include "SyncEvolutionUtil.h"
-#include "VolatileConfigNode.h"
+#include <syncevo/util.h>
+#include <syncevo/VolatileConfigNode.h>
+
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
 
 /*
  * always provide this test class, even if not used:
@@ -46,73 +49,6 @@
  * invoke "client-test SyncEvolution"
  */
 CPPUNIT_REGISTRY_ADD_TO_DEFAULT("SyncEvolution");
-
-/**
- * a wrapper class which automatically does an open() in the constructor and a close() in the destructor
- * and ensures that the sync mode is "none" = testing mode
- */
-class TestEvolutionSyncSource : public EvolutionSyncSource {
-public:
-    TestEvolutionSyncSource(const string &type,
-                            const EvolutionSyncSourceParams &params) :
-        EvolutionSyncSource(params)
-    {
-        PersistentEvolutionSyncSourceConfig config(params.m_name, params.m_nodes);
-        config.setSourceType(type);
-        m_source.reset(EvolutionSyncSource::createSource(params));
-        CPPUNIT_ASSERT(m_source.get());
-    }
-
-    virtual SyncMLStatus beginSync(SyncMode mode) throw () {
-        CPPUNIT_ASSERT_NO_THROW(m_source->open());
-        CPPUNIT_ASSERT(!m_source->hasFailed());
-        return m_source->beginSync(mode);
-    }
-
-    virtual SyncMLStatus endSync() throw () {
-        SyncMLStatus res = m_source->endSync();
-        CPPUNIT_ASSERT_NO_THROW(m_source->close());
-        CPPUNIT_ASSERT(!m_source->hasFailed());
-        return res;
-    }
-
-    virtual SyncItem* getFirstItem() throw () { return m_source->getFirstItem(); }
-    virtual SyncItem* getNextItem() throw () { return m_source->getNextItem(); }
-    virtual SyncItem* getFirstNewItem() throw () { return m_source->getFirstNewItem(); }
-    virtual SyncItem* getNextNewItem() throw () { return m_source->getNextNewItem(); }
-    virtual SyncItem* getFirstUpdatedItem() throw () { return m_source->getFirstUpdatedItem(); }
-    virtual SyncItem* getNextUpdatedItem() throw () { return m_source->getNextUpdatedItem(); }
-    virtual SyncItem* getFirstDeletedItem() throw () { return m_source->getFirstDeletedItem(); }
-    virtual SyncItem* getNextDeletedItem() throw () { return m_source->getNextDeletedItem(); }
-
-    virtual SyncMLStatus addItem(SyncItem& item) throw () { return m_source->addItem(item); }
-    virtual SyncMLStatus updateItem(SyncItem& item) throw () { return m_source->updateItem(item); }
-    virtual SyncMLStatus deleteItem(SyncItem& item) throw () { return m_source->deleteItem(item); }
-    virtual SyncMLStatus removeAllItems() throw () { return m_source->removeAllItems(); }
-    const char *getName() throw () { return m_source->getName(); }
-
-    virtual Databases getDatabases() { return m_source->getDatabases(); }
-    virtual void open() { m_source->open(); }
-    virtual SyncItem *createItem(const string &uid, const char *type) { return m_source->createItem(uid, type); }
-    virtual void close() { m_source->close(); }
-    virtual void backupData(const string &dir, ConfigNode &node, BackupReport &report) { m_source->backupData(dir, node, report); }
-    virtual void restoreData(const string &dir, const ConfigNode &node, bool dryrun, SyncSourceReport &report) { m_source->restoreData(dir, node, dryrun, report); }
-    virtual const char *getMimeType() const { return m_source->getMimeType(); }
-    virtual const char *getMimeVersion() const { return m_source->getMimeVersion(); }
-    virtual const char* getSupportedTypes() const { return m_source->getSupportedTypes(); }
-    virtual bool checkStatus() { return m_source->checkStatus(); }
-    virtual void beginSyncThrow(bool needAll,
-                                bool needPartial,
-                                bool deleteLocal) { m_source->beginSyncThrow(needAll, needPartial, deleteLocal); }
-    virtual void endSyncThrow() { m_source->endSyncThrow(); }
-    virtual SyncMLStatus addItemThrow(SyncItem& item) { return m_source->addItemThrow(item); }
-    virtual SyncMLStatus updateItemThrow(SyncItem& item) { return m_source->updateItemThrow(item); }
-    virtual SyncMLStatus deleteItemThrow(SyncItem& item) { return m_source->deleteItemThrow(item); }
-    virtual void logItem(const string &uid, const string &info, bool debug = false) { m_source->logItem(uid, info, debug); }
-    virtual void logItem(const SyncItem &item, const string &info, bool debug = false) { m_source->logItem(item, info, debug); }
-
-    auto_ptr<EvolutionSyncSource> m_source;
-};
 
 class EvolutionLocalTests : public LocalTests {
 public:
@@ -154,13 +90,14 @@ private:
         update(createSourceA, item.c_str(), false);
 
         // opening and preparing the source should delete the item
-        std::auto_ptr<SyncSource> source;
+        std::auto_ptr<TestingSyncSource> source;
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
-        SOURCE_ASSERT(source.get(), source->beginSync(SYNC_NONE) == 0 );
-        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), TOTAL_ITEMS));
-        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), NEW_ITEMS));
-        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), UPDATED_ITEMS));
-        CPPUNIT_ASSERT_EQUAL(1, countItemsOfType(source.get(), DELETED_ITEMS));
+        SOURCE_ASSERT_NO_FAILURE(source.get(), source->open());
+        SOURCE_ASSERT_NO_FAILURE(source.get(), source->beginSync("", "") );
+        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), SyncSourceChanges::ANY));
+        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), SyncSourceChanges::NEW));
+        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), SyncSourceChanges::UPDATED));
+        CPPUNIT_ASSERT_EQUAL(1, countItemsOfType(source.get(), SyncSourceChanges::DELETED));
     }
 };
 
@@ -255,13 +192,13 @@ public:
         // get configuration and set obligatory fields
         LoggerBase::instance().setLevel(Logger::DEBUG);
         std::string root = std::string("evolution/") + server + "_" + id;
-        EvolutionSyncConfig config(string(server) + "_" + id);
-        boost::shared_ptr<EvolutionSyncConfig> from = boost::shared_ptr<EvolutionSyncConfig> ();
+        SyncConfig config(string(server) + "_" + id);
+        boost::shared_ptr<SyncConfig> from = boost::shared_ptr<SyncConfig> ();
 
         if (!config.exists()) {
             // no configuration yet
             config.setDefaults();
-            from = EvolutionSyncConfig::createServerTemplate(server);
+            from = SyncConfig::createServerTemplate(server);
             if(from) {
                 set<string> filter;
                 config.copy(*from, &filter);
@@ -273,7 +210,7 @@ public:
             getSourceConfig(test, testconfig);
             CPPUNIT_ASSERT(testconfig.type);
 
-            boost::shared_ptr<EvolutionSyncSourceConfig> sc = config.getSyncSourceConfig(testconfig.sourceName);
+            boost::shared_ptr<SyncSourceConfig> sc = config.getSyncSourceConfig(testconfig.sourceName);
             if (!sc || !sc->exists()) {
                 // no configuration yet
                 config.setSourceDefaults(testconfig.sourceName);
@@ -281,7 +218,7 @@ public:
                 CPPUNIT_ASSERT(sc);
                 sc->setURI(testconfig.uri);
                 if(from && testconfig.sourceNameServerTemplate){
-                    boost::shared_ptr<EvolutionSyncSourceConfig> scServerTemplate = from->getSyncSourceConfig(testconfig.sourceNameServerTemplate);
+                    boost::shared_ptr<SyncSourceConfig> scServerTemplate = from->getSyncSourceConfig(testconfig.sourceNameServerTemplate);
                     sc->setURI(scServerTemplate->getURI());
                 }
                 sc->setSourceType(testconfig.type);
@@ -339,13 +276,13 @@ public:
         server += "_";
         server += m_clientID;
         
-        class ClientTest : public EvolutionSyncClient {
+        class ClientTest : public SyncContext {
         public:
             ClientTest(const string &server,
                        const set<string> &activeSources,
                        const string &logbase,
                        const SyncOptions &options) :
-                EvolutionSyncClient(server, false, activeSources),
+                SyncContext(server, false, activeSources),
                 m_logbase(logbase),
                 m_options(options),
                 m_started(false)
@@ -358,12 +295,12 @@ public:
                 setMaxObjSize(m_options.m_maxObjSize, true);
                 setMaxMsgSize(m_options.m_maxMsgSize, true);
                 setWBXML(m_options.m_isWBXML, true);
-                EvolutionSyncClient::prepare();
+                SyncContext::prepare();
             }
-            virtual void prepare(const std::vector<EvolutionSyncSource *> &sources) {
+            virtual void prepare(const std::vector<SyncSource *> &sources) {
                 SyncModes modes(m_options.m_syncMode);
                 setSyncModes(sources, modes);
-                EvolutionSyncClient::prepare(sources);
+                SyncContext::prepare(sources);
             }
 
             virtual void displaySyncProgress(sysync::TProgressEventEnum type,
@@ -383,7 +320,7 @@ public:
             virtual boost::shared_ptr<TransportAgent> createTransportAgent()
             {
                 boost::shared_ptr<TransportAgent>wrapper = m_options.m_transport;
-                boost::shared_ptr<TransportAgent>agent =EvolutionSyncClient::createTransportAgent();
+                boost::shared_ptr<TransportAgent>agent =SyncContext::createTransportAgent();
                 if (!wrapper.get())
                     return agent;
                 dynamic_cast<TransportWrapper*>(wrapper.get())->setAgent(agent);
@@ -423,14 +360,14 @@ private:
         return m_evoPrefix + configName + "_" + m_clientID;
     }
     
-    static SyncSource *createSource(ClientTest &client, int source, bool isSourceA) {
+    static TestingSyncSource *createSource(ClientTest &client, int source, bool isSourceA) {
         TestEvolution &evClient((TestEvolution &)client);
         string changeID = "SyncEvolution Change ID #";
         string name = evClient.m_source2Config[source];
         changeID += isSourceA ? "1" : "2";
         string database = evClient.getDatabaseName(name);
 
-        EvolutionSyncConfig config("client-test-changes");
+        SyncConfig config("client-test-changes");
         SyncSourceNodes nodes = config.getSyncSourceNodes(name,
                                                           string("_") + ((TestEvolution &)client).m_clientID +
                                                           "_" + (isSourceA ? "A" : "B"));
@@ -440,16 +377,21 @@ private:
         nodes.m_configNode->setProperty("evolutionuser", evClient.m_evoUser.c_str());
         nodes.m_configNode->setProperty("evolutionpassword", evClient.m_evoPassword.c_str());
 
-        EvolutionSyncSourceParams params(name,
-                                         nodes,
-                                         changeID);
+        SyncSourceParams params(name,
+                                nodes,
+                                changeID);
 
         const RegisterSyncSourceTest *test = evClient.m_configs[name];
         ClientTestConfig testConfig;
         getSourceConfig(test, testConfig);
 
-        SyncSource *ss = new TestEvolutionSyncSource(testConfig.type, params);
-        return ss;
+        PersistentSyncSourceConfig sourceConfig(params.m_name, params.m_nodes);
+        sourceConfig.setSourceType(testConfig.type);
+
+        // downcasting here: anyone who registers his sources for testing
+        // must ensure that they are indeed TestingSyncSource instances
+        SyncSource *ss = SyncSource::createSource(params);
+        return static_cast<TestingSyncSource *>(ss);
     }
 };
 
@@ -500,3 +442,5 @@ private:
     TestEvolution testClient;
     
 } testEvolution;
+
+SE_END_CXX

@@ -29,10 +29,15 @@ For doing development work the recommended configure line is:
    configure CFLAGS="-g -Wall -Werror -Wno-unknown-pragmas" \
              CXXFLAGS="-g -Wall -Werror -Wno-unknown-pragmas" \
              --enable-unit-tests \
-             --enable-libcurl
+             --enable-libcurl \
+             --enable-developer-mode
 
 Enabling libcurl explicitly ensures that it gets built even when not
 the default.
+
+Backend libraries are dynamically scannned and loaded into syncevolution, the
+library path defaults to $prefix/syncevolution/backends. When developer-mode is
+enabled, it will scan libraries in current build directory instead.
 
 -Wno-unknown-pragmas is required to avoid warnings triggered by
 '#pragma }', a trick to preserve indention after 'extern "C" {' in
@@ -126,6 +131,9 @@ Building a Release
   use "0.7+0.8beta1" instead of "0.7+0.8-beta1".
 - ensure files were updated:
   ./NEWS debian/changelog
+- update po/LINGUAS
+- check and if necessary, bump the Synthesis .so versions
+  (libsynthesis/src/Makefile.am.in)
 - ensure that Synthesis source code is tagged:
   use <base version>+<syncevo version> if local changes exist
 - commit and tag SyncEvolution source code

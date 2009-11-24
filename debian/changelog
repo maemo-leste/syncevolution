@@ -1,6 +1,8 @@
 syncevolution (0.9.1+ds1-1) unstable; urgency=low
 
   * New Upstream Version
+  * Standards Version 3.8.3 (no changes)
+  * Convert to source package format 3.0 (quilt)
 
  -- David Bremner <bremner@unb.ca>  Fri, 20 Nov 2009 07:55:54 -0400
 

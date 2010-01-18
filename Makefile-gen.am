@@ -11,6 +11,7 @@ EXTRA_DIST = \
 	description \
 	configure-pre.in \
 	configure-post.in \
+	gen-autotools.sh \
 	autogen.sh \
 	Makefile-gen.am \
 	Doxyfile
@@ -20,7 +21,7 @@ CLEANFILES =
 
 TEST_README_FILES = $(wildcard $(srcdir)/test/README.*)
 
-DEV_FILE_PATTERN = $(1)/usr/etc $(1)/usr/include $(1)/usr/lib/*.so $(1)/usr/lib/*.a $(1)/usr/lib/*.la $(1)/usr/lib/*/*.la $(1)/usr/lib/pkgconfig
+DEV_FILE_PATTERN = $(1)$(2)/etc $(1)$(2)/include $(1)$(2)/lib/*.so $(1)$(2)/lib/*.a $(1)$(2)/lib/*.la $(1)$(2)/lib/*/*.la $(1)$(2)/lib/pkgconfig
 
 # binary distribution as .tar.gz
 if COND_DBUS
@@ -31,7 +32,9 @@ distbin : README NEWS COPYING $(TEST_README_FILES) INSTALL-tar-gz all
 	@ [ "$(prefix)" == "/usr" ] || (echo "please reconfigure with --prefix=/usr"; exit 1 )
 	rm -rf $(distdir)
 	$(MAKE) DESTDIR=`pwd`/$(distdir) install
-	rm -rf $(call DEV_FILE_PATTERN, $(distdir))
+	$(MAKE) DESTDIR=`pwd`/$(distdir) installcheck
+	rm -rf $(call DEV_FILE_PATTERN,$(distdir),/usr)
+	for i in `find $(distdir) -type d | sort -r`; do rmdir $$i 2>/dev/null || true; done
 	mkdir -p $(distdir)/usr/share/doc/syncevolution
 	cp $(srcdir)/INSTALL-tar-gz $(distdir)/INSTALL
 	cp $(srcdir)/README $(srcdir)/NEWS $(srcdir)/COPYING $(TEST_README_FILES) $(distdir)/usr/share/doc/syncevolution
@@ -44,7 +47,9 @@ distbin : README NEWS COPYING all
 	@ [ "$(BINSUFFIX)" ] || (echo "please invoke with e.g. 'make distbin BINSUFFIX=debian-3.1'"; exit 1 ) 
 	rm -rf $(distdir)
 	$(MAKE) prefix=`pwd`/$(distdir) install
-	rm -rf $(call DEV_FILE_PATTERN, $(distdir))
+	echo removing developer files and empty directories
+	rm -rf $(call DEV_FILE_PATTERN,$(distdir),/)
+	for i in `find $(distdir) -type d | sort -r`; do rmdir $$i 2>/dev/null || true; done
 	cp $(srcdir)/README $(srcdir)/NEWS $(srcdir)/COPYING $(TEST_README_FILES) $(distdir)
 	tar zcf $(distdir)-$(BINSUFFIX).tar.gz $(distdir)
 	rm -rf $(distdir)
@@ -94,11 +99,9 @@ PKGS = $(addprefix syncevolution-evolution-, 2.6 2.8 2.12)
 #
 # --replaces is necessary for migrating from syncevolution-evolution-<evover>
 # to syncevolution-evolution (as per http://wiki.debian.org/Renaming_a_Package)
-deb rpm : dist/$(distdir) dist/debian/control doc-pak description-pak
+deb rpm : dist/$(distdir) dist/debian/control description-pak
 	tmpdir=`mktemp -d $$HOME/syncevolution.XXXXXXXXXX` && \
 	trap "rm -rf $$tmpdir" EXIT && \
-	docdir="$(docdir)" && \
-        if [ ! "$$docdir" ]; then docdir="$(datadir)/doc/$(PACKAGE)"; fi && \
 	fakeroot checkinstall </dev/null \
 		$(TYPE_$@) \
 		$(REQUIRES_$@) \
@@ -115,28 +118,28 @@ deb rpm : dist/$(distdir) dist/debian/control doc-pak description-pak
 		--pkgsource='http://sourceforge.net/project/showfiles.php?group_id=146288' \
 		--pkgaltsource='http://www.estamos.de/projects/SyncML/' \
 		--pkggroup='gnome' \
-		--docdir=":$$docdir" cp -r `pwd`/$</usr/* /usr
+		cp -r `pwd`/$</usr/* /usr
 	if [ $@ == "rpm" ]; then cp /usr/src/rpm/RPMS/*/${PKGNAME}-${VERSION}-2.*.rpm .; fi
 
 .PHONY: dist/$(distdir) clean_dist
 dist/$(distdir): all
 	rm -rf $@
 	$(MAKE) install DESTDIR=`pwd`/$@
+	$(MAKE) installcheck DESTDIR=`pwd`/$@
 	rm -rf $(call DEV_FILE_PATTERN, $@)
 clean-local: clean_dist
 clean_dist:
 	rm -rf dist doc-pak description-pak
+
+# install doc files via normal autotools
+dist_doc_DATA = README NEWS COPYING $(TEST_README_FILES)
 
 # required by dpkg-shlibdeps
 dist/debian/control:
 	mkdir -p ${@D}
 	touch $@
 
-doc-pak : README NEWS COPYING $(TEST_README_FILES)
-	rm -rf $@
-	mkdir $@
-	cp $+ $@
-
+# for checkinstall
 description-pak : description
 	cp $< $@
 
@@ -189,3 +192,14 @@ dist-hook:
 	else \
 		echo A git checkout is required to generate a ChangeLog >&2; \
 	fi
+
+if ENABLE_EVOLUTION_COMPATIBILITY
+installcheck-local:
+	for i in `find . -name *.so`; do \
+		if ldd $$i | grep -e libecal -e libebook -e libedata -e libical; then \
+			echo "$$i should not depend on EDS or libical"; \
+			objdump -T -C $$i | grep -v :: | grep -e ical -e " e_"; \
+			exit 1; \
+		fi \
+	done
+endif

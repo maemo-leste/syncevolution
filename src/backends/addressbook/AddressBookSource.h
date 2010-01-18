@@ -20,12 +20,15 @@
 #ifndef INCL_ADDRESSBOOKSOURCE
 #define INCL_ADDRESSBOOKSOURCE
 
-#include <config.h>
-#include "TrackingSyncSource.h"
+#include "config.h"
+#include <syncevo/TrackingSyncSource.h>
 
 #ifdef ENABLE_ADDRESSBOOK
 
 #include <AddressBook/ABAddressBookC.h>
+
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
 
 /**
  * a smart pointer for CoreFoundation object references
@@ -166,23 +169,14 @@ class AddressBookSource : public TrackingSyncSource
     virtual Databases getDatabases();
     virtual void open();
     virtual void listAllItems(RevisionMap_t &revisions);
-    virtual void exportData(ostream &out);
-    virtual InsertItemResult insertItem(const string &uid, const SyncItem &item);
-    virtual SyncItem *createItem(const string &uid, const char *type = NULL) { return createItem(uid, m_asVCard30); }
-    virtual SyncItem *createItem(const string &uid, bool asVCard30);
-    virtual void deleteItem(const string &uid);
-    virtual void flush() {}
+    virtual InsertItemResult insertItem(const string &uid, const std::string &item, bool raw);
+    void readItem(const std::string &luid, std::string &item, bool raw);
+    virtual void removeItem(const string &uid);
     virtual void close();
 
-    virtual string fileSuffix() const { return "vcf"; }
     virtual const char *getMimeType() const { return m_asVCard30 ? "text/vcard" : "text/x-vcard"; }
     virtual const char *getMimeVersion() const { return m_asVCard30 ? "3.0" : "2.1"; }
     virtual const char *getSupportedTypes() const { return m_asVCard30 ? "text/vcard:3.0" : "text/x-vcard:2.1"; }
-
- protected:
-    virtual void logItem(const string &uid, const string &info, bool debug = false);
-    virtual void logItem(const SyncItem &item, const string &info, bool debug = false);
-
 
   private:
     /** valid after open(): the address book that this source references */
@@ -195,6 +189,7 @@ class AddressBookSource : public TrackingSyncSource
     bool m_asVCard30;
 };
 
-#endif // ENABLE_EBOOK
+SE_END_CXX
 
+#endif // ENABLE_EBOOK
 #endif // INCL_ADDRESSBOOKSOURCE

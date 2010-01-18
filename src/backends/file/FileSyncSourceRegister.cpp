@@ -21,9 +21,12 @@
 #include "FileSyncSource.h"
 #include "test.h"
 
-static EvolutionSyncSource *createSource(const EvolutionSyncSourceParams &params)
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
+
+static SyncSource *createSource(const SyncSourceParams &params)
 {
-    SourceType sourceType = EvolutionSyncSource::getSourceType(params.m_nodes);
+    SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
     // The string returned by getSourceType() is always the one
     // registered as main Aliases() below.
     bool isMe = sourceType.m_backend == "Files in one directory";
@@ -69,7 +72,7 @@ static RegisterSyncSource registerMe("Files in one directory",
                                      "      file:text/plain:1.0\n"
                                      "      file:text/x-vcard:2.1\n"
                                      "      file:text/vcard:3.0\n"
-                                     "      file:text/x-calendar:1.0\n"
+                                     "      file:text/x-vcalendar:1.0\n"
                                      "      file:text/calendar:2.0\n",
                                      Values() +
                                      (Aliases("Files in one directory") + "file"));
@@ -84,10 +87,10 @@ class FileSyncSourceUnitTest : public CppUnit::TestFixture {
 
 protected:
     void testInstantiate() {
-        boost::shared_ptr<EvolutionSyncSource> source;
-        source.reset(EvolutionSyncSource::createTestingSource("file", "file:text/vcard:3.0", true));
-        source.reset(EvolutionSyncSource::createTestingSource("file", "file:text/plain:1.0", true));
-        source.reset(EvolutionSyncSource::createTestingSource("file", "Files in one directory:text/x-vcard:2.1", true));
+        boost::shared_ptr<SyncSource> source;
+        source.reset(SyncSource::createTestingSource("file", "file:text/vcard:3.0", true));
+        source.reset(SyncSource::createTestingSource("file", "file:text/plain:1.0", true));
+        source.reset(SyncSource::createTestingSource("file", "Files in one directory:text/x-vcard:2.1", true));
     }
 };
 
@@ -171,3 +174,5 @@ public:
 #endif // ENABLE_INTEGRATION_TESTS
 
 #endif // ENABLE_FILE
+
+SE_END_CXX

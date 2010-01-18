@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.syncevolution
+Exec=@libexecdir@/syncevo-dbus-server

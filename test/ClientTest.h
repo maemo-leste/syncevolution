@@ -29,13 +29,9 @@
 #include <boost/function.hpp>
 #include <boost/shared_ptr.hpp>
 
-class EvolutionSyncClient;
-class EvolutionSyncSource;
-class TransportWrapper;
-typedef EvolutionSyncSource SyncSource;
-
 #include <SyncML.h>
 #include <TransportAgent.h>
+#include <SyncSource.h>
 
 #include "test.h"
 
@@ -44,6 +40,14 @@ typedef EvolutionSyncSource SyncSource;
 #include <cppunit/TestSuite.h>
 #include <cppunit/TestAssert.h>
 #include <cppunit/TestFixture.h>
+
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
+
+class SyncContext;
+class EvolutionSyncSource;
+class TransportWrapper;
+class TestingSyncSource;
 
 /**
  * This class encapsulates logging and checking of a SyncReport.
@@ -90,6 +94,10 @@ class CheckSyncReport {
  * parameters for running a sync
  */
 struct SyncOptions {
+    /** default maximum message size */
+    static const long DEFAULT_MAX_MSG_SIZE = 128 * 1024;
+    /** default maximum object size */
+    static const long DEFAULT_MAX_OBJ_SIZE = 1024 * 1024 * 1024;
     /** sync mode chosen by client */
     SyncMode m_syncMode;
     /**
@@ -112,7 +120,7 @@ struct SyncOptions {
     
     bool m_isAborted;
 
-    typedef boost::function<bool (EvolutionSyncClient &,
+    typedef boost::function<bool (SyncContext &,
                                   SyncOptions &)> Callback_t;
     /**
      * Callback to be invoked after setting up local sources, but
@@ -121,17 +129,17 @@ struct SyncOptions {
      */
     Callback_t m_startCallback;
 
-    boost::shared_ptr<SyncEvolution::TransportAgent> m_transport;
+    boost::shared_ptr<TransportAgent> m_transport;
 
     SyncOptions(SyncMode syncMode = SYNC_NONE,
                 const CheckSyncReport &checkReport = CheckSyncReport(),
-                long maxMsgSize = 128 * 1024, // 128KB = large enough that normal tests should run with a minimal number of messages
-                long maxObjSize = 1 * 1024 * 1024 * 1024, // 1GB = basically unlimited...
+                long maxMsgSize = DEFAULT_MAX_MSG_SIZE, // 128KB = large enough that normal tests should run with a minimal number of messages
+                long maxObjSize = DEFAULT_MAX_OBJ_SIZE, // 1GB = basically unlimited...
                 bool loSupport = false,
                 bool isWBXML = defaultWBXML(),
                 Callback_t startCallback = EmptyCallback,
-                boost::shared_ptr<SyncEvolution::TransportAgent> transport =
-                boost::shared_ptr<SyncEvolution::TransportAgent>()) :
+                boost::shared_ptr<TransportAgent> transport =
+                boost::shared_ptr<TransportAgent>()) :
         m_syncMode(syncMode),
         m_checkReport(checkReport),
         m_maxMsgSize(maxMsgSize),
@@ -151,10 +159,10 @@ struct SyncOptions {
     SyncOptions &setLOSupport(bool loSupport) { m_loSupport = loSupport; return *this; }
     SyncOptions &setWBXML(bool isWBXML) { m_isWBXML = isWBXML; return *this; }
     SyncOptions &setStartCallback(const Callback_t &callback) { m_startCallback = callback; return *this; }
-    SyncOptions &setTransportAgent(const boost::shared_ptr<SyncEvolution::TransportAgent> transport)
+    SyncOptions &setTransportAgent(const boost::shared_ptr<TransportAgent> transport)
                                   {m_transport = transport; return *this;}
 
-    static bool EmptyCallback(EvolutionSyncClient &,
+    static bool EmptyCallback(SyncContext &,
                               SyncOptions &) { return false; }
 
     /** if CLIENT_TEST_XML=1, then XML, otherwise WBXML */
@@ -191,16 +199,6 @@ class SyncTests;
  * synchronization against client B. In those tests client A is mapped
  * to the first data source and client B to the second one.
  *
- * Finally the SyncSource API is used in slightly different ways which
- * go beyond what is normally expected from a SyncSource implementation:
- * - beginSync() may be called without setting a sync mode:
- *   when SyncSource::getSyncMode() returns SYNC_NONE the source is
- *   expected to make itself ready to iterate over all, new, updated and
- *   deleted items
- * - items may be added via SyncSource::addItem() with a type of "raw":
- *   this implies that the type is the one used for items in the
- *   ClientTest::Config below
- *
  * Handling configuration and creating classes is entirely done by the
  * subclass of ClientTest, the frameworks makes no assumptions
  * about how this is done. Instead it queries the ClientTest for
@@ -222,7 +220,7 @@ class ClientTest {
      */
     virtual void registerTests();
 
-    class Config;
+    typedef ClientTestConfig Config;
 
     /**
      * Creates an instance of LocalTests (default implementation) or a
@@ -249,7 +247,7 @@ class ClientTest {
     /**
      * utility function for dumping items which are C strings with blank lines as separator
      */
-    static int dump(ClientTest &client, SyncSource &source, const char *file);
+    static int dump(ClientTest &client, TestingSyncSource &source, const char *file);
 
     /**
      * utility function for splitting file into items with blank lines as separator
@@ -263,7 +261,7 @@ class ClientTest {
     /**
      * utility function for importing items with blank lines as separator
      */
-    static int import(ClientTest &client, SyncSource &source, const char *file, std::string &realfile);
+    static int import(ClientTest &client, TestingSyncSource &source, const char *file, std::string &realfile);
 
     /**
      * utility function for comparing vCard and iCal files with the external
@@ -271,7 +269,7 @@ class ClientTest {
      */
     static bool compare(ClientTest &client, const char *fileA, const char *fileB);
 
-    struct Config;
+    struct ClientTestConfig config;
 
     /**
      * A derived class can use this call to get default test
@@ -288,241 +286,6 @@ class ClientTest {
      * - itodo20 = iCal 2.0 tasks
      */
     static void getTestData(const char *type, Config &config);
-
-    /**
-     * Information about a data source. For the sake of simplicity all
-     * items pointed to are owned by the ClientTest and must
-     * remain valid throughout a test session. Not setting a pointer
-     * is okay, but it will disable all tests that need the
-     * information.
-     */
-    struct Config {
-        /**
-         * The name is used in test names and has to be set.
-         */
-        const char *sourceName;
-
-        /**
-         * A default URI to be used when creating a client config.
-         */
-        const char *uri;
-
-        /**
-         * A corresponding source name in the default server template,
-         * this is used to copy corresponding uri set in the server template
-         * instead of the uri field above (which is the same for all servers).
-         */
-        const char *sourceNameServerTemplate;
-
-        /**
-         * A member function of a subclass which is called to create a
-         * sync source referencing the data. This is used in tests of
-         * the SyncSource API itself as well as in tests which need to
-         * modify or check the data sources used during synchronization.
-         *
-         * The test framework will call beginSync() and then some of
-         * the functions it wants to test. After a successful test it
-         * will call endSync() which is then expected to store all
-         * changes persistently. Creating a sync source again
-         * with the same call should not report any
-         * new/updated/deleted items until such changes are made via
-         * another sync source.
-         *
-         * The instance will be deleted by the caller. Because this
-         * may be in the error case or in an exception handler,
-         * the sync source's desctructor should not thow exceptions.
-         *
-         * @param client    the same instance to which this config belongs
-         * @param source    index of the data source (from 0 to ClientTest::getNumSources() - 1)
-         * @param isSourceA true if the requested SyncSource is the first one accessing that
-         *                  data, otherwise the second
-         */
-        typedef SyncSource *(*createsource_t)(ClientTest &client, int source, bool isSourceA);
-
-        /**
-         * Creates a sync source which references the primary database;
-         * it may report the same changes as the sync source used during
-         * sync tests.
-         */
-        createsource_t createSourceA;
-
-        /**
-         * A second sync source also referencing the primary data
-         * source, but configured so that it tracks changes
-         * independently from the the primary sync source.
-         *
-         * In local tests the usage is like this:
-         * - add item via first SyncSource
-         * - iterate over new items in second SyncSource
-         * - check that it lists the added item
-         *
-         * In tests with a server the usage is:
-         * - do a synchronization with the server
-         * - iterate over items in second SyncSource
-         * - check that the total number and number of
-         *   added/updated/deleted items is as expected
-         */
-        createsource_t createSourceB;
-
-        /**
-         * The framework can generate vCard and vCalendar/iCalendar items
-         * automatically by copying a template item and modifying certain
-         * properties.
-         *
-         * This is the template for these automatically generated items.
-         * It must contain the string <<REVISION>> which will be replaced
-         * with the revision parameter of the createItem() method.
-         */
-        const char *templateItem;
-
-         /**
-         * This is a colon (:) separated list of properties which need
-         * to be modified in templateItem.
-         */
-        const char *uniqueProperties;
-
-        /**
-         * the number of items to create during stress tests
-         */
-        int numItems;
-
-        /**
-         * This is a single property in templateItem which can be extended
-         * to increase the size of generated items.
-         */
-        const char *sizeProperty;
-
-        /**
-         * Type to be set when importing any of the items into the
-         * corresponding sync sources. Use "" if sync source doesn't
-         * need this information.
-         */
-        const char *itemType;
-
-        /**
-         * A very simple item that is inserted during basic tests. Ideally
-         * it only contains properties supported by all servers.
-         */
-        const char *insertItem;
-
-        /**
-         * A slightly modified version of insertItem. If the source has UIDs
-         * embedded into the item data, then both must have the same UID.
-         * Again all servers should better support these modified properties.
-         */
-        const char *updateItem;
-
-        /**
-         * A more heavily modified version of insertItem. Same UID if necessary,
-         * but can test changes to items only supported by more advanced
-         * servers.
-         */
-        const char *complexUpdateItem;
-
-        /**
-         * To test merge conflicts two different updates of insertItem are
-         * needed. This is the first such update.
-         */
-        const char *mergeItem1;
-
-        /**
-         * The second merge update item. To avoid true conflicts it should
-         * update different properties than mergeItem1, but even then servers
-         * usually have problems perfectly merging items. Therefore the
-         * test is run without expecting a certain merge result.
-         */
-        const char *mergeItem2;
-
-        /**
-         * These two items are related: one is main one, the other is
-         * a subordinate one. The semantic is that the main item is
-         * complete on it its own, while the other normally should only
-         * be used in combination with the main one.
-         *
-         * Because SyncML cannot express such dependencies between items,
-         * a SyncSource has to be able to insert, updated and remove
-         * both items independently. However, operations which violate
-         * the semantic of the related items (like deleting the parent, but
-         * not the child) may have unspecified results (like also deleting
-         * the child). See LINKED_ITEMS_RELAXED_SEMANTIC.
-         *
-         * One example for main and subordinate items are a recurring
-         * iCalendar 2.0 event and a detached recurrence.
-         */
-        const char *parentItem, *childItem;
-
-        /**
-         * define to 0 to disable tests which slightly violate the
-         * semantic of linked items by inserting children
-         * before/without their parent
-         */
-#ifndef LINKED_ITEMS_RELAXED_SEMANTIC
-# define LINKED_ITEMS_RELAXED_SEMANTIC 1
-#endif
-
-        /**
-         * setting this to false disables tests which depend
-         * on the source's support for linked item semantic
-         * (testLinkedItemsInsertParentTwice, testLinkedItemsInsertChildTwice)
-         */
-        bool sourceKnowsItemSemantic;
-
-        /**
-         * called to dump all items into a file, required by tests which need
-         * to compare items
-         *
-         * ClientTest::dump can be used: it will simply dump all items of the source
-         * with a blank line as separator.
-         *
-         * @param source     sync source A already created and with beginSync() called
-         * @param file       a file name
-         * @return error code, 0 for success
-         */
-        int (*dump)(ClientTest &client, SyncSource &source, const char *file);
-
-        /**
-         * import test items: which these are is determined entirely by
-         * the implementor, but tests work best if several complex items are
-         * imported
-         *
-         * ClientTest::import can be used if the file contains items separated by
-         * empty lines.
-         *
-         * @param source     sync source A already created and with beginSync() called
-         * @param file       the name of the file to import
-         * @retval realfile  the name of the file that was really imported;
-         *                   this may depend on the current server that is being tested
-         * @return error code, 0 for success
-         */
-        int (*import)(ClientTest &client, SyncSource &source, const char *file, std::string &realfile);
-
-        /**
-         * a function which compares two files with items in the format used by "dump"
-         *
-         * @param fileA      first file name
-         * @param fileB      second file name
-         * @return true if the content of the files is considered equal
-         */
-        bool (*compare)(ClientTest &client, const char *fileA, const char *fileB);
-
-        /**
-         * a file with test cases in the format expected by import and compare
-         */
-        const char *testcases;
-
-        /**
-         * the item type normally used by the source (not used by the tests
-         * themselves; client-test.cpp uses it to initialize source configs)
-         */
-        const char *type;
-
-        /**
-         * TRUE if the source supports recovery from an interrupted
-         * synchronization. Enables the Client::Sync::*::Retry group
-         * of tests.
-         */
-        bool retrySync;
-    };
 
     /**
      * Data sources are enumbered from 0 to n-1 for the purpose of
@@ -611,7 +374,7 @@ public:
         source(sourceParam),
         isSourceA(isSourceAParam) {}
 
-    SyncSource *operator() () {
+    TestingSyncSource *operator() () {
         CPPUNIT_ASSERT(createSource);
         return createSource(client, source, isSourceA);
     }
@@ -664,21 +427,21 @@ public:
      * @param relaxed   if true, then disable some of the additional checks after adding the item
      * @return the LUID of the inserted item
      */
-    virtual std::string insert(CreateSource createSource, const char *data, const char *dataType, bool relaxed = false);
+    virtual std::string insert(CreateSource createSource, const char *data, bool relaxed = false);
 
     /**
      * assumes that exactly one element is currently inserted and updates it with the given item
      *
      * @param check     if true, then reopen the source and verify that the reported items are as expected
      */
-    virtual void update(CreateSource createSource, const char *data, const char *dataType, bool check = true);
+    virtual void update(CreateSource createSource, const char *data, bool check = true);
 
     /**
      * updates one item identified by its LUID with the given item
      *
      * The type of the item is cleared, as in insert() above.
      */
-    virtual void update(CreateSource createSource, const char *data, const char *dataType, const std::string &luid);
+    virtual void update(CreateSource createSource, const char *data, const std::string &luid);
 
     /** deletes all items locally via sync source */
     virtual void deleteAll(CreateSource createSource);
@@ -692,7 +455,7 @@ public:
      * @param raiseAssert  raise assertion if comparison yields differences (defaults to true)
      * @return true if the two databases are equal
      */
-    virtual bool compareDatabases(const char *refFile, SyncSource &copy, bool raiseAssert = true);
+    virtual bool compareDatabases(const char *refFile, TestingSyncSource &copy, bool raiseAssert = true);
 
     /**
      * insert artificial items, number of them determined by TEST_EVOLUTION_NUM_ITEMS
@@ -750,26 +513,8 @@ public:
 
 };
 
-enum itemType {
-    NEW_ITEMS,
-    UPDATED_ITEMS,
-    DELETED_ITEMS,
-    TOTAL_ITEMS
-};
-
-/**
- * utility function which counts items of a certain kind known to the sync source
- * @param source      valid source ready to iterate; NULL triggers an assert
- * @param itemType    determines which iterator functions are used
- * @return number of valid items iterated over
- */
-int countItemsOfType(SyncSource *source, itemType type);
-
-typedef std::list<std::string> UIDList;
-/**
- * generates list of UIDs in the specified kind of items
- */
-UIDList listItemsOfType(SyncSource *source, itemType type);
+int countItemsOfType(TestingSyncSource *source, int state);
+std::list<std::string> listItemsOfType(TestingSyncSource *source, int state);
 
 /**
  * Tests synchronization with one or more sync sources enabled.
@@ -897,7 +642,7 @@ protected:
     virtual void testOneWayFromServer();
     virtual void testOneWayFromClient();
     bool doConversionCallback(bool *success,
-                              EvolutionSyncClient &client,
+                              SyncContext &client,
                               SyncOptions &options);
     virtual void testConversion();
     virtual void testItems();
@@ -914,6 +659,7 @@ protected:
     }
 
     virtual void testManyItems();
+    virtual void testManyDeletes();
     virtual void testSlowSyncSemantic();
     virtual void testComplexRefreshFromServerSemantic();
 
@@ -943,6 +689,13 @@ protected:
     virtual void testUserSuspendServerUpdate();
     virtual void testUserSuspendFull();
 
+    virtual void testResendClientAdd();
+    virtual void testResendClientRemove();
+    virtual void testResendClientUpdate();
+    virtual void testResendServerAdd();
+    virtual void testResendServerRemove();
+    virtual void testResendServerUpdate();
+    virtual void testResendFull();
 
     /**
      * implements testMaxMsg(), testLargeObject(), testLargeObjectEncoded()
@@ -970,17 +723,17 @@ protected:
  * We use UserSuspendInjector to emulate a user suspend after receving
  * a response.
  */
-class TransportWrapper : public SyncEvolution::TransportAgent {
+class TransportWrapper : public TransportAgent {
 protected:
     int m_interruptAtMessage, m_messageCount;
-    boost::shared_ptr<SyncEvolution::TransportAgent> m_wrappedAgent;
+    boost::shared_ptr<TransportAgent> m_wrappedAgent;
     Status m_status;
     SyncOptions *m_options;
 public:
     TransportWrapper() {
         m_messageCount = 0;
         m_interruptAtMessage = -1;
-        m_wrappedAgent = boost::shared_ptr<SyncEvolution::TransportAgent>();
+        m_wrappedAgent = boost::shared_ptr<TransportAgent>();
         m_status = INACTIVE;
         m_options = NULL;
     }
@@ -990,25 +743,23 @@ public:
     virtual int getMessageCount() { return m_messageCount; }
 
     virtual void setURL(const std::string &url) { m_wrappedAgent->setURL(url); }
-    virtual void setProxy(const std::string &proxy) { m_wrappedAgent->setProxy(proxy); }
-    virtual void setProxyAuth(const std::string &user,
-                              const std::string &password) { m_wrappedAgent->setProxyAuth(user, password); }
-    virtual void setSSL(const std::string &cacerts,
-                        bool verifyServer,
-                        bool verifyHost) { m_wrappedAgent->setSSL(cacerts, verifyServer, verifyHost); }
     virtual void setContentType(const std::string &type) { m_wrappedAgent->setContentType(type); }
-    virtual void setUserAgent(const::string &agent) { m_wrappedAgent->setUserAgent(agent); }
-    virtual void setAgent(boost::shared_ptr<SyncEvolution::TransportAgent> agent) {m_wrappedAgent = agent;}
+    virtual void setAgent(boost::shared_ptr<TransportAgent> agent) {m_wrappedAgent = agent;}
     virtual void setSyncOptions(SyncOptions *options) {m_options = options;}
     virtual void setInterruptAtMessage (int interrupt) {m_interruptAtMessage = interrupt;}
     virtual void cancel() { m_wrappedAgent->cancel(); }
-    virtual void reset() {
+    virtual void shutdown() { m_wrappedAgent->shutdown(); }
+
+    virtual void rewind() {
         m_messageCount = 0;
         m_interruptAtMessage = -1;
         m_status = INACTIVE;
         m_options = NULL;
+        m_wrappedAgent.reset();
     }
-    virtual Status wait() { return m_status; }
+    virtual Status wait(bool noReply = false) { return m_status; }
+    virtual void setCallback (TransportCallback cb, void *udata, int interval) 
+    { return m_wrappedAgent->setCallback(cb, udata, interval);}
 };
 
 /** assert equality, include string in message if unequal */
@@ -1023,30 +774,29 @@ public:
 #define SOURCE_ASSERT_NO_FAILURE(_source, _x) \
 { \
     CPPUNIT_ASSERT_NO_THROW(_x); \
-    CPPUNIT_ASSERT((_source) && !(_source)->hasFailed()); \
+    CPPUNIT_ASSERT((_source)); \
 }
 
 /** check _x for true and then the status of the _source pointer */
 #define SOURCE_ASSERT(_source, _x) \
 { \
     CPPUNIT_ASSERT(_x); \
-    CPPUNIT_ASSERT((_source) && !(_source)->hasFailed()); \
+    CPPUNIT_ASSERT((_source)); \
 }
 
 /** check that _x evaluates to a specific value and then the status of the _source pointer */
 #define SOURCE_ASSERT_EQUAL(_source, _value, _x) \
 { \
     CPPUNIT_ASSERT_EQUAL(_value, _x); \
-    CPPUNIT_ASSERT((_source) && !(_source)->hasFailed()); \
+    CPPUNIT_ASSERT((_source)); \
 }
 
 /** same as SOURCE_ASSERT() with a specific failure message */
 #define SOURCE_ASSERT_MESSAGE(_message, _source, _x)     \
 { \
     CPPUNIT_ASSERT_MESSAGE((_message), (_x)); \
-    CPPUNIT_ASSERT((_source) && !(_source)->hasFailed()); \
+    CPPUNIT_ASSERT((_source)); \
 }
-
 
 /**
  * convenience macro for adding a test name like a function,
@@ -1060,6 +810,8 @@ public:
 
 #define ADD_TEST_TO_SUITE(_suite, _class, _function) \
     _suite->addTest(FilterTest(new CppUnit::TestCaller<_class>(_suite->getName() + "::" #_function, &_class::_function, *this)))
+
+SE_END_CXX
 
 #endif // ENABLE_INTEGRATION_TESTS
 #endif // INCL_TESTSYNCCLIENT

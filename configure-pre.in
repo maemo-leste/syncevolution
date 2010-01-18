@@ -1,7 +1,7 @@
 dnl -*- mode: Autoconf; -*-
 dnl Invoke autogen.sh to produce a configure script.
 
-AC_INIT([syncevolution], [0.9])
+AC_INIT([syncevolution], [0.9.2+1.0alpha1])
 AM_INIT_AUTOMAKE([tar-ustar])
 AC_CONFIG_MACRO_DIR([m4])
 define([SYNTHESISSRC_REPO], [])
@@ -12,7 +12,7 @@ AM_CONFIG_HEADER(config.h)
 AC_LIBTOOL_DLOPEN
 
 dnl default device type (see AC_DEFINE below)
-DEVICE_TYPE=desktop
+DEVICE_TYPE=workstation
 
 AC_ARG_WITH(synthesis-src,
             AS_HELP_STRING([--with-synthesis-src=<base directory|svn URL|git URL>],
@@ -28,7 +28,18 @@ AC_ARG_WITH(synthesis-src,
                            update that working copy if the directory already exists.
                            Default: bundled source in src/synthesis (in released SyncEvolution sources),
                            SYNTHESISSRC_REPO otherwise.]),
-            [SYNTHESISSRC="$withval"], [SYNTHESISSRC="$SYNTHESISSRC_DEF"; REVISION="SYNTHESISSRC_REVISION"])
+            [SYNTHESISSRC="$withval"
+             test "$SYNTHESISSRC" != "yes" || AC_MSG_ERROR([--with-synthesis-src requires a parameter (base directory, svn URL or git URL)])],
+            [SYNTHESISSRC="$SYNTHESISSRC_DEF"; REVISION="SYNTHESISSRC_REVISION"])
+
+AC_ARG_WITH(syncml-engines,
+            AS_HELP_STRING([--with-syncml-engines=client|server|both],
+                           [Determines which kind of support for SyncML is compiled and linked into SyncEvolution. Default is both. Currently has no effect.]),
+            [SYNCML_ENGINES="$withval"], SYNCML_ENGINES=both)
+
+case $SYNCML_ENGINES in both|client) AC_DEFINE(ENABLE_SYNCML_CLIENT, 1, [SyncML client support available]);; esac
+case $SYNCML_ENGINES in both|server) AC_DEFINE(ENABLE_SYNCML_SERVER, 1, [SyncML server support available]);; esac
+case $SYNCML_ENGINES in both|server|client) true;; *) AC_ERROR([Invalid value for --with-syncml-engines: $SYNCML_ENGINES]);; esac
 
 AC_ARG_WITH(synthesis-username,
             AS_HELP_STRING([--with-synthesis-username=<svn username>],
@@ -69,6 +80,11 @@ AC_ARG_ENABLE(evolution-compatibility,
                              [build executables which only call Evolution via dlopen/dlsym: this avoids all hard dependencies on EDS shared objects, but might lead to crashes when their ABI changes]),
               enable_evolution_compatibility="$enableval", enable_evolution_compatibility="no")
 
+AC_ARG_ENABLE(developer-mode, 
+             AC_HELP_STRING([--enable-developer-mode], 
+                            [The dynamic loadble backend libraries is loaded from current build directory instead of the standard library path]),
+             enable_developer_mode="$enableval", enable_developer_mode="no")
+
 # Maemo hacks:
 # - set the (non-standard!) DBUS_DEFAULT_TIMEOUT
 # - wrap e_book_from_string() to fix invalid parameter
@@ -103,13 +119,6 @@ if test $enable_static_cxx == "yes"; then
 fi
 AC_SUBST(CORE_LDADD_DEP)
 
-# preserve src/synthesis by default,
-# always
-CLEAN_SYNTHESIS_SRC=
-SYNTHESIS_LIB=$PWD/src/build-synthesis/src/libsynthesissdk.la
-
-AC_SUBST(CLEAN_CLIENT_SRC)
-
 # Check for transport layer.
 # Both curl and libsoup can be enabled and disabled explicitly.
 # The default is to use libsoup if available, otherwise curl.
@@ -129,6 +138,22 @@ PKG_CHECK_MODULES(LIBSOUP, libsoup-gnome-2.4,
                   [PKG_CHECK_MODULES(LIBSOUP, libsoup-2.4,
                                      have_libsoup="yes",
                                      have_libsoup="no")])
+
+PKG_CHECK_MODULES(LIBOPENOBEX, openobex, have_obex="yes", have_obex="no")
+if test $have_obex == "yes"; then
+AC_DEFINE(ENABLE_OBEX, 1, [define if openobex library is available])
+    PKG_CHECK_MODULES(BLUEZ, bluez, have_bluez="yes", have_bluez="no")
+    if test $have_bluez == "yes"; then
+    AC_DEFINE(ENABLE_BLUETOOTH, 1, [define if bluez library is available])
+    fi
+fi
+AM_CONDITIONAL([ENABLE_OBEX], [test "$have_obex" = "yes"])
+AM_CONDITIONAL([ENABLE_BLUETOOTH], [test "$have_bluez" = "yes"])
+AC_SUBST(LIBOPENOBEX_CFLAGS)
+AC_SUBST(LIBOPENOBEX_LIBS)
+AC_SUBST(BLUEZ_CFLAGS)
+AC_SUBST(BLUEZ_LIBS)
+
 TRANSPORT=
 TRANSPORT_LIBS=
 TRANSPORT_CFLAGS=
@@ -189,7 +214,8 @@ AC_ARG_ENABLE(libsoup,
 
 if test ! "$TRANSPORT" &&
    test "$libsoup_disabled" != "yes" &&
-   test "$libcurl_disabled" != "yes"; then
+   test "$libcurl_disabled" != "yes" &&
+   test "$have_bluez" != "yes" ; then
    AC_ERROR([no transport library found, configure with --disable-libcurl --disable-libsoup to continue anyway (only useful if users of libsyncevolution provide transport implementation)])
 fi
 
@@ -202,6 +228,20 @@ AC_DEFINE_UNQUOTED(SYNCEVOLUTION_SSL_SERVER_CERTIFICATES, "$CA_CERTIFICATES", [d
 
 AC_SUBST(TRANSPORT_LIBS)
 AC_SUBST(TRANSPORT_CFLAGS)
+
+AC_ARG_ENABLE(ssl-certificate-check,
+              AC_HELP_STRING([--disable-ssl-certificate-check],
+                             [Disable SSL certificate checking in all server
+                              *templates*.  Users can still choose to enable or
+                              disable it in their configuration. This is necessary on
+                              platforms where the transport library has problems
+                              verifying the server's certificate (libsoup + Google,
+                              http://bugzilla.moblin.org/show_bug.cgi?id=4551)]),
+             enable_ssl_certificate_check="$enableval",
+             enable_ssl_certificate_check="yes")
+if test "$enable_ssl_certificate_check" = "yes"; then
+   AC_DEFINE(ENABLE_SSL_CERTIFICATE_CHECK, 1, [enable SSL certificate check in server templates])
+fi
 
 # for dbus interface file mangling
 AC_PATH_PROG(XSLT, xsltproc)
@@ -231,10 +271,6 @@ AC_ARG_ENABLE(gui,
 
 AM_CONDITIONAL([COND_GUI], [test "$enable_gui" != "no"])
 
-if test $enable_gui == "moblin"; then
-    AC_DEFINE(USE_MOBLIN_UX, 1, [Use the MUX widget library])
-fi
-
 AC_ARG_ENABLE(dbus-service,
               AS_HELP_STRING([--enable-dbus-service],
                              [enables building the dbus service executable and the wrapper library for it]),
@@ -250,18 +286,31 @@ if test $enable_gui != "no" && test $enable_dbus_service == "no"; then
    AC_ERROR([cannot build GUI without building the D-Bus service])
 fi
 
-if test $enable_dbus_service == "yes"; then
-    PKG_CHECK_MODULES(KEYRING, [gnome-keyring-1], HAVE_KEYRING=yes, HAVE_KEYRING=no)
-    if test $HAVE_KEYRING == "yes"; then
-        AC_DEFINE(USE_GNOME_KEYRING, 1, [define if gnome keyring should be used in dbus service])
+PKG_CHECK_MODULES(KEYRING, [gnome-keyring-1], HAVE_KEYRING=yes, HAVE_KEYRING=no)
+if test $HAVE_KEYRING == "yes"; then
+    AC_DEFINE(USE_GNOME_KEYRING, 1, [define if gnome keyring should be used in dbus service])
+    PKG_CHECK_MODULES([KEYRING_2_20], [gnome-keyring-1 >= 2.20 ], KEYRING220=yes, KEYRING220=no)
+    if test $KEYRING220 == "yes"; then
+        AC_DEFINE(GNOME_KEYRING_220, 1, [define if gnome keyring version is above 2.20])
     fi
+fi
+
+if test $enable_dbus_service == "yes"; then
     PKG_CHECK_MODULES(DBUS_GLIB, dbus-glib-1 glib-2.0)
     AC_PATH_PROG(DBUS_BINDING_TOOL, dbus-binding-tool)
     AC_PATH_PROG(GLIB_GENMARSHAL, glib-genmarshal)
     if test -z "$XSLT"; then
        AC_ERROR([xsltproc not found, is required for D-Bus service])
     fi
+    PKG_CHECK_MODULES(DBUS, dbus-1, dummy=yes,
+                      AC_MSG_ERROR(libdbus-1 is required))
+    AC_CHECK_LIB(dbus-1, dbus_watch_get_unix_fd, dummy=yes,
+                 AC_DEFINE(NEED_DBUS_WATCH_GET_UNIX_FD, 1,
+                 [Define to 1 if you need the dbus_watch_get_unix_fd() function.]))
+    need_glib=yes
 fi
+AC_SUBST(DBUS_CFLAGS)
+AC_SUBST(DBUS_LIBS)
 AC_SUBST(DBUS_GLIB_CFLAGS)
 AC_SUBST(DBUS_GLIB_LIBS)
 AC_SUBST(KEYRING_CFLAGS) 
@@ -282,7 +331,10 @@ case $enable_gui in
 esac
 
 if test $enable_gui != "no"; then
-    gui_modules="glib-2.0 dbus-glib-1 >= 0.60 gtk+-2.0 libglade-2.0 gconf-2.0 gio-2.0 gnome-keyring-1"
+    gui_modules="glib-2.0 dbus-glib-1 >= 0.60 gtk+-2.0 libglade-2.0 gio-2.0"
+    if test $enable_gui == "moblin"; then
+        AC_DEFINE(USE_MOBLIN_UX, 1, [Use Moblin UI widgets])
+    fi
 
     PKG_CHECK_MODULES(UNIQUE, unique-1.0,
                       have_unique="yes",
@@ -379,12 +431,22 @@ elif test "$SYNTHESISSRC" != "none" && test -d $srcdir/src/synthesis; then
          /*) SYNTHESIS_SRC="$srcdir/src/synthesis";;
          *) SYNTHESIS_SRC="$PWD/$srcdir/src/synthesis";;
     esac
-else
+elif test "$enable_shared" = "no"; then
+    # link against engine
     PKG_CHECK_MODULES(SYNTHESIS, "synthesis")
+    SYNTHESIS_ENGINE="$SYNTHESIS_LIBS -lsynthesis"
+else
+    # link against SDK alone, except in client-test
+    #PKG_CHECK_MODULES(SYNTHESIS, "synthesis-sdk")
+    #SYNTHESIS_ENGINE="`echo $SYNTHESIS_LIBS | sed -e 's/-lsynthesisstubs/-lsynthesis/'`"
+
+    # can't use the SDK alone because of sysync::SySyncDebugPuts()
+    PKG_CHECK_MODULES(SYNTHESIS, "synthesis")
+    SYNTHESIS_ENGINE="$SYNTHESIS_LIBS"
 fi
 
 if test $SYNTHESIS_SRC != "no-synthesis-source"; then
-    ( cd $SYNTHESIS_SRC && ( test -f configure || sh autogen.sh ) ) || AC_MSG_ERROR([no configure script in $SYNTHESIS_SRC])
+    ( cd $SYNTHESIS_SRC && ( test -f configure || sh autogen.sh ) ) || AC_MSG_ERROR([--with-synthesis-src=$SYNTHESIS_SRC: no Synthesis configure script found in that directory])
 
     SYNTHESIS_CONFIGURE="$SYNTHESIS_SRC/configure"
     chmod u+x $SYNTHESIS_SRC/configure $SYNTHESIS_SRC/config.sub $SYNTHESIS_SRC/config.guess
@@ -392,10 +454,24 @@ if test $SYNTHESIS_SRC != "no-synthesis-source"; then
     # use local copy of the sources, with dependencies
     # to trigger building the synthesis library
     SYNTHESIS_SUBDIR=$PWD/src/build-synthesis
-    SYNTHESIS_DEP=$PWD/src/build-synthesis/src/libsynthesissdk.la
-
     SYNTHESIS_CFLAGS="-I$SYNTHESIS_SUBDIR/src"
-    SYNTHESIS_LIBS="-L$SYNTHESIS_SUBDIR/src -lsynthesissdk -lsynthesis"
+    SYNTHESIS_LIBS="$SYNTHESIS_SUBDIR/src/libsynthesissdk.la"
+
+    if test "$enable_shared" = "no"; then
+        # link against the engines that were enabled
+        case $SYNCML_ENGINES in both|client|server) SYNTHESIS_LIBS="$SYNTHESIS_LIBS $SYNTHESIS_SUBDIR/src/libsynthesis.la";; esac
+        AC_DEFINE(ENABLE_SYNCML_LINKED, 1, [SyncML engines are linked directly])
+    else
+        # It would be nice if we could avoid linking against libsynthesis.la here.
+        # This doesn't work at the moment because sysync::SySyncDebugPuts()
+        # is called directly by the libsynthesissdk instead of going through
+        # the normal C function pointer lookup.
+        SYNTHESIS_LIBS="$SYNTHESIS_LIBS $SYNTHESIS_SUBDIR/src/libsynthesis.la"
+    fi
+    SYNTHESIS_DEP=$SYNTHESIS_LIBS
+
+    # for linking client-test
+    SYNTHESIS_ENGINE="$SYNTHESIS_SUBDIR/src/libsynthesis.la"
 
     AC_MSG_NOTICE( [configuring the Synthesis library] )
     if (set -x; mkdir -p $SYNTHESIS_SUBDIR && cd $SYNTHESIS_SUBDIR && eval "\$SHELL \"\$SYNTHESIS_CONFIGURE\" $ac_configure_args \"--srcdir=\$SYNTHESIS_SRC\" " ); then true; else
@@ -408,6 +484,7 @@ AC_SUBST(SYNTHESIS_LIBS)
 AC_SUBST(SYNTHESIS)
 AC_SUBST(SYNTHESIS_SUBDIR)
 AC_SUBST(SYNTHESIS_DEP)
+AC_SUBST(SYNTHESIS_ENGINE)
 AC_SUBST(SYNTHESIS_LIB)
 AC_SUBST(SYNTHESISSRC)
 
@@ -435,7 +512,7 @@ AC_DEFUN([AC_ARG_ENABLE_BACKEND],
 AC_SUBST(SYNCSOURCES)
 AC_SUBST(BACKEND_DEFINES)
 
-BACKEND_CPPFLAGS="$SYNTHESIS_CFLAGS $EPACKAGE_CFLAGS $EBOOK_CFLAGS $ECAL_CFLAGS $GLIB_CFLAGS"
+BACKEND_CPPFLAGS="$SYNTHESIS_CFLAGS $EPACKAGE_CFLAGS $EBOOK_CFLAGS $ECAL_CFLAGS $GLIB_CFLAGS $BOOST_CPPFLAGS"
 AC_SUBST(BACKEND_CPPFLAGS)
 
 dnl src/backends/*/configure-sub.in and configure-post.in follow

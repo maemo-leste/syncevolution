@@ -1,4 +1,4 @@
-syncevolution (1.0+ds1~a1-1) unstable; urgency=low
+syncevolution (1.0+ds1~a1-1) experimental; urgency=low
 
   * New Upstream Version
   * Development snapshot, use with caution.

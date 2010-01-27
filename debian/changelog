@@ -1,3 +1,11 @@
+syncevolution (1.0+ds1~a1-2) experimental; urgency=low
+
+  * Don't build depend on libopenobex1-dev on kfreebsd-*. This avoids
+    trying to compile bluetooth support, which relies on bluez 
+    (Closes: #566940)
+
+ -- David Bremner <bremner@unb.ca>  Tue, 26 Jan 2010 23:28:44 -0400
+
 syncevolution (1.0+ds1~a1-1) experimental; urgency=low
 
   * New Upstream Version

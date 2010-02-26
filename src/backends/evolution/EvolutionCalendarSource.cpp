@@ -209,6 +209,15 @@ void EvolutionCalendarSource::open()
                            (void *)"Evolution Data Server has died unexpectedly, database no longer available.");
 }
 
+bool EvolutionCalendarSource::isEmpty()
+{
+    // TODO: add more efficient implementation which does not
+    // depend on actually pulling all items from EDS
+    RevisionMap_t revisions;
+    listAllItems(revisions);
+    return revisions.empty();
+}
+
 void EvolutionCalendarSource::listAllItems(RevisionMap_t &revisions)
 {
     GError *gerror = NULL;
@@ -555,12 +564,33 @@ void EvolutionCalendarSource::removeItem(const string &luid)
         }
     }
     m_allLUIDs.erase(luid);
+
+    if (!id.m_rid.empty()) {
+        // Removing the child may have modified the parent.
+        // We must record the new LAST-MODIFIED string,
+        // otherwise it might be reported as modified during
+        // the next sync (timing dependent: if the parent
+        // was updated before removing the child *and* the
+        // update and remove fall into the same second,
+        // then the modTime does not change again during the
+        // removal).
+        try {
+            ItemID parent(id.m_uid, "");
+            string modTime = getItemModTime(parent);
+            string parentLUID = parent.getLUID();
+            updateRevision(getTrackingNode(), parentLUID, parentLUID, modTime);
+        } catch (...) {
+            // There's no guarantee that the parent still exists.
+            // Instead of checking that, ignore errors (a bit hacky,
+            // but better than breaking the removal).
+        }
+    }
 }
 
 icalcomponent *EvolutionCalendarSource::retrieveItem(const ItemID &id)
 {
     GError *gerror = NULL;
-    icalcomponent *comp;
+    icalcomponent *comp = NULL;
 
     if (!e_cal_get_object(m_calendar,
                           id.m_uid.c_str(),
@@ -582,8 +612,32 @@ string EvolutionCalendarSource::retrieveItemAsString(const ItemID &id)
     eptr<char> icalstr;
 
     icalstr = e_cal_get_component_as_string(m_calendar, comp);
+
     if (!icalstr) {
-        throwError(string("could not encode item as iCal: ") + id.getLUID());
+        // One reason why e_cal_get_component_as_string() can fail is
+        // that it uses a TZID which has no corresponding VTIMEZONE
+        // definition. Evolution GUI ignores the TZID and interprets
+        // the times as local time. Do the same when exporting the
+        // event by removing the bogus TZID.
+        icalproperty *prop = icalcomponent_get_first_property (comp,
+                                                               ICAL_ANY_PROPERTY);
+
+        while (prop) {
+            icalparameter *param = icalproperty_get_first_parameter(prop,
+                                                                    ICAL_TZID_PARAMETER);
+            while (param) {
+                icalproperty_remove_parameter_by_kind(prop, ICAL_TZID_PARAMETER);
+                param = icalproperty_get_next_parameter (prop, ICAL_TZID_PARAMETER);
+            }
+            prop = icalcomponent_get_next_property (comp,
+                                                    ICAL_ANY_PROPERTY);
+        }
+
+        // now try again
+        icalstr = icalcomponent_as_ical_string(comp);
+        if (!icalstr) {
+            throwError(string("could not encode item as iCalendar: ") + id.getLUID());
+        }
     }
 
     /*

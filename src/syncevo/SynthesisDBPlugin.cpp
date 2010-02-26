@@ -516,7 +516,7 @@ TSyError SyncEvolution_InsertMapItem( CContext aContext, cMapID mID )
         res = source->handleException();
     }
 
-    SE_LOG_DEBUG(source, NULL, "'%s' '%s' %04X %d, res=%d", 
+    SE_LOG_DEBUG(source, NULL, "InsertMapItem '%s' '%s' %04X %d, res=%d", 
                  mID->localID, mID->remoteID, mID->flags, mID->ident, res);
     return res;
 } /* InsertMapItem */
@@ -539,7 +539,7 @@ TSyError SyncEvolution_UpdateMapItem( CContext aContext, cMapID mID )
         res = source->handleException();
     }
 
-    SE_LOG_DEBUG(source, "UpdateMapItem '%s' '%s' %04X %d, res=%d", 
+    SE_LOG_DEBUG(source, NULL, "UpdateMapItem '%s' '%s' %04X %d, res=%d", 
                  mID->localID, mID->remoteID, mID->flags, mID->ident, res);
 
     return res;
@@ -637,6 +637,10 @@ TSyError SyncEvolution_StartDataRead( CContext aContext, cAppCharP   lastToken,
     }
     TSyError res = LOCERR_OK;
     try {
+        BOOST_FOREACH(const SyncSource::Operations::CallbackFunctor_t &callback,
+                      source->getOperations().m_startAccess) {
+            callback();
+        }
         if (source->getOperations().m_startDataRead) {
             res = source->getOperations().m_startDataRead(lastToken, resumeToken);
         }

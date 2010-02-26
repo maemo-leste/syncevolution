@@ -34,6 +34,7 @@
 #include <string>
 #include <utility>
 #include <exception>
+#include <list>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -110,6 +111,13 @@ bool ReadFile(const string &filename, string &content);
  * Simple string hash function, derived from Dan Bernstein's algorithm.
  */
 unsigned long Hash(const char *str);
+unsigned long Hash(const std::string &str);
+
+/**
+ * SHA-256 implementation, returning hash as lowercase hex string (like sha256sum).
+ * Might not be available, in which case it raises an exception.
+ */
+std::string SHA_256(const std::string &in);
 
 /**
  * This is a simplified implementation of a class representing and calculating
@@ -240,6 +248,20 @@ inline string getHome() {
  * */
 std::vector<std::string> unescapeJoinedString (const std::string &src, char separator);
 
+/**
+ * Temporarily set env variable, restore old value on destruction.
+ * Useful for unit tests which depend on the environment.
+ */
+class ScopedEnvChange
+{
+ public:
+    ScopedEnvChange(const string &var, const string &value);
+    ~ScopedEnvChange();
+ private:
+    string m_var, m_oldval;
+    bool m_oldvalset;
+};
+
 /** throw a normal SyncEvolution Exception, including source information */
 #define SE_THROW(_what) \
     SE_THROW_EXCEPTION(Exception, _what)
@@ -247,7 +269,6 @@ std::vector<std::string> unescapeJoinedString (const std::string &src, char sepa
 /** throw a class which accepts file, line, what parameters */
 #define SE_THROW_EXCEPTION(_class,  _what) \
     throw _class(__FILE__, __LINE__, _what)
-
 
 SE_END_CXX
 #endif // INCL_SYNCEVOLUTION_UTIL

@@ -89,7 +89,7 @@ bool Cmdline::parse()
                            m_argv[opt - 1], opt == m_argc ? NULL : m_argv[opt])) {
                 return false;
             }
-        } else if(boost::iequals(m_argv[opt], "--template") ||
+        }else if(boost::iequals(m_argv[opt], "--template") ||
                   boost::iequals(m_argv[opt], "-l")) {
             opt++;
             if (opt >= m_argc) {
@@ -98,12 +98,15 @@ bool Cmdline::parse()
             }
             m_template = m_argv[opt];
             m_configure = true;
-            if (boost::trim_copy(m_template) == "?") {
-                dumpServers("Available configuration templates:",
-                            SyncConfig::getServerTemplates());
+            string temp = boost::trim_copy (m_template);
+            if (temp.find ("?") == 0){
+                m_printTemplates = true;
                 m_dontrun = true;
+                m_template = temp.substr (1);
             }
-        } else if(boost::iequals(m_argv[opt], "--print-servers")) {
+        } else if(boost::iequals(m_argv[opt], "--print-servers") ||
+                  boost::iequals(m_argv[opt], "--print-peers") ||
+                  boost::iequals(m_argv[opt], "--print-configs")) {
             m_printServers = true;
         } else if(boost::iequals(m_argv[opt], "--print-config") ||
                   boost::iequals(m_argv[opt], "-p")) {
@@ -185,8 +188,19 @@ bool Cmdline::run() {
         printf("%s", EDSAbiWrapperInfo());
         printf("%s", SyncSource::backendsInfo().c_str());
     } else if (m_printServers || boost::trim_copy(m_server) == "?") {
-        dumpServers("Configured servers:",
-                    SyncConfig::getServers());
+        dumpConfigs("Configured servers:",
+                    SyncConfig::getConfigs());
+    } else if (m_printTemplates) {
+        SyncConfig::DeviceList devices;
+        if (m_template.empty()){
+            dumpConfigTemplates("Available configuration templates:",
+                    SyncConfig::getPeerTemplates(devices), false);
+        } else {
+            //limiting at templates for syncml clients only.
+            devices.push_back (SyncConfig::DeviceDescription("", m_template, SyncConfig::MATCH_FOR_SERVER_MODE));
+            dumpConfigTemplates("Available configuration templates:",
+                    SyncConfig::matchPeerTemplates(devices), true);
+        }
     } else if (m_dontrun) {
         // user asked for information
     } else if (m_argc == 1) {
@@ -236,7 +250,7 @@ bool Cmdline::run() {
             string peer, context;
             SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_template), peer, context);
 
-            config = SyncConfig::createServerTemplate(peer);
+            config = SyncConfig::createPeerTemplate(peer);
             if (!config.get()) {
                 m_err << "ERROR: no configuration template for '" << m_template << "' available." << endl;
                 return false;
@@ -249,7 +263,7 @@ bool Cmdline::run() {
             m_sources.find("main") != m_sources.end()) {
             boost::shared_ptr<FilterConfigNode> syncProps(config->getProperties());
             syncProps->setFilter(syncFilter);
-            dumpProperties(*syncProps, config->getRegistry());
+            dumpProperties(*syncProps, config->getRegistry(), false);
         }
 
         list<string> sources = config->getSyncSources();
@@ -266,7 +280,8 @@ bool Cmdline::run() {
                 } else {
                     sourceProps->setFilter(sourceFilters[""]);
                 }
-                dumpProperties(*sourceProps, SyncSourceConfig::getRegistry());
+                dumpProperties(*sourceProps, SyncSourceConfig::getRegistry(),
+                               name != *(--sources.end()));
             }
         }
     } else if (m_server == "" && m_argc > 1) {
@@ -340,11 +355,11 @@ bool Cmdline::run() {
                 fromScratch = true;
                 string configTemplate = m_template.empty() ? m_server : m_template;
                 SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configTemplate), peer, context);
-                from = SyncConfig::createServerTemplate(peer);
+                from = SyncConfig::createPeerTemplate(peer);
                 if (!from.get()) {
                     m_err << "ERROR: no configuration template for '" << configTemplate << "' available." << endl;
-                    dumpServers("Available configuration templates:",
-                                SyncConfig::getServerTemplates());
+                    dumpConfigTemplates("Available configuration templates:",
+                                SyncConfig::getPeerTemplates(SyncConfig::DeviceList()));
                     return false;
                 }
 
@@ -762,21 +777,41 @@ void Cmdline::listSources(SyncSource &syncSource, const string &header)
     }
 }
 
-void Cmdline::dumpServers(const string &preamble,
-                                       const SyncConfig::ServerList &servers)
+void Cmdline::dumpConfigs(const string &preamble,
+                                       const SyncConfig::ConfigList &servers)
 {
     m_out << preamble << endl;
-    BOOST_FOREACH(const SyncConfig::ServerList::value_type &server,servers) {
-        m_out << "   "  << server.first << " = " << server.second << endl;
+    BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server,servers) {
+        m_out << "   "  << server.first << " = " << server.second <<endl; 
     }
     if (!servers.size()) {
         m_out << "   none" << endl;
     }
 }
 
-void Cmdline::dumpProperties(const ConfigNode &configuredProps,
-                                          const ConfigPropertyRegistry &allProps)
+void Cmdline::dumpConfigTemplates(const string &preamble,
+                                       const SyncConfig::TemplateList &templates,
+                                       bool printRank)
 {
+    m_out << preamble << endl;
+    BOOST_FOREACH(const SyncConfig::TemplateList::value_type server,templates) {
+        m_out << "   "  << server->m_name << " = " << server->m_description;
+        if (printRank){
+            m_out << "    " << server->m_rank;
+        }
+        m_out << endl;
+    }
+    if (!templates.size()) {
+        m_out << "   none" << endl;
+    }
+}
+
+void Cmdline::dumpProperties(const ConfigNode &configuredProps,
+                             const ConfigPropertyRegistry &allProps,
+                             bool hideLegend)
+{
+    list<string> perPeer, perContext, global;
+
     BOOST_FOREACH(const ConfigProperty *prop, allProps) {
         if (prop->isHidden()) {
             continue;
@@ -794,6 +829,39 @@ void Cmdline::dumpProperties(const ConfigNode &configuredProps,
             m_out << "# ";
         }
         m_out << prop->getName() << " = " << prop->getProperty(configuredProps) << endl;
+
+        list<string> *type = NULL;
+        switch (prop->getSharing()) {
+        case ConfigProperty::GLOBAL_SHARING:
+            type = &global;
+            break;
+        case ConfigProperty::SOURCE_SET_SHARING:
+            type = &perContext;
+            break;
+        case ConfigProperty::NO_SHARING:
+            type = &perPeer;
+            break;
+        }
+        if (type) {
+            type->push_back(prop->getName());
+        }
+    }
+
+    if (!m_quiet && !hideLegend) {
+        if (!perPeer.empty() ||
+            !perContext.empty() ||
+            !global.empty()) {
+            m_out << endl;
+        }
+        if (!perPeer.empty()) {
+            m_out << "# per-peer (unshared) properties: " << boost::join(perPeer, ", ") << endl;
+        }
+        if (!perContext.empty()) {
+            m_out << "# shared by peers in same context: " << boost::join(perContext, ", ") << endl;
+        }
+        if (!global.empty()) {
+            m_out << "# global properties: " << boost::join(global, ", ") << endl;
+        }
     }
 }
 
@@ -815,22 +883,22 @@ void Cmdline::usage(bool full, const string &error, const string &param)
     out << "Show available sources:" << endl;
     out << "  " << m_argv[0] << endl;
     out << "Show information about configuration(s) and sync sessions:" << endl;
-    out << "  " << m_argv[0] << " --print-servers" << endl;
-    out << "  " << m_argv[0] << " --print-config [--quiet] <server> [sync|<source ...]" << endl;
-    out << "  " << m_argv[0] << " --print-sessions [--quiet] <server>" << endl;
+    out << "  " << m_argv[0] << " --print-servers|--print-configs|--print-peers" << endl;
+    out << "  " << m_argv[0] << " --print-config [--quiet] <config> [main|<source ...]" << endl;
+    out << "  " << m_argv[0] << " --print-sessions [--quiet] <config>" << endl;
     out << "Show information about SyncEvolution:" << endl;
     out << "  " << m_argv[0] << " --help|-h" << endl;
     out << "  " << m_argv[0] << " --version" << endl;
     out << "Run a synchronization:" << endl;
-    out << "  " << m_argv[0] << " <server> [<source> ...]" << endl;
-    out << "  " << m_argv[0] << " --run <options for run> <server> [<source> ...]" << endl;
+    out << "  " << m_argv[0] << " <config> [<source> ...]" << endl;
+    out << "  " << m_argv[0] << " --run <options for run> <config> [<source> ...]" << endl;
     out << "Restore data from the automatic backups:" << endl;
-    out << "  " << m_argv[0] << " --restore <session directory> --before|--after [--dry-run] <server> <source> ..." << endl;
+    out << "  " << m_argv[0] << " --restore <session directory> --before|--after [--dry-run] <config> <source> ..." << endl;
     out << "Remove a configuration:" << endl;
-    out << "  " << m_argv[0] << " --remove <server>" << endl;
+    out << "  " << m_argv[0] << " --remove <config>" << endl;
     out << "Modify configuration:" << endl;
-    out << "  " << m_argv[0] << " --configure <options for configuration> <server> [<source> ...]" << endl;
-    out << "  " << m_argv[0] << " --migrate <server>" << endl;
+    out << "  " << m_argv[0] << " --configure <options for configuration> <config> [<source> ...]" << endl;
+    out << "  " << m_argv[0] << " --migrate <config>" << endl;
     if (full) {
         out << endl <<
             "Options:" << endl <<
@@ -840,27 +908,27 @@ void Cmdline::usage(bool full, const string &error, const string &param)
             "  for a \"refresh-from-server\" or \"refresh-from-client\" sync which" << endl <<
             "  clears all data at one end and copies all items from the other." << endl <<
             "" << endl <<
-            "--print-servers" << endl <<
-            "  Prints the names of all configured servers to stdout." << endl <<
+            "--print-servers|--print-configs|--print-peers" << endl <<
+            "  Prints the names of all configured peers to stdout." << endl <<
             "" << endl <<
             "--print-config|-p" << endl <<
-            "  Prints the complete configuration for the selected server" << endl <<
+            "  Prints the complete configuration for the selected peer" << endl <<
             "  to stdout, including up-to-date comments for all properties. The" << endl <<
             "  format is the normal .ini format with source configurations in" << endl <<
             "  different sections introduced with [<source>] lines. Can be combined" << endl <<
             "  with --sync-property and --source-property to modify the configuration" << endl <<
-            "  on-the-fly. When one or more sources are listed after the <server>" << endl <<
+            "  on-the-fly. When one or more sources are listed after the <config>" << endl <<
             "  name on the command line, then only the configs of those sources are" << endl <<
             "  printed. Using --quiet suppresses the comments for each property." << endl <<
             "  When setting a --template, then the reference configuration for" << endl <<
-            "  that server is printed instead of an existing configuration." << endl <<
+            "  that peer is printed instead of an existing configuration." << endl <<
             "" << endl <<
             "--print-sessions" << endl <<
             "  Prints a list of all previous log directories. Unless --quiet is used, each" << endl <<
             "  file name is followed by the original sync report." << endl <<
             "" << endl <<
             "--configure|-c" << endl <<
-            "  Modify the configuration files for the selected server. If no such" << endl <<
+            "  Modify the configuration files for the selected peer. If no such" << endl <<
             "  configuration exists, then a new one is created using one of the" << endl <<
             "  template configurations (see --template option). When creating" << endl <<
             "  a new configuration only the active sources will be set to active" << endl <<
@@ -871,19 +939,17 @@ void Cmdline::usage(bool full, const string &error, const string &param)
             "  then the source properties of only those sources are modified." << endl <<
             "" << endl <<
             "--migrate" << endl <<
-            "  In SyncEvolution <= 0.7 a different layout of configuration files" << endl <<
+            "  In older SyncEvolution releases a different layout of configuration files" << endl <<
             "  was used. Using --migrate will automatically migrate to the new" << endl <<
-            "  layout and rename the old directory $HOME/.sync4j/evolution/<server> " << endl <<
-            "  into $HOME/.sync4j/evolution/<server>.old to prevent accidental use" << endl <<
+            "  layout and rename the <config> into <config>.old to prevent accidental use" << endl <<
             "  of the old configuration. WARNING: old SyncEvolution releases cannot" << endl <<
             "  use the new configuration!" << endl <<
+            "" << endl <<
             "  The switch can also be used to migrate a configuration in the current" << endl <<
             "  configuration directory: this preserves all property values, discards" << endl <<
             "  obsolete properties and sets all comments exactly as if the configuration" << endl <<
             "  had been created from scratch. WARNING: custom comments in the" << endl <<
             "  configuration are not preserved." << endl <<
-            "  --migrate implies --configure and can be combined with modifying" << endl <<
-            "  properties." << endl <<
             "" << endl <<
             "--restore" << endl <<
             "  Restores the data of the selected sources to the state from before or after the" << endl <<
@@ -898,18 +964,27 @@ void Cmdline::usage(bool full, const string &error, const string &param)
             "  This can be used to check that --restore will not remove valuable information." << endl <<
             "" << endl <<
             "--remove" << endl <<
-            "  This removes only the configuration files and related meta information." << endl <<
-            "  If other files were added to the config directory of the server, then" << endl <<
-            "  those and the directory will not be removed. Log directories will also" << endl <<
-            "  not be removed." << endl <<
+            "  Deletes the configuration. If the <config> refers to a specific" << endl <<
+            "  peer, only that peer's configuration is removed. If it refers to" << endl <<
+            "  a context, that context and all peers inside it are removed." << endl <<
+            "  Note that there is no confirmation question. Neither local data" << endl <<
+            "  referenced by the configuration nor the content of log dirs are" << endl <<
+            "  deleted." << endl <<
             "" << endl <<
             "--sync-property|-y <property>=<value>" << endl <<
             "--sync-property|-y ?" << endl <<
             "--sync-property|-y <property>=?" << endl <<
-            "  Overrides a configuration property in the <server>/config.ini file" << endl <<
-            "  for the current synchronization run or permanently when --configure" << endl <<
-            "  is used to update the configuration. Can be used multiple times." << endl <<
-            "  Specifying an unused property will trigger an error message." << endl <<
+            "  Overrides a source-independent configuration property for the" << endl <<
+            "  current synchronization run or permanently when --configure is used" << endl <<
+            "  to update the configuration. Can be used multiple times.  Specifying" << endl <<
+            "  an unused property will trigger an error message." << endl <<
+            "" << endl <<
+            "  When using the configuration layout introduced with 1.0, some of the" << endl <<
+            "  sync properties are shared between peers, for example the directory" << endl <<
+            "  where sessions are logged. Permanently changing such a shared" << endl <<
+            "  property for one peer will automatically update the property for all" << endl <<
+            "  other peers in the same context because the property is stored in a" << endl <<
+            "  shared config file." << endl <<
             "" << endl <<
             "--source-property|-z <property>=<value>" << endl <<
             "--source-property|-z ?" << endl <<
@@ -917,21 +992,32 @@ void Cmdline::usage(bool full, const string &error, const string &param)
             "  Same as --sync-property, but applies to the configuration of all active" << endl <<
             "  sources. \"--sync <mode>\" is a shortcut for \"--source-property sync=<mode>\"." << endl <<
             "" << endl <<
-            "--template|-l <server name>|default|?" << endl <<
+            "--template|-l <peer name>|default|?|?<device>" << endl <<
             "  Can be used to select from one of the built-in default configurations" << endl <<
-            "  for known SyncML servers. Defaults to the <server> name, so --template" << endl <<
+            "  for known SyncML peers. Defaults to the <config> name, so --template" << endl <<
             "  only has to be specified when creating multiple different configurations" << endl <<
-            "  for the same server. \"default\" is an alias for \"scheduleworld\" and can be" << endl <<
+            "  for the same peer, or when using a template that is named differently" << endl <<
+            "  than the peer. \"default\" is an alias for \"scheduleworld\" and can be" << endl <<
             "  used as the starting point for servers which do not have a built-in" << endl <<
-            "  configuration." << endl <<
+            "  template." << endl <<
+            "" << endl <<
             "  Each template contains a pseudo-random device ID. Therefore setting the" << endl <<
             "  \"deviceId\" sync property is only necessary when manually recreating a" << endl <<
             "  configuration or when a more descriptive name is desired." << endl <<
             "" << endl <<
+            "  The available templates for different known SyncML servers are listed when" << endl <<
+            "  using a single question mark instead of template name. When using the" << endl <<
+            "  ?<device> format, a fuzzy search for a template that might be" << endl <<
+            "  suitable for talking to such a device is done. The matching works best" << endl <<
+            "  when using <device> = <Manufacturer>_<Model>. If you don't know the" << endl <<
+            "  manufacturer, you can just keep it as empty. The output in this mode" << endl <<
+            "  gives the template name followed by a short description and a rating how well" << endl <<
+            "  the template matches the device (higher is better)." << endl <<
+            "" << endl <<
             "--status|-t" << endl <<
             "  The changes made to local data since the last synchronization are" << endl <<
             "  shown without starting a new one. This can be used to see in advance" << endl <<
-            "  whether the local data needs to be synchronized with the server." << endl <<
+            "  whether the local data needs to be synchronized with the peer." << endl <<
             "" << endl <<
             "--quiet|-q" << endl <<
             "  Suppresses most of the normal output during a synchronization. The" << endl <<
@@ -1234,6 +1320,8 @@ class CmdlineTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testPrintConfig);
     CPPUNIT_TEST(testPrintFileTemplates);
     CPPUNIT_TEST(testTemplate);
+    CPPUNIT_TEST(testMatchTemplate);
+    CPPUNIT_TEST(testAddSource);
     CPPUNIT_TEST(testSync);
     CPPUNIT_TEST(testConfigure);
     CPPUNIT_TEST(testOldConfigure);
@@ -1257,6 +1345,7 @@ public:
                               "peers/scheduleworld/config.ini:# loglevel = 0\n"
                               "peers/scheduleworld/config.ini:# printChanges = 1\n"
                               "config.ini:# maxlogdirs = 10\n"
+                              "peers/scheduleworld/config.ini:# preventSlowSync = 0\n"
                               "peers/scheduleworld/config.ini:# useProxy = 0\n"
                               "peers/scheduleworld/config.ini:# proxyHost = \n"
                               "peers/scheduleworld/config.ini:# proxyUsername = \n"
@@ -1266,6 +1355,7 @@ public:
                               "peers/scheduleworld/config.ini:# RetryInterval = 60\n"
                               "peers/scheduleworld/config.ini:# remoteIdentifier = \n"
                               "peers/scheduleworld/config.ini:# PeerIsClient = 0\n"
+                              "peers/scheduleworld/config.ini:# PeerName = \n"
                               "config.ini:deviceId = fixed-devid\n" /* this is not the default! */
                               "peers/scheduleworld/config.ini:# remoteDeviceId = \n"
                               "peers/scheduleworld/config.ini:# enableWBXML = 1\n"
@@ -1275,11 +1365,12 @@ public:
                               "peers/scheduleworld/config.ini:# SSLServerCertificates = \n"
                               "peers/scheduleworld/config.ini:# SSLVerifyServer = 1\n"
                               "peers/scheduleworld/config.ini:# SSLVerifyHost = 1\n"
-                              "peers/scheduleworld/config.ini:WebURL = http://sync.scheduleworld.com\n"
+                              "peers/scheduleworld/config.ini:WebURL = http://www.scheduleworld.com\n"
                               "peers/scheduleworld/config.ini:# IconURI = \n"
                               "peers/scheduleworld/config.ini:ConsumerReady = 1\n"
 
                               "peers/scheduleworld/sources/addressbook/.internal.ini:# adminData = \n"
+                              "peers/scheduleworld/sources/addressbook/.internal.ini:# synthesisID = 0\n"
                               "peers/scheduleworld/sources/addressbook/config.ini:sync = two-way\n"
                               "sources/addressbook/config.ini:type = addressbook:text/vcard\n"
                               "peers/scheduleworld/sources/addressbook/config.ini:type = addressbook:text/vcard\n"
@@ -1289,6 +1380,7 @@ public:
                               "sources/addressbook/config.ini:# evolutionpassword = \n"
 
                               "peers/scheduleworld/sources/calendar/.internal.ini:# adminData = \n"
+                              "peers/scheduleworld/sources/calendar/.internal.ini:# synthesisID = 0\n"
                               "peers/scheduleworld/sources/calendar/config.ini:sync = two-way\n"
                               "sources/calendar/config.ini:type = calendar\n"
                               "peers/scheduleworld/sources/calendar/config.ini:type = calendar\n"
@@ -1298,6 +1390,7 @@ public:
                               "sources/calendar/config.ini:# evolutionpassword = \n"
 
                               "peers/scheduleworld/sources/memo/.internal.ini:# adminData = \n"
+                              "peers/scheduleworld/sources/memo/.internal.ini:# synthesisID = 0\n"
                               "peers/scheduleworld/sources/memo/config.ini:sync = two-way\n"
                               "sources/memo/config.ini:type = memo\n"
                               "peers/scheduleworld/sources/memo/config.ini:type = memo\n"
@@ -1307,6 +1400,7 @@ public:
                               "sources/memo/config.ini:# evolutionpassword = \n"
 
                               "peers/scheduleworld/sources/todo/.internal.ini:# adminData = \n"
+                              "peers/scheduleworld/sources/todo/.internal.ini:# synthesisID = 0\n"
                               "peers/scheduleworld/sources/todo/config.ini:sync = two-way\n"
                               "sources/todo/config.ini:type = todo\n"
                               "peers/scheduleworld/sources/todo/config.ini:type = todo\n"
@@ -1538,13 +1632,53 @@ protected:
         CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
                                   "   Funambol = http://my.funambol.com\n"
                                   "   Google = http://m.google.com/sync\n"
+                                  "   Goosync = http://www.goosync.com/\n"
                                   "   Memotoo = http://www.memotoo.com\n"
                                   "   Mobical = http://www.mobical.net\n"
-                                  "   ScheduleWorld = http://sync.scheduleworld.com\n"
+                                  "   Oracle = http://www.oracle.com/technology/products/beehive/index.html\n"
+                                  "   ScheduleWorld = http://www.scheduleworld.com\n"
+                                  "   SyncEvolution = http://www.syncevolution.org\n"
                                   "   Synthesis = http://www.synthesis.ch\n"
                                   "   ZYB = http://www.zyb.com\n",
                                   help.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help.m_err.str());
+    }
+
+    void testMatchTemplate() {
+        ScopedEnvChange templates("SYNCEVOLUTION_TEMPLATE_DIR", "testcases/templates");
+
+        TestCmdline help1("--template", "?nokia_7210c", NULL);
+        help1.doit();
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+                "   Nokia_7210c = Template for Nokia 7210c phone and as default template for all Nokia phones    5\n"
+                "   SyncEvolutionClient = SyncEvolution server side template    2\n"
+                "   ServerDefault = server side default template    1\n",
+                help1.m_out.str());
+        CPPUNIT_ASSERT_EQUAL_DIFF("", help1.m_err.str());
+        TestCmdline help2("--template", "?nokia", NULL);
+        help2.doit();
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+                "   Nokia_7210c = Template for Nokia 7210c phone and as default template for all Nokia phones    5\n"
+                "   SyncEvolutionClient = SyncEvolution server side template    2\n"
+                "   ServerDefault = server side default template    1\n",
+                help2.m_out.str());
+        CPPUNIT_ASSERT_EQUAL_DIFF("", help2.m_err.str());
+        TestCmdline help3("--template", "?7210c", NULL);
+        help3.doit();
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+                "   Nokia_7210c = Template for Nokia 7210c phone and as default template for all Nokia phones    3\n"
+                "   ServerDefault = server side default template    1\n"
+                "   SyncEvolutionClient = SyncEvolution server side template    1\n",
+                help3.m_out.str());
+        CPPUNIT_ASSERT_EQUAL_DIFF("", help3.m_err.str());
+        TestCmdline help4("--template", "?syncevolution", NULL);
+        help4.doit();
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+                "   SyncEvolutionClient = SyncEvolution server side template    5\n"
+                "   Nokia_7210c = Template for Nokia 7210c phone and as default template for all Nokia phones    2\n"
+                "   ServerDefault = server side default template    2\n",
+                help4.m_out.str());
+        CPPUNIT_ASSERT_EQUAL_DIFF("", help4.m_err.str());
     }
 
     void testPrintServers() {
@@ -1732,6 +1866,40 @@ protected:
         }
     }
 
+    void testAddSource() {
+        string root;
+        ScopedEnvChange templates("SYNCEVOLUTION_TEMPLATE_DIR", "/dev/null");
+        ScopedEnvChange xdg("XDG_CONFIG_HOME", m_testDir);
+        ScopedEnvChange home("HOME", m_testDir);
+
+        testSetupScheduleWorld();
+
+        root = m_testDir;
+        root += "/syncevolution/default";
+
+        {
+            TestCmdline cmdline("--configure",
+                                "--source-property", "uri = dummy",
+                                "scheduleworld",
+                                "xyz",
+                                NULL);
+            cmdline.doit();
+            string res = scanFiles(root);
+            string expected = ScheduleWorldConfig();
+            expected += "\n"
+                "peers/scheduleworld/sources/xyz/.internal.ini:# adminData = \n"
+                "peers/scheduleworld/sources/xyz/.internal.ini:# synthesisID = 0\n"
+                "peers/scheduleworld/sources/xyz/config.ini:# sync = disabled\n"
+                "peers/scheduleworld/sources/xyz/config.ini:# type = select backend\n"
+                "peers/scheduleworld/sources/xyz/config.ini:uri = dummy\n"
+                "sources/xyz/config.ini:# type = select backend\n"
+                "sources/xyz/config.ini:# evolutionsource = \n"
+                "sources/xyz/config.ini:# evolutionuser = \n"
+                "sources/xyz/config.ini:# evolutionpassword = ";
+            sortConfig(expected);
+            CPPUNIT_ASSERT_EQUAL_DIFF(expected, res);
+        }
+    }
 
     void testSync() {
         TestCmdline failure("--sync", NULL);
@@ -1802,6 +1970,8 @@ protected:
                               "\n"
                               "maxlogdirs:\n"
                               "\n"
+                              "preventSlowSync:\n"
+                              "\n"
                               "useProxy:\n"
                               "\n"
                               "proxyHost:\n"
@@ -1819,6 +1989,8 @@ protected:
                               "remoteIdentifier:\n"
                               "\n"
                               "PeerIsClient:\n"
+                              "\n"
+                              "PeerName:\n"
                               "\n"
                               "deviceId:\n"
                               "\n"
@@ -1907,6 +2079,7 @@ protected:
             "ConfigDate" +
             "deviceData" +
             "adminData" +
+            "synthesisID" +
             "lastNonce" +
             "last";
         BOOST_FOREACH(string &prop, props) {
@@ -2227,6 +2400,7 @@ private:
             "spds/syncml/config.txt:# loglevel = 0\n"
             "spds/syncml/config.txt:# printChanges = 1\n"
             "spds/syncml/config.txt:# maxlogdirs = 10\n"
+            "spds/syncml/config.txt:# preventSlowSync = 0\n"
             "spds/syncml/config.txt:# useProxy = 0\n"
             "spds/syncml/config.txt:# proxyHost = \n"
             "spds/syncml/config.txt:# proxyUsername = \n"
@@ -2236,6 +2410,7 @@ private:
             "spds/syncml/config.txt:# RetryInterval = 60\n"
             "spds/syncml/config.txt:# remoteIdentifier = \n"
             "spds/syncml/config.txt:# PeerIsClient = 0\n"
+            "spds/syncml/config.txt:# PeerName = \n"
             "spds/syncml/config.txt:deviceId = fixed-devid\n" /* this is not the default! */
             "spds/syncml/config.txt:# remoteDeviceId = \n"
             "spds/syncml/config.txt:# enableWBXML = 1\n"
@@ -2251,7 +2426,7 @@ private:
 #endif
             "spds/syncml/config.txt:# SSLVerifyServer = 1\n"
             "spds/syncml/config.txt:# SSLVerifyHost = 1\n"
-            "spds/syncml/config.txt:WebURL = http://sync.scheduleworld.com\n"
+            "spds/syncml/config.txt:WebURL = http://www.scheduleworld.com\n"
             "spds/syncml/config.txt:# IconURI = \n"
             "spds/syncml/config.txt:ConsumerReady = 1\n"
             "spds/sources/addressbook/config.txt:sync = two-way\n"
@@ -2290,7 +2465,7 @@ private:
                              "syncURL = http://my.funambol.com/sync");
 
         boost::replace_first(config,
-                             "WebURL = http://sync.scheduleworld.com",
+                             "WebURL = http://www.scheduleworld.com",
                              "WebURL = http://my.funambol.com");
 
         boost::replace_first(config,
@@ -2330,7 +2505,7 @@ private:
                              "syncURL = http://www.synthesis.ch/sync");
 
         boost::replace_first(config,
-                             "WebURL = http://sync.scheduleworld.com",
+                             "WebURL = http://www.scheduleworld.com",
                              "WebURL = http://www.synthesis.ch");        
 
         boost::replace_first(config,
@@ -2363,36 +2538,7 @@ private:
                              "todo/config.ini:sync = disabled");
 
         return config;
-    }
-
-    /** temporarily set env variable, restore old value on destruction */
-    class ScopedEnvChange {
-    public:
-        ScopedEnvChange(const string &var, const string &value) :
-            m_var(var)
-        {
-            const char *oldval = getenv(var.c_str());
-            if (oldval) {
-                m_oldvalset = true;
-                m_oldval = oldval;
-            } else {
-                m_oldvalset = false;
-            }
-            setenv(var.c_str(), value.c_str(), 1);
-        }
-        ~ScopedEnvChange()
-        {
-            if (m_oldvalset) {
-                setenv(m_var.c_str(), m_oldval.c_str(), 1);
-            } else {
-                unsetenv(m_var.c_str());
-            } 
-        }
-    private:
-        string m_var, m_oldval;
-        bool m_oldvalset;
-    };
-            
+    }          
 
     /** create directory hierarchy, overwriting previous content */
     void createFiles(const string &root, const string &content, bool append = false) {

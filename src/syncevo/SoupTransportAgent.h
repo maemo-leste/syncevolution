@@ -52,7 +52,7 @@ class SoupTransportAgent : public HTTPTransportAgent
  public:
     /**
      *  @param loop     the glib loop to use when waiting for IO;
-     *                  will be owned and unref'ed by the new instance;
+     *                  transport will increase the reference count;
      *                  if NULL a new loop in the default context is used
      */
     SoupTransportAgent(GMainLoop *loop = NULL);
@@ -84,10 +84,10 @@ class SoupTransportAgent : public HTTPTransportAgent
     eptr<GMainLoop, GMainLoop, GLibUnref> m_loop;
     Status m_status;
     std::string m_failure;
-    guint m_abortEventSource;
+    GLibEvent m_abortEventSource;
 
     SoupMessage *m_message;
-    guint m_cbEventSource;
+    GLibEvent m_cbEventSource;
     TransportCallback m_cb;
     int m_cbInterval;
     void *m_cbData;

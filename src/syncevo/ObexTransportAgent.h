@@ -51,7 +51,7 @@ class Channel {
  public:
      Channel() {channel = NULL;}
      Channel(GIOChannel *c) {channel = c;}
-     ~Channel() { if (!channel) {g_io_channel_unref (channel);}}
+     ~Channel() { if (channel) {g_io_channel_unref (channel);}}
      GIOChannel* get() {return channel;}
 };
 
@@ -59,9 +59,8 @@ class ObexEvent {
     guint event;
 public:
     ObexEvent() {event = 0;}
-    ObexEvent (guint e) {event = e; SE_LOG_DEBUG (NULL, NULL, "ObexTransportAgent: creating obex event %d", e);}
-    ~ObexEvent () {if (event) {g_source_remove (event);} 
-                   SE_LOG_DEBUG (NULL, NULL, "ObexTransportAgent: removing obex event %d", event);}
+    ObexEvent (guint e) {event = e;}
+    ~ObexEvent () {if (event) {g_source_remove (event);}}
     guint get() {return event;}
 };
 
@@ -70,7 +69,7 @@ class ObexHandle {
 public:
     ObexHandle() {handle = NULL;}
     ObexHandle(obex_t *h) {handle = h;}
-    ~ObexHandle() {if (!handle) {OBEX_Cleanup (handle);}}
+    ~ObexHandle() {if (handle) {OBEX_Cleanup (handle);}}
     obex_t* get() {return handle;}
 };
 
@@ -80,6 +79,11 @@ public:
  */
 class ObexTransportAgent : public TransportAgent 
 {
+    class ContextUnref {
+    public:
+        static void unref(GMainContext *context) { g_main_context_unref(context); }
+    };
+
     public:
         enum OBEX_TRANS_TYPE{
             OBEX_BLUETOOTH,
@@ -87,7 +91,12 @@ class ObexTransportAgent : public TransportAgent
             INVALID
         };
 
-        ObexTransportAgent(OBEX_TRANS_TYPE type);
+        /**
+         * @param loop     the glib loop to use when waiting for IO;
+         *                 transport will increase the reference count;
+         *                 if NULL a new loop in the default context is used
+         */
+        ObexTransportAgent(OBEX_TRANS_TYPE type, GMainLoop *loop);
         ~ObexTransportAgent();
 
         virtual void setURL (const std::string &url);
@@ -139,6 +148,9 @@ class ObexTransportAgent : public TransportAgent
          * The underlying transport type: Bluetooth, USB.
          */
         OBEX_TRANS_TYPE m_transType;
+
+        /** context that needs to be kept alive while waiting for OBEX */
+        eptr<GMainContext, GMainContext, ContextUnref> m_context;
 
         /* The address of the remote device  
          * macadd for Bluetooth; device name for usb; host name for

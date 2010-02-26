@@ -1,5 +1,7 @@
 AM_CPPFLAGS = @BACKEND_CPPFLAGS@ @GLIB_CFLAGS@ -I$(top_srcdir)/test -I$(top_srcdir)/src -DSYNCEVO_BACKEND=\"$(backendsearchdir)\"
 
+SUBDIRS = configs
+
 # applies to sources in SyncEvolution repository, but not
 # the Funambol C++ client library
 SYNCEVOLUTION_CXXFLAGS = @SYNCEVOLUTION_CXXFLAGS@
@@ -47,6 +49,9 @@ SYNCEVOLUTION_SOURCES  = \
 	\
 	util.cpp \
 	util.h \
+	\
+	lcs.h \
+	lcs.cpp \
         \
 	Cmdline.cpp \
         Cmdline.h \
@@ -56,7 +61,6 @@ SYNCEVOLUTION_SOURCES  = \
 	\
 	SynthesisDBPlugin.cpp \
 	\
-	SyncEvolutionXML.c \
         SyncContext.h \
 	SyncContext.cpp \
 	\
@@ -89,6 +93,7 @@ libsyncevolution_includedir= $(includedir)/syncevo
 libsyncevolution_include_HEADERS = \
 	declarations.h \
 	TrackingSyncSource.h  \
+	FileConfigNode.h \
 								  FilterConfigNode.h \
 								  PrefixConfigNode.h \
 								  SafeConfigNode.h \
@@ -118,9 +123,14 @@ DISTCLEANFILES =syncevolution.pc
 EXTRA_DIST =syncevolution.pc.in
 
 libsyncevolution_la_SOURCES = $(SYNCEVOLUTION_SOURCES)
-libsyncevolution_la_LIBADD = @EPACKAGE_LIBS@ @GLIB_LIBS@ $(SYNTHESIS_LIBS) $(TRANSPORT_LIBS) @LIBS@ $(SYNCEVOLUTION_LDADD)
-libsyncevolution_la_CXXFLAGS = $(TRANSPORT_CFLAGS) $(SYNCEVOLUTION_CXXFLAGS) $(SYNTHESIS_CFLAGS)
-libsyncevolution_la_CPPFLAGS = $(AM_CPPFLAGS) -DTEMPLATE_DIR=\""$(datadir)/syncevolution/templates"\" -DLIBDIR=\""$(libdir)"\"
+nodist_libsyncevolution_la_SOURCES = SyncEvolutionXML.c
+CLEANFILES = SyncEvolutionXML.c
+libsyncevolution_la_LIBADD = @EPACKAGE_LIBS@ @GLIB_LIBS@ $(SYNTHESIS_LIBS) $(TRANSPORT_LIBS) @LIBS@ $(SYNCEVOLUTION_LDADD) $(NSS_LIBS)
+libsyncevolution_la_CXXFLAGS = $(TRANSPORT_CFLAGS) $(SYNCEVOLUTION_CXXFLAGS) $(SYNTHESIS_CFLAGS) $(NSS_CFLAGS)
+libsyncevolution_la_CPPFLAGS = $(AM_CPPFLAGS) \
+	-DXML_CONFIG_DIR=\""$(datadir)/syncevolution/xml"\" \
+	-DTEMPLATE_DIR=\""$(datadir)/syncevolution/templates"\" \
+	-DLIBDIR=\""$(libdir)"\"
 libsyncevolution_la_DEPENDENCIES = $(SYNTHESIS_DEP)
 
 if ENABLE_MODULES
@@ -129,10 +139,25 @@ else
 libsyncevolution_la_LDFLAGS = -static
 endif
 
-SyncEvolutionXML.c: $(srcdir)/../syncclient_sample_config.xml
-	echo "const char *SyncEvolutionXML =" > $@
-	sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\(.*\)/"\1\\n"/' $< >>$@
-	echo ";" >>$@
+# command which embeds its input lines into a C-style string that runs across multiple lines
+TO_C_STRING = sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\(.*\)/"\1\\n"/'
+
+# Don't depend on specific XML files. Instead recreate
+# SyncEvolutionXML.c each time make is invoked (allows including new
+# fragments in the binary without rerunning configure).
+SyncEvolutionXML.c: GenSyncEvolutionXML
+.PHONY: GenSyncEvolutionXML
+GenSyncEvolutionXML:
+	echo "const char *SyncEvolutionXMLClient =" > SyncEvolutionXML.c.new
+	(cd $(srcdir)/configs && perl update-samples.pl syncevolution.xml client ) | \
+	   perl -p -e 's;</datatypes>;  <fieldlists/>\n    <profiles/>\n    <datatypedefs/>\n  </datatypes>;' | \
+	   $(TO_C_STRING) >>SyncEvolutionXML.c.new
+	echo ";" >>SyncEvolutionXML.c.new
+	echo "const char *SyncEvolutionXMLClientRules =" >> SyncEvolutionXML.c.new
+	(cd $(srcdir)/configs && cat remoterules/*.xml remoterules/client/*.xml) | $(TO_C_STRING) >>SyncEvolutionXML.c.new
+	echo ";" >>SyncEvolutionXML.c.new
+	if cmp SyncEvolutionXML.c SyncEvolutionXML.c.new >/dev/null; then rm SyncEvolutionXML.c.new; else mv SyncEvolutionXML.c.new SyncEvolutionXML.c; fi
+
 
 # include boost in distribution
 #dist-hook:

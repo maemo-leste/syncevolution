@@ -185,10 +185,25 @@ public:
 
         BOOST_FOREACH(const RegisterSyncSourceTest *test, m_configs) {
             if (sources.find(test->m_configName) != sources.end()) {
-                m_source2Config.push_back(test->m_configName);
+                m_syncSource2Config.push_back(test->m_configName);
             }
         }
 
+        /* Local Test SyncSource : remove all virtual datastores, inserting the
+         * sub datastores*/
+        ClientTest::Config conf;
+        BOOST_FOREACH (string source, sources) {
+            getSourceConfig (source, conf);
+            if (conf.subConfigs) {
+                vector<string> subs;
+                boost::split (subs, conf.subConfigs, boost::is_any_of(","));
+                BOOST_FOREACH (string sub, subs) {
+                    m_localSource2Config.push_back (sub);
+                }
+            } else {
+                m_localSource2Config.push_back (source);
+            }
+        }
         // get configuration and set obligatory fields
         LoggerBase::instance().setLevel(Logger::DEBUG);
         std::string root = std::string("evolution/") + server + "_" + id;
@@ -200,7 +215,7 @@ public:
             // device ID is different
             config.reset(new SyncConfig(string(server) + "_" + id + "@client-test-" + id));
             config->setDefaults();
-            from = SyncConfig::createServerTemplate(server);
+            from = SyncConfig::createPeerTemplate(server);
             if(from) {
                 set<string> filter;
                 config->copy(*from, &filter);
@@ -228,7 +243,9 @@ public:
 
             // always set these properties: they might have changed since the last run
             string database = getDatabaseName(test->m_configName);
-            sc->setDatabaseID(database);
+            if (test->m_configName!="super"){
+                sc->setDatabaseID(database);
+            }
             sc->setUser(m_evoUser);
             sc->setPassword(m_evoPassword);
         }
@@ -239,12 +256,34 @@ public:
         return new EvolutionLocalTests(name, *this, sourceParam, co);
     }
 
-    virtual int getNumSources() {
-        return m_source2Config.size();
+    virtual int getNumLocalSources() {
+        return m_localSource2Config.size();
     }
 
-    virtual void getSourceConfig(int source, Config &config) {
-        getSourceConfig(m_configs[m_source2Config[source]], config);
+    virtual int getNumSyncSources() {
+        return m_syncSource2Config.size();
+    }
+
+    virtual void getLocalSourceConfig(int source, Config &config) {
+        getSourceConfig(m_configs[m_localSource2Config[source]], config);
+    }
+
+    virtual void getSyncSourceConfig(int source, Config &config) {
+        getSourceConfig(m_configs[m_syncSource2Config[source]], config);
+    }
+
+    virtual int getLocalSourcePosition(const string &configName) {
+        for (size_t i=0; i< m_localSource2Config.size(); i++) {
+            if(m_localSource2Config[i] == configName) {
+                return i;
+                break;
+            }
+        }
+        return -1;
+    }
+
+    virtual void getSourceConfig (const string &configName, Config &config) {
+        return getSourceConfig (m_configs[configName], config);
     }
 
     static void getSourceConfig(const RegisterSyncSourceTest *test, Config &config) {
@@ -333,7 +372,7 @@ public:
         filter[SyncSourceConfig::m_sourcePropSync.getName()] =
             PrettyPrintSyncMode(options.m_syncMode);
         for(int i = 0; sources[i] >= 0; i++) {
-            client.setConfigFilter(false, m_source2Config[sources[i]], filter);
+            client.setConfigFilter(false, m_syncSource2Config[sources[i]], filter);
         }
 
         SyncReport report;
@@ -355,7 +394,8 @@ private:
      * This is the mapping to the corresponding config name, created when
      * constructing this instance.
      */
-    vector<string> m_source2Config;
+    vector<string> m_localSource2Config;
+    vector<string> m_syncSource2Config;
 
     /** returns the name of the Evolution database */
     string getDatabaseName(const string &configName) {
@@ -364,7 +404,7 @@ private:
     
     static TestingSyncSource *createSource(ClientTest &client, int source, bool isSourceA) {
         TestEvolution &evClient((TestEvolution &)client);
-        string name = evClient.m_source2Config[source];
+        string name = evClient.m_localSource2Config[source];
         string database = evClient.getDatabaseName(name);
 
         SyncConfig config("client-test-changes");
@@ -373,7 +413,9 @@ private:
                                                           "_" + (isSourceA ? "A" : "B"));
 
         // always set this property: the name might have changes since last test run
-        nodes.getProperties()->setProperty("evolutionsource", database.c_str());
+        if (name != "super") {
+            nodes.getProperties()->setProperty("evolutionsource", database.c_str());
+        }
         nodes.getProperties()->setProperty("evolutionuser", evClient.m_evoUser.c_str());
         nodes.getProperties()->setProperty("evolutionpassword", evClient.m_evoPassword.c_str());
 

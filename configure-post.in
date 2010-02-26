@@ -19,16 +19,6 @@ if test "$enable_any" = "no"; then
         AC_MSG_ERROR([no backend enabled - refusing to continue: $anymissing])
 fi
 
-dnl check for glib - calling g_type_init() is expected on Maemo
-PKG_CHECK_MODULES(GLIB, "glib-2.0", GLIBFOUND=yes, GLIBFOUND=no)
-# This check here is broken on Ubuntu 8.04: it calls glib-config,
-# which isn't found, but the error is not detected by configure.
-#if test "x${GLIBFOUND}" = "xno"; then
-#	PKG_CHECK_MODULES(GLIB, "glib", GLIBFOUND=yes, GLIBFOUND=no)
-#fi
-AC_SUBST(GLIB_CFLAGS)
-AC_SUBST(GLIB_LIBS)
-
 dnl check for programs.
 AC_PROG_CXX
 AC_PROG_LIBTOOL
@@ -36,14 +26,46 @@ AC_PROG_MAKE_SET
 
 dnl glib initialization is done only if requested by some configure-sub.in,
 dnl for not needed otherwise even if found
-if test "$need_glib" != "yes"; then
-        GLIB_CFLAGS=
-        GLIB_LIBS=
-else
+if test "$need_glib" = "yes"; then
+        # HAVE_GLIB (aka GLIBFOUND) are a catch-all for these
+        # three GNOME libs. Assume we have all three unless one of
+        # the checks fails.
+        GLIBFOUND=yes
+
+        dnl check for glib - calling g_type_init() is expected on Maemo
+        PKG_CHECK_MODULES(GLIB, "glib-2.0", , GLIBFOUND=no)
+        # This check here is broken on Ubuntu 8.04: it calls glib-config,
+        # which isn't found, but the error is not detected by configure.
+        #if test "x${GLIBFOUND}" = "xno"; then
+        #	PKG_CHECK_MODULES(GLIB, "glib", GLIBFOUND=yes, GLIBFOUND=no)
+        #fi
+
+        PKG_CHECK_MODULES(GTHREAD, "gthread-2.0", , GLIBFOUND=no)
+        PKG_CHECK_MODULES(GOBJECT, "gobject-2.0", , GLIBFOUND=no)
+
         if  test "x${GLIBFOUND}" = "xyes"; then
             AC_DEFINE(HAVE_GLIB, 1, [glib found])
+        else
+            AC_ERROR([not all GNOME libraries found])
         fi
-        BACKEND_CPPFLAGS="$BACKEND_CPPFLAGS $GLIB_CFLAGS"
+        BACKEND_CPPFLAGS="$BACKEND_CPPFLAGS $GLIB_CFLAGS $GTHREAD_CFLAGS $GOBJECT_CFLAGS"
+fi
+
+# determine from where we can get a SHA-256 implementation
+have_sha="no"
+if test "$GLIBFOUND" = "yes"; then
+   # only use glib if we need it anyway, also has to be at lease 2.16
+   PKG_CHECK_MODULES(GLIB216, [glib-2.0 >= 2.16],
+                     [AC_DEFINE(USE_SHA256, 1, [choose implementation of SHA-256])
+                      have_sha="glib"],
+                     [true])
+fi
+if test "$have_sha" = "no"; then
+   # Fallback is Mozilla NSS. In contrast to libgcrypt it has a .pc
+   # file and a simple API.
+   PKG_CHECK_MODULES(NSS, "nss",
+                     [AC_DEFINE(USE_SHA256, 2, [choose implementation of SHA-256])
+                      have_sha="nss"])
 fi
 
 dnl figure out whether we link all code statically or as modules
@@ -93,7 +115,13 @@ AC_CHECK_HEADERS(stdarg.h valgrind/valgrind.h execinfo.h)
 
 AC_DEFINE(SYNTHESIS, 1, "using Synthesis engine")
 
-AC_CONFIG_FILES(Makefile src/dbus/interfaces/Makefile src/gdbus/Makefile src/dbus/Makefile src/Makefile src/syncevo/Makefile src/syncevo/syncevolution.pc src/gtk-ui/Makefile po/Makefile.in test/Makefile src/dbus/syncevo-dbus.pc)
+# fallback for lack of --with-docdir support in older automake
+if test ! "$docdir"; then
+   docdir = ${datadir}/doc/syncevolution
+   AC_SUBST(docdir)
+fi
+
+AC_CONFIG_FILES(Makefile src/dbus/interfaces/Makefile src/gdbus/Makefile src/dbus/Makefile src/Makefile src/syncevo/Makefile src/syncevo/syncevolution.pc src/syncevo/configs/Makefile src/gtk-ui/Makefile po/Makefile.in test/Makefile src/dbus/syncevo-dbus.pc)
 AC_OUTPUT
 
 echo
@@ -103,4 +131,7 @@ for backend in $BACKENDS; do
 done
 echo "DBus service: $enable_dbus_service"
 echo "UI (DBus client): $enable_gui"
+echo "Bluetooth transport: $have_bluetooth"
+echo "GNOME Bluetooth panel plugin: $enable_gnome_bluetooth_panel"
+echo "SHA-256: $have_sha"
 echo

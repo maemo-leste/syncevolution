@@ -51,6 +51,7 @@ class EvolutionContactSource : public EvolutionSyncSource,
     //
     virtual Databases getDatabases();
     virtual void open();
+    virtual bool isEmpty();
     virtual void close();
     virtual const char *getMimeType() const;
     virtual const char *getMimeVersion() const;
@@ -71,7 +72,7 @@ class EvolutionContactSource : public EvolutionSyncSource,
     void getSynthesisInfo(SynthesisInfo &info,
                           XMLConfigFragments &fragments)
     {
-        TrackingSyncSource::getSynthesisInfo(info, fragments);
+        EvolutionSyncSource::getSynthesisInfo(info, fragments);
         info.m_profile = "\"vCard\", 2";
         info.m_native = "vCard30";
         info.m_beforeWriteScript = "$VCARD_BEFOREWRITE_SCRIPT_EVOLUTION;";

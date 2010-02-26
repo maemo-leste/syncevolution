@@ -62,7 +62,10 @@ typedef struct _SyncevoServerClass {
                           char *session_path,
                           char *state,
                           char *handler_path,
-                          char *type);
+                          char *type,
+                          GHashTable *parameters);
+
+    void (*templates_changed) (SyncevoServer *syncevo);
 
     void (*shutdown) (SyncevoServer *syncevo);
 } SyncevoServerClass;

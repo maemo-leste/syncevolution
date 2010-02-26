@@ -371,6 +371,11 @@ struct ClientTestConfig{
     const char *type;
 
     /**
+     * a list of sub configs separated via , if this is a super datastore
+     */
+    const char *subConfigs;
+
+    /**
      * TRUE if the source supports recovery from an interrupted
      * synchronization. Enables the Client::Sync::*::Retry group
      * of tests.
@@ -387,12 +392,14 @@ struct ClientTestConfig{
  * exchange format can register one configuration for each format, but
  * not registering any configuration is also okay.
  *
- * This code depends on the C++ client library test framework and
- * therefore CPPUnit. To avoid a hard dependency on that in the normal
- * "syncevolution" binary, the actual usage of the test Config class
- * is limited to the *Register.cpp files when compiling them for
- * inclusion in the "client-test" binary, i.e., they are protected by
- * #ifdef ENABLE_UNIT_TESTS.
+ * *Using* the registered tests depends on the CPPUnit test framework.
+ * *Registering* does not. Therefore backends should always register *
+ * *themselves for testing and leave it to the test runner
+ * "client-test" whether tests are really executed.
+ *
+ * Unit tests are different. They create hard dependencies on CPPUnit
+ * inside the code that contains them, and thus should be encapsulated
+ * inside #ifdef ENABLE_UNIT_TESTS checks.
  *
  * Sync sources have to work stand-alone without a full SyncClient
  * configuration for all local tests. The minimal configuration prepared
@@ -645,6 +652,13 @@ class SyncSourceBase : public Logger {
          * leave empty when acessing the field list directly
          */
         std::string m_profile;
+
+        /**
+         * the second parameter for MAKE/PARSETEXTWITHPROFILE
+         * which specifies a remote rule to be applied when
+         * converting to and from the backend
+         */
+        std::string m_backendRule;
     
         /** list of supported datatypes in "<use .../>" format */
         std::string m_datatypes;
@@ -686,6 +700,21 @@ class SyncSourceBase : public Logger {
      */
     virtual void getSynthesisInfo(SynthesisInfo &info,
                                   XMLConfigFragments &fragments) = 0;
+
+    /**
+     * utility code: creates Synthesis <use datatype=...>
+     * statements, using the predefined vCard21/vCard30/vcalendar10/icalendar20
+     * types. Throws an error if no suitable result can be returned (empty or invalid type)
+     *
+     * @param type         the format specifier as used in SyncEvolution configs, with and without version
+     *                     (text/x-vcard:2.1, text/x-vcard, text/x-vcalendar, text/calendar, text/plain, ...);
+     *                     see SourceType::m_format
+     * @param forceFormat  if true, then don't allow alternative formats (like vCard 3.0 in addition to 2.1);
+     *                     see SourceType::m_force
+     * @return generated XML fragment
+     */
+    std::string getDataTypeSupport(const std::string &type,
+                                   bool forceFormat);
 };
 
 /**
@@ -706,7 +735,8 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
  public:
     SyncSource(const SyncSourceParams &params) :
         SyncSourceConfig(params.m_name, params.m_nodes),
-        m_numDeleted(0)
+        m_numDeleted(0),
+        m_forceSlowSync(false)
         {
         }
     virtual ~SyncSource() {}
@@ -741,8 +771,17 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
     /**
      * Actually opens the data source specified in the constructor,
      * will throw the normal exceptions if that fails. Should
-     * not modify the state of the sync source: that can be deferred
-     * until the server is also ready and beginSync() is called.
+     * not modify the state of the sync source.
+     *
+     * The expectation is that this call is fairly light-weight, but
+     * does enough checking to determine whether the source is
+     * usable. More expensive operations (like determining changes)
+     * should be done in the m_startDataRead callback (bound to
+     * beginSync() in some of the utility classes).
+     *
+     * In clients, it will be called for all sources before
+     * the sync starts. In servers, it is called for each source once
+     * the client asks for it, but not sooner.
      */
     virtual void open() = 0;
 
@@ -761,22 +800,77 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
      */
     struct Operations {
         /**
-         * Dump all data from source unmodified into the given directory.
-         * The ConfigNode can be used to store meta information needed for
-         * restoring that state. Both directory and node are empty.
+         * The caller determines where item data is stored (m_dirname)
+         * and where meta information about them (m_node). The callee
+         * then can use both arbitrarily. As an additional hint,
+         * m_mode specifies why and when the backup is made, which
+         * is useful to determine whether information can be reused.
+         */
+        struct BackupInfo {
+            enum Mode {
+                BACKUP_BEFORE,   /**< directly at start of sync */
+                BACKUP_AFTER,    /**< directly after sync */
+                BACKUP_OTHER
+            } m_mode;
+            string m_dirname;
+            boost::shared_ptr<ConfigNode> m_node;
+            BackupInfo() {}
+            BackupInfo(Mode mode,
+                       const string &dirname,
+                       const boost::shared_ptr<ConfigNode> &node) :
+                m_mode(mode),
+                m_dirname(dirname),
+                m_node(node)
+            {}
+        };
+        struct ConstBackupInfo {
+            BackupInfo::Mode m_mode;
+            string m_dirname;
+            boost::shared_ptr<const ConfigNode> m_node;
+            ConstBackupInfo() {}
+            ConstBackupInfo(BackupInfo::Mode mode,
+                            const string &dirname,
+                            const boost::shared_ptr<const ConfigNode> &node) :
+                m_mode(mode),
+                m_dirname(dirname),
+                m_node(node)
+            {}
+        };
+
+        /**
+         * Dump all data from source unmodified into the given backup location.
          * Information about the created backup is added to the
          * report.
          *
-         * Required for the backup/restore functionality in SyncEvolution,
-         * not for syncing itself.
+         * Required for the backup/restore functionality in
+         * SyncEvolution, not for syncing itself. But typically it is
+         * called before syncing (can be turned off by users), so
+         * implementations can reuse the information gathered while
+         * making a backup in later operations.
+         *
+         * @param previous     the most recent backup, empty m_dirname if none
+         * @param next         the backup which is to be created, directory and node are empty
+         * @param report       to be filled with information about backup (number of items, etc.)
          */
-        typedef void (BackupData_t)(const string &dirname, ConfigNode &node, BackupReport &report);
+        typedef void (BackupData_t)(const ConstBackupInfo &oldBackup,
+                                    const BackupInfo &newBackup,
+                                    BackupReport &report);
         boost::function<BackupData_t> m_backupData;
 
         /**
          * Restore database from data stored in backupData().
+         * If possible don't touch items which are the same as in the
+         * backup, to mimimize impact on future incremental syncs.
+         *
+         * @param oldBackup    the backup which is to be restored
+         * @param dryrun       pretend to restore and fill in report, without
+         *                     actually touching backend data
+         * @param report       to be filled with information about restore
+         *                     (number of total items and changes)
          */
-        typedef void (RestoreData_t)(const string &dirname, const ConfigNode &node, bool dryrun, SyncSourceReport &report);
+        typedef void (RestoreData_t)(const ConstBackupInfo &oldBackup,
+                                     bool dryrun,
+                                     SyncSourceReport &report);
         boost::function<RestoreData_t> m_restoreData;
 
         /**
@@ -796,6 +890,20 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
         boost::function<CheckStatus_t> m_checkStatus;
 
         /**
+         * A quick check whether the source currently has data.
+         *
+         * If this cannot be determined easily, don't provide the
+         * operation. The information is currently only used to
+         * determine whether a slow sync should be allowed. If
+         * the operation is not provided, the assumption is that
+         * there is local data, which disables the "allow slow
+         * sync for empty databases" heuristic and forces the user
+         * to choose.
+         */
+        typedef bool (IsEmpty_t)();
+        boost::function<IsEmpty_t> m_isEmpty;
+
+        /**
          * Synthesis DB API callbacks. For documentation see the
          * Synthesis API specification (PDF and/or sync_dbapi.h).
          *
@@ -803,14 +911,20 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
          * to be part of a sync session.
          */
         /**@{*/
+        typedef void (Callback_t)();
+        typedef boost::function<Callback_t> CallbackFunctor_t;
+        typedef std::list<CallbackFunctor_t> Callbacks_t;
+
+        /** all of these functions will be called before accessing
+            the source's data for the first time, i.e., before m_startDataRead */
+        Callbacks_t m_startAccess;
+
         typedef sysync::TSyError (StartDataRead_t)(const char *lastToken, const char *resumeToken);
         boost::function<StartDataRead_t> m_startDataRead;
 
-        typedef void (Callback_t)();
-        typedef boost::function<Callback_t> CallbackFunctor_t;
         /** all of these functions will be called directly after
             m_startDataRead() returned successfully */
-        std::list<CallbackFunctor_t> m_startSession;
+        Callbacks_t m_startSession;
 
         typedef sysync::TSyError (EndDataRead_t)();
         boost::function<EndDataRead_t> m_endDataRead;
@@ -880,6 +994,12 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
         /**@}*/
     };
     const Operations &getOperations() { return m_operations; }
+
+    /**
+     * outside users of the source are only allowed to add callbacks,
+     * not overwrite arbitrary operations
+     */
+    void addCallback(Operations::CallbackFunctor_t callback, Operations::Callbacks_t Operations::* where) { (m_operations.*where).push_back(callback); }
         
     /**
      * closes the data source so that it can be reopened
@@ -912,10 +1032,12 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
      * source type specified in the params.m_nodes.m_configNode
      *
      * @param error    throw a runtime error describing what the problem is if no matching source is found
-     * @return NULL if no source can handle the given type
+     * @param config   optional, needed for intantiating virtual sources
+     * @return valid instance, NULL if no source can handle the given type (only when error==false)
      */
     static SyncSource *createSource(const SyncSourceParams &params,
-                                    bool error = true);
+                                    bool error = true,
+                                    SyncConfig *config = NULL);
 
     /**
      * Factory function for a SyncSource with the given name
@@ -958,6 +1080,16 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
     virtual void setNumDeleted(long num) { m_numDeleted = num; }
     virtual void incrementNumDeleted() { m_numDeleted++; }
 
+    /**
+     * Set to true in SyncContext::initSAN() when a SyncML server has
+     * to force a client into slow sync mode. This is necessary because
+     * the server cannot request that mode (missing in the standard).
+     * Forcing the slow sync mode is done via a FORCESLOWSYNC() macro
+     * call in an <alertscript>.
+     */
+    void setForceSlowSync(bool forceSlowSync) { m_forceSlowSync = forceSlowSync; }
+    bool getForceSlowSync() const { return m_forceSlowSync; }
+
  protected:
     Operations m_operations;
 
@@ -970,6 +1102,8 @@ class SyncSource : virtual public SyncSourceBase, public SyncSourceConfig, publi
      * (RemoveAllItems()) count the removals itself.
      */
     long m_numDeleted;
+
+    bool m_forceSlowSync;
 
     /**
      * Interface pointer for this sync source, allocated for us by the
@@ -1004,60 +1138,39 @@ class DummySyncSource : public SyncSource
 };
 
 /**
- * Virtual SyncSources
+ * A special source which combines one or more real sources.
+ * Most of the special handling for that is in SyncContext.cpp.
+ *
+ * This class can be instantiated, opened and closed if and only if
+ * the underlying sources also support that.
  */
 class VirtualSyncSource : public DummySyncSource 
 {
+    std::vector< boost::shared_ptr<SyncSource> > m_sources;
+
 public:
-    VirtualSyncSource(const SyncSourceParams &params) :
-       DummySyncSource(params) {}
+    /**
+     * @param config   optional: when given, the constructor will instantiate the
+     *                 referenced underlying sources and check them in open()
+     */
+    VirtualSyncSource(const SyncSourceParams &params, SyncConfig *config = NULL);
 
-    std::string getDataTypeSupport() {
-        string datatypes;
-        SourceType sourceType = getSourceType();
-        string type = sourceType.m_format;
+    /** opens underlying sources and checks config by calling getDataTypeSupport() */
+    virtual void open();
+    virtual void close();
 
-        if (type.empty()) {
-            return "";
-        } else if (type == "text/x-vcard:2.1" || type == "text/x-vcard") {
-            datatypes =
-                "        <use datatype='vCard21' mode='rw' preferred='yes'/>\n";
-            if (!sourceType.m_forceFormat) {
-                datatypes +=
-                    "        <use datatype='vCard30' mode='rw'/>\n";
-            }
-        } else if (type == "text/vcard:3.0" || type == "text/vcard") {
-            datatypes =
-                "        <use datatype='vCard30' mode='rw' preferred='yes'/>\n";
-            if (!sourceType.m_forceFormat) {
-                datatypes +=
-                    "        <use datatype='vCard21' mode='rw'/>\n";
-            }
-        } else if (type == "text/x-vcalendar:1.0" || type == "text/x-vcalendar" 
-                  || type == "text/x-calendar:1.0" || type == "text/x-calendar") {
-            datatypes =
-                "        <use datatype='vcalendar10' mode='rw' preferred='yes'/>\n";
-            if (!sourceType.m_forceFormat) {
-                datatypes +=
-                    "        <use datatype='icalendar20' mode='rw'/>\n";
-            }
-        } else if (type == "text/calendar:2.0" || type == "text/calendar") {
-            datatypes =
-                "        <use datatype='icalendar20' mode='rw' preferred='yes'/>\n";
-            if (!sourceType.m_forceFormat) {
-                datatypes +=
-                    "        <use datatype='vcalendar10' mode='rw'/>\n";
-            }
-        } else if (type == "text/plain:1.0" || type == "text/plain") {
-            // note10 are the same as note11, so ignore force format
-            datatypes =
-                "        <use datatype='note10' mode='rw' preferred='yes'/>\n"
-                "        <use datatype='note11' mode='rw'/>\n";
-        } else {
-            throwError(string("configured MIME type not supported: ") + type);
-        }
-        return datatypes;
-    }
+    /**
+     * returns array with source names that are referenced by this
+     * virtual source
+     */
+    std::vector<std::string> getMappedSources();
+
+    /**
+     * returns <use datatype=...> statements for XML config,
+     * throws error if not configured correctly
+     */
+    std::string getDataTypeSupport();
+    using SyncSourceBase::getDataTypeSupport;
 };
 
 /**
@@ -1370,6 +1483,10 @@ class SyncSourceRevisions : virtual public SyncSourceChanges, virtual public Syn
      * should not throw errors when it cannot create a non-empty
      * string. The caller of this method will detect situations where
      * a non-empty string is necessary and none was provided.
+     *
+     * This call is typically only invoked only once during the
+     * lifetime of a source. The result returned in that invocation is
+     * used throught the session.
      */
     virtual void listAllItems(RevisionMap_t &revisions) = 0;
 
@@ -1424,18 +1541,27 @@ class SyncSourceRevisions : virtual public SyncSourceChanges, virtual public Syn
     SyncSourceDelete *m_del;
     int m_revisionAccuracySeconds;
 
+    /** buffers the result of the initial listAllItems() call */
+    RevisionMap_t m_revisions;
+    bool m_revisionsSet;
+    void initRevisions();
+
     /**
      * Dump all data from source unmodified into the given directory.
      * The ConfigNode can be used to store meta information needed for
      * restoring that state. Both directory and node are empty.
      */
-    void backupData(const string &dirname, ConfigNode &node, BackupReport &report);
+    void backupData(const SyncSource::Operations::ConstBackupInfo &oldBackup,
+                    const SyncSource::Operations::BackupInfo &newBackup,
+                    BackupReport &report);
 
     /**
      * Restore database from data stored in backupData(). Will be
      * called inside open()/close() pair. beginSync() is *not* called.
      */
-    void restoreData(const string &dirname, const ConfigNode &node, bool dryrun, SyncSourceReport &report);
+    void restoreData(const SyncSource::Operations::ConstBackupInfo &oldBackup,
+                     bool dryrun,
+                     SyncSourceReport &report);
 
     /**
      * Increments the time stamp of the latest database modification,
@@ -1515,6 +1641,7 @@ class SyncSourceAdmin : public virtual SyncSourceBase
     boost::shared_ptr<ConfigNode> m_configNode;
     std::string m_adminPropertyName;
     boost::shared_ptr<ConfigNode> m_mappingNode;
+    bool m_mappingLoaded;
 
     ConfigProps m_mapping;
     ConfigProps::const_iterator m_mappingIterator;

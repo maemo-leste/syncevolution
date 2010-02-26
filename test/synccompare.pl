@@ -60,6 +60,7 @@ my $synthesis = $server =~ /synthesis/;
 my $zyb = $server =~ /zyb/;
 my $mobical = $server =~ /mobical/;
 my $memotoo = $server =~ /memotoo/;
+my $nokia_7210c = $server =~ /nokia_7210c/;
 
 # TODO: this hack ensures that any synchronization is limited to
 # properties supported by Synthesis. Remove this again.
@@ -102,13 +103,12 @@ sub splitvalue {
   return join("", @res);
 }
 
-# parameters: file handle with input, width to use for reformatted lines
+# parameters: text, width to use for reformatted lines
 # returns list of lines without line breaks
 sub Normalize {
-  my $in = shift;
+  $_ = shift;
   my $width = shift;
 
-  $_ = join( "", <$in> );
   s/\r//g;
 
   my @items = ();
@@ -353,7 +353,48 @@ sub Normalize {
       }
     }
 
-    if ($funambol || $egroupware) {
+    if($nokia_7210c) {
+        if (/BEGIN:VCARD/m) {
+            #ignore PREF, as it will added by default
+            s/^TEL([^:\n]*);TYPE=PREF/TEL$1/mg;
+            #remove non-digit prefix in TEL
+            s/^TEL([^:\n]*):(\D*)/TEL$1:/mg;
+            #properties N mismatch, sometimes lost part of components
+            s/^(N|X-EVOLUTION-FILE-AS):.*\r?\n?/$1:[...]\n/gm;
+            #strip spaces in 'NOTE'
+            while (s/^(NOTE|DESCRIPTION):(\S+)[\t ]+(\S+)/$1:$2$3/mg) {}
+            #preserve 80 chars in NOTE
+            s/^NOTE:(.{70}).*\r?\n?/NOTE:$1\n/mg;
+            #preserve one ADDR
+
+            # ignore the PHOTO encoding data, sometimes it add a default photo
+            s/^PHOTO(.*?): .*\n//mg; 
+            #s/^(ADR)([^:;\n]*)(;TYPE=[^:\n]*)?:.*\r?\n?/$1:$4\n/mg;
+
+            #lost properties
+            s/^(NICKNAME|CATEGORIES|CALURI|FBURL|ROLE|X-AIM|X-ANNIVERSARY|X-ASSISTANT|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GROUPWISE|X-ICQ|X-MANAGER|X-SPOUSE|X-MOZILLA-HTML|X-YAHOO)(;[^:;\n]*)*:.*\r?\n?//gm;
+        }
+
+        if (/^BEGIN:VEVENT/m ) {
+            #The properties phones add by default
+            s/^(PRIORITY|CATEGORIES)(;[^:;\n]*)*:.*\r?\n?//gm;
+            #strip spaces in 'DESCRIPTION'
+            while (s/^DESCRIPTION:(\S+)[\t ]+(\S+)/DESCRIPTION:$1$2/mg) {}
+
+        }
+
+        if (/^BEGIN:VTODO/m) {
+            #mismatch properties
+            s/^(PRIORITY)(;[^:;\n]*)*:.*\r?\n?/$1:[...]\n/gm;
+            #lost properties
+            s/^(STATUS|DTSTART|CATEGORIES)(;[^:;\n]*)*:.*\r?\n?//gm;
+        }
+
+        #Testing with phones using vcalendar, do not support UID
+        s/^(UID|CLASS|SEQUENCE|TRANSP)(;[^:;\n]*)*:.*\r?\n?//gm;
+    }
+
+    if ($funambol || $egroupware || $nokia_7210c) {
       # NOTE may be truncated due to length resistrictions
       s/^(NOTE(;[^:;\n]*)*:.{0,160}).*(\r?\n?)/$1$3/gm;
     }
@@ -485,22 +526,66 @@ if($#ARGV > 1) {
 
   my ($file1, $file2) = ($ARGV[0], $ARGV[1]);
 
-  if (-d $file1) {
-      open(IN1, "-|:utf8", "find $file1 -type f -print0 | xargs -0 cat") || die "$file1: $!";
-  } else {
-      open(IN1, "<:utf8", $file1) || die "$file1: $!";
-  }
-  if (-d $file2) {
-      open(IN2, "-|:utf8", "find $file2 -type f -print0 | xargs -0 cat") || die "$file2: $!";
-  } else {
-      open(IN2, "<:utf8", $file2) || die "$file2: $!";
-  }
   my $singlewidth = int(($columns - 3) / 2);
   $columns = $singlewidth * 2 + 3;
-  my @normal1 = Normalize(*IN1{IO}, $singlewidth);
-  my @normal2 = Normalize(*IN2{IO}, $singlewidth);
-  close(IN1);
-  close(IN2);
+  my @normal1;
+  my @normal2;
+
+  if (-d $file1 && -d $file2) {
+      # Both "files" are really directories of individual files.
+      # Don't include files in the comparison which are known
+      # to be identical because the refer to the same inode.
+      # - build map from inode to filename
+      my %files1;
+      my %files2;
+      my @content1;
+      my @content2;
+      my $inode;
+      my $fullname;
+      my $entry;
+      opendir(my $dh, $file1) || die "cannot read $file1: $!";
+      foreach $entry (grep { -f "$file1/$_" } readdir($dh)) {
+          $fullname = "$file1/$entry";
+          $inode = (stat($fullname))[1];
+          $files1{$inode} = $entry;
+      }
+      closedir($dh);
+      # - remove common files, read others
+      opendir(my $dh, $file2) || die "cannot read $file2: $!";
+      foreach $entry (grep { -f "$file2/$_" } readdir($dh)) {
+          $fullname = "$file2/$entry";
+          $inode = (stat($fullname))[1];
+          if ($files1{$inode}) {
+              delete $files1{$inode};
+          } else {
+              open(IN, "<:utf8", "$fullname") || die "$fullname: $!";
+              push @content2, <IN>;
+          }
+      }
+      # - read remaining entries from first dir
+      foreach $entry (values %files1) {
+          $fullname = "$file1/$entry";
+          open(IN, "<:utf8", "$fullname") || die "$fullname: $!";
+          push @content1, <IN>;
+      }
+      @normal1 = Normalize(join("", @content1), $singlewidth);
+      @normal2 = Normalize(join("", @content2), $singlewidth);
+  } else {
+      if (-d $file1) {
+          open(IN1, "-|:utf8", "find $file1 -type f -print0 | xargs -0 cat") || die "$file1: $!";
+      } else {
+          open(IN1, "<:utf8", $file1) || die "$file1: $!";
+      }
+      if (-d $file2) {
+          open(IN2, "-|:utf8", "find $file2 -type f -print0 | xargs -0 cat") || die "$file2: $!";
+      } else {
+          open(IN2, "<:utf8", $file2) || die "$file2: $!";
+      }
+      @normal1 = Normalize(join("", <IN1>), $singlewidth);
+      @normal2 = Normalize(join("", <IN2>), $singlewidth);
+      close(IN1);
+      close(IN2);
+  }
 
   # Produce output where each line is marked as old (aka remove) with o,
   # as new (aka added) with n, and as unchanged with u at the beginning.
@@ -637,5 +722,5 @@ if($#ARGV > 1) {
     $in = *STDIN{IO};
   }
 
-  print STDOUT join("\n", Normalize($in, $columns)), "\n";
+  print STDOUT join("\n", Normalize(join("", <$in>), $columns)), "\n";
 }

@@ -29,6 +29,7 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <glib/giochannel.h>
 #include <syncevo/SyncContext.h>
@@ -38,9 +39,12 @@
 
 SE_BEGIN_CXX
 
-ObexTransportAgent::ObexTransportAgent (OBEX_TRANS_TYPE type) :
+ObexTransportAgent::ObexTransportAgent (OBEX_TRANS_TYPE type, GMainLoop *loop) :
     m_status(INACTIVE),
     m_transType(type),
+    m_context(g_main_context_ref(loop ?
+                                 g_main_loop_get_context(loop) :
+                                 g_main_context_default())),
     m_address(""),
     m_port(-1),
     m_buffer(NULL),
@@ -102,6 +106,14 @@ void ObexTransportAgent::connect() {
     m_obexReady = false;
     if(m_transType == OBEX_BLUETOOTH) {
         if(m_port == -1) {
+            EDSAbiWrapperInit();
+            // sdp_connect may be a pointer when EVOLUTION_COMPATIBILITY is enabled.
+            // Must check whether we really have an implementation of the sdp_ calls
+            // before using them.
+            if (!SyncEvoHaveLibbluetooth) {
+                SE_THROW_EXCEPTION (TransportException, "no suitable libbluetooth found, try setting Bluetooth channel manually (obex-bt://<mac>+<channel>)");
+            }
+            
             //use sdp to detect the appropriate channel
             //Do not use BDADDR_ANY to avoid a warning
             bdaddr_t bdaddr, anyaddr ={{0,0,0,0,0,0}};
@@ -254,16 +266,6 @@ void ObexTransportAgent::shutdown() {
     OBEX_ObjectAddHeader (m_handle->get(), disconnect, OBEX_HDR_CONNECTION, header, sizeof
             (m_connectId), OBEX_FL_FIT_ONE_PACKET);
 
-    /*
-     * This is a must check when working with SyncML server case:
-     * It will not call wait() for the last send(), which caused the
-     * event source set up during that send() has no chance to be removed
-     * until here.
-     * */
-    if (m_obexEvent) {
-        m_obexEvent.set(NULL);
-    }
-
     //reset up obex fd soruce 
     guint obexSource = g_io_add_watch (m_channel->get(), (GIOCondition) (G_IO_IN|G_IO_OUT|G_IO_HUP|G_IO_ERR|G_IO_NVAL), obex_fd_source_cb, static_cast<void *> (this));
     cxxptr<ObexEvent> obexEventSource (new ObexEvent (obexSource));
@@ -309,14 +311,6 @@ void ObexTransportAgent::send(const char *data, size_t len) {
     header.bs = reinterpret_cast <const uint8_t *> (data);
     OBEX_ObjectAddHeader (m_handle->get(), put, OBEX_HDR_BODY, header, len, 0);
 
-    /*
-     * This is a safe check, the problem is: 
-     * If application called send() and without calling wait() it calls send()
-     * again, this will leading to a event leak.
-     * */
-    if (m_obexEvent) {
-        m_obexEvent.set(NULL);
-    }
     //reset up the OBEX fd source 
     guint obexSource = g_io_add_watch (channel->get(), (GIOCondition) (G_IO_IN|G_IO_OUT|G_IO_HUP|G_IO_ERR|G_IO_NVAL), obex_fd_source_cb, static_cast<void *> (this));
     cxxptr<ObexEvent> obexEventSource (new ObexEvent (obexSource));
@@ -368,7 +362,7 @@ TransportAgent::Status ObexTransportAgent::wait(bool noReply) {
     cxxptr<Channel> channel;
 
     while (!m_obexReady) {
-        g_main_context_iteration (NULL, FALSE);
+        g_main_context_iteration (m_context, TRUE);
         if (m_status == FAILED) {
             if (m_obexEvent) {
                 obexEvent = m_obexEvent;
@@ -408,7 +402,7 @@ TransportAgent::Status ObexTransportAgent::wait(bool noReply) {
         }
 
         while (!m_obexReady) {
-            g_main_context_iteration (NULL, FALSE);
+            g_main_context_iteration (m_context, TRUE);
             if (m_status == FAILED) {
                 SE_THROW_EXCEPTION (TransportException, 
                         "ObexTransprotAgent: Underlying transport error");
@@ -519,7 +513,13 @@ void ObexTransportAgent::sdp_callback_impl (uint8_t type, uint16_t status, uint8
 
 	    int seqSize = 0;
         uint8_t dtdp;
+#if defined(HAVE_BLUEZ_SAFE) || defined(EVOLUTION_COMPATIBILITY)
+        scanned = sdp_extract_seqtype_safe(rsp, bufSize, &dtdp, &seqSize);
+#elif defined(HAVE_BLUEZ_BUFSIZE)
         scanned = sdp_extract_seqtype(rsp, bufSize, &dtdp, &seqSize);
+#else
+        scanned = sdp_extract_seqtype(rsp, &dtdp, &seqSize);
+#endif
         if (!scanned || !seqSize) {
             SE_THROW_EXCEPTION (TransportException, "ObexTransportAgent: Bluetooth service search failed");
         }
@@ -532,7 +532,13 @@ void ObexTransportAgent::sdp_callback_impl (uint8_t type, uint16_t status, uint8
             int recSize;
 
             recSize = 0;
+#if defined(HAVE_BLUEZ_SAFE) || defined(EVOLUTION_COMPATIBILITY) 
+            rec = sdp_extract_pdu_safe(rsp, bufSize, &recSize);
+#elif defined(HAVE_BLUEZ_BUFSIZE)
             rec = sdp_extract_pdu(rsp, bufSize, &recSize);
+#else
+            rec = sdp_extract_pdu(rsp, &recSize);
+#endif
             if (!rec) {
                 SE_THROW_EXCEPTION (TransportException, "ObexTransportAgent: sdp_extract_pdu failed");
             }
@@ -609,38 +615,48 @@ gboolean ObexTransportAgent::obex_fd_source_cb_impl (GIOChannel *io, GIOConditio
 
         SuspendFlags s_flags = SyncContext::getSuspendFlags();
         //abort transfer, only process the abort one time.
-        if (s_flags.state == SuspendFlags::CLIENT_ABORT /*&& !m_disconnectingi*/){
+        if (s_flags.state == SuspendFlags::CLIENT_ABORT && !m_disconnecting){
             //first check abort flag
-            cancel();
+            SE_LOG_INFO (NULL, NULL, "ObexTransport aborting.");
+            //do not send the disconnect cmd, close the connection directly.
+            m_disconnecting = true;
             m_sock = sockObj;
             m_channel = channel;
+            cancel();
             return TRUE;
         }
 
         time_t now = time(NULL);
         if (m_cb && (m_requestStart != 0) 
                 && (now - m_requestStart > m_cbInterval)) {
+            m_sock = sockObj;
+            m_channel = channel;
             if (m_cb (m_cbData)){
                 //timeout
                 m_status = TIME_OUT;
                 //currently we will not support transport resend for 
                 //OBEX transport ??
+                m_disconnecting = true;
                 cancel();
             } else {
                 //abort
+                m_disconnecting = true;
                 cancel();
             }
-            m_sock = sockObj;
-            m_channel = channel;
             return TRUE;
         }
 
-        if (OBEX_HandleInput (m_handle->get(), OBEX_POLL_INTERVAL) <0) {
+        if (OBEX_HandleInput (m_handle->get(), OBEX_POLL_INTERVAL) <0 && errno != EINTR) {
             //transport error
             //no way to recovery, simply abort
             //disconnect without sending disconnect request
-            m_disconnecting = true;
-            cancel();
+            //The failure may already has been processed during
+            //OBEX callback, thus no need to handle it again if status is
+            //already marked as FAILED
+            if (m_status != FAILED){
+                m_disconnecting = true;
+                cancel();
+            }
         }
         m_sock = sockObj;
         m_channel = channel;

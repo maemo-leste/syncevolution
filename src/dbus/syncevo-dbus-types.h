@@ -40,23 +40,20 @@ typedef enum {
   SYNCEVO_SYNC_ONE_WAY_FROM_SERVER,
 } SyncevoSyncMode;
 
+/* SyncevoSessionStatus is a bitfield, although most value are exclusive */
 typedef enum {
-  SYNCEVO_STATUS_UNKNOWN,
-  SYNCEVO_STATUS_QUEUEING,
-  SYNCEVO_STATUS_IDLE,
-  SYNCEVO_STATUS_RUNNING,
-  SYNCEVO_STATUS_ABORTING,
-  SYNCEVO_STATUS_SUSPENDING,
-  SYNCEVO_STATUS_DONE,
+  SYNCEVO_STATUS_UNKNOWN = 0,
+  SYNCEVO_STATUS_QUEUEING = 1 << 0,
+  SYNCEVO_STATUS_IDLE = 1 << 1,
+  SYNCEVO_STATUS_RUNNING = 1 << 2,
+  SYNCEVO_STATUS_ABORTING = 1 << 3,
+  SYNCEVO_STATUS_SUSPENDING = 1 << 4,
+  SYNCEVO_STATUS_DONE = 1 << 5,
+
+  /* the ones below are modifiers */
+  SYNCEVO_STATUS_WAITING =  1 << 6
 } SyncevoSessionStatus;
 
-typedef enum {
-  SYNCEVO_SOURCE_IDLE,
-  SYNCEVO_SOURCE_RUNNING,
-  SYNCEVO_SOURCE_RUNNING_WAITING,
-  SYNCEVO_SOURCE_RUNNING_PROCESSING,
-  SYNCEVO_SOURCE_DONE,
-} SyncevoSourceStatus;
 
 typedef enum {
   SYNCEVO_PHASE_NONE,
@@ -64,17 +61,6 @@ typedef enum {
   SYNCEVO_PHASE_SENDING,
   SYNCEVO_PHASE_RECEIVING,
 } SyncevoSourcePhase;
-
-typedef struct {
-  char *name;
-  SyncevoSourcePhase phase;
-  int prepare_current;
-  int prepare_total;
-  int send_current;
-  int send_total;
-  int receive_current;
-  int receive_total;
-} SyncevoSourceProgress;  
 
 #define SYNCEVO_TYPE_SOURCE_STATUS (dbus_g_type_get_struct ("GValueArray", G_TYPE_STRING, G_TYPE_STRING, G_TYPE_UINT, G_TYPE_INVALID))
 #define SYNCEVO_TYPE_SOURCE_STATUSES (dbus_g_type_get_map ("GHashTable", G_TYPE_STRING, SYNCEVO_TYPE_SOURCE_STATUS))
@@ -108,6 +94,7 @@ void syncevo_config_foreach_source (SyncevoConfig *config,
 void syncevo_config_free (SyncevoConfig *config);
 
 const char* syncevo_sync_mode_to_string (SyncevoSyncMode mode);
+SyncevoSyncMode syncevo_sync_mode_from_string (const char *mode_str);
 
 SyncevoSourceModes* syncevo_source_modes_new ();
 void syncevo_source_modes_add (SyncevoSourceModes *source_modes,
@@ -120,7 +107,7 @@ SyncevoSessionStatus syncevo_session_status_from_string (const char *status_str)
 
 typedef void (*SourceStatusFunc) (char *name,
                                   SyncevoSyncMode mode,
-                                  SyncevoSourceStatus status,
+                                  SyncevoSessionStatus status,
                                   guint error_code,
                                   gpointer user_data);
 void
@@ -130,13 +117,13 @@ syncevo_source_statuses_foreach (SyncevoSourceStatuses *source_statuses,
 
 void syncevo_source_statuses_free (SyncevoSourceStatuses *source_statuses);
 
-
-SyncevoSourceProgress* syncevo_source_progresses_get_current (SyncevoSourceProgresses *source_progresses);
-
+typedef void (*SourceProgressFunc) (const char *name,
+                                    SyncevoSourcePhase phase,
+                                    gpointer user_data);
+void syncevo_source_progresses_foreach (SyncevoSourceProgresses *source_progresses,
+                                        SourceProgressFunc func,
+                                        gpointer userdata);
 void syncevo_source_progresses_free (SyncevoSourceProgresses *source_progresses);
-
-void syncevo_source_progress_free (SyncevoSourceProgress *progress);
-
 
 GHashTable* syncevo_reports_index (SyncevoReports *reports,
                                    guint index);

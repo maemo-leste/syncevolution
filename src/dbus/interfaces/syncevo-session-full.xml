@@ -167,6 +167,30 @@
       <doc:doc><doc:description>Detach from the session.</doc:description></doc:doc>
     </method>
 
+    <method name="Restore">
+      <doc:doc><doc:description>
+        <doc:para>
+          Restores the data of the selected sources to the state from before or after the selected synchronization. The synchronization is selected via its session directory. Other directories can also be given as long as they contain database dumps in the format created by SyncEvolution. 
+        </doc:para>
+        <doc:para>
+          When "sources" are empty, it assumes to restore all available backup sources in the session. If a source is not found in the backup database, then an exception is thrown.
+        </doc:para>
+        <doc:para>
+          Once this method is called, the session is not active anymore. Thus, to call other APIs, a new session is needed to create.  
+        </doc:para>
+      </doc:description></doc:doc>
+      <arg type="s" name="dir" direction="in">
+        <doc:doc><doc:summary>the session directory</doc:summary></doc:doc>
+      </arg>
+      <arg type="b" name="before" direction="in">
+        <doc:doc><doc:summary>restore to the data before or after the session</doc:summary></doc:doc>
+      </arg>
+      <arg type="as" name="sources" direction="in">
+        <doc:doc><doc:summary>sources list that be needed to restore</doc:summary></doc:doc>
+        <doc:doc><doc:description>Valid values are all available sources.</doc:description></doc:doc>
+      </arg>
+    </method>
+
     <method name="CheckPresence">
       <doc:doc><doc:description>Checks whether a sync with the current server can start.</doc:description></doc:doc>
       <arg type="s" name="status">
@@ -182,7 +206,9 @@
       <doc:doc><doc:description>Get session status. Individual source statuses are relevant and provided only when status is neither "queuing" nor "idle".</doc:description></doc:doc>
       <arg type="s" name="status" direction="out">
         <doc:doc><doc:summary>Session status</doc:summary></doc:doc>
-        <doc:doc><doc:description>Valid values include strings starting with "queueing", "idle" (ready to execute commands), "running", "aborting", "suspending", "done" (a sync was executed, individual source statuses for that sync are available, session is now inactive and cannot execute new commands). The strings may contain additional specifiers separated by a semicolons: "running;processing", "suspending;waiting". There may be several specifiers: "running;waiting;foo"</doc:description></doc:doc>
+        <doc:doc><doc:description>Valid values include strings starting with "queueing", "idle" (ready to execute commands), "running", "aborting", "suspending", "done" (a sync was executed, individual source statuses for that sync are available, session is now inactive and cannot execute new commands). The strings may contain additional specifiers separated by a semicolons: "running;waiting", "suspending;waiting". There may be several specifiers: "running;waiting;foo".
+                Specifier "waiting" means that the dbus server is waiting for some external events, typically IO events(like network transports, etc). If "waiting" is absent, then we've done the waiting.
+        </doc:description></doc:doc>
       </arg>
       <arg type="u" name="error" direction="out">
         <doc:doc><doc:summary>Error code for current or last action (zero for no error).</doc:summary></doc:doc>

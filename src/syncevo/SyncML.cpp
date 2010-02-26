@@ -30,6 +30,9 @@
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/replace.hpp>
+#include <boost/algorithm/string/join.hpp>
+
+#include <synthesis/syerror.h>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -56,6 +59,8 @@ std::string PrettyPrintSyncMode(SyncMode mode, bool userVisible)
     case SYNC_REFRESH_FROM_SERVER:
     case SA_SYNC_REFRESH_FROM_SERVER:
         return userVisible ? "refresh-from-server" : "SYNC_REFRESH_FROM_SERVER";
+    case SYNC_RESTORE_FROM_BACKUP:
+        return userVisible ? "restore-from-backup" : "SYNC_RESTORE_FROM_BACKUP";
     default:
         std::stringstream res;
 
@@ -67,10 +72,6 @@ std::string PrettyPrintSyncMode(SyncMode mode, bool userVisible)
 SyncMode StringToSyncMode(const std::string &mode, bool serverAlerted)
 {
     if (boost::iequals(mode, "slow") || boost::iequals(mode, "SYNC_SLOW")) {
-        if (serverAlerted) {
-            //No server initiated slow sync, fallback to two way sync
-            return SA_SYNC_TWO_WAY;
-        }
         return SYNC_SLOW;
     } else if (boost::iequals(mode, "two-way") || boost::iequals(mode, "SYNC_TWO_WAY")) {
         return serverAlerted ?SA_SYNC_TWO_WAY: SYNC_TWO_WAY;
@@ -90,21 +91,237 @@ SyncMode StringToSyncMode(const std::string &mode, bool serverAlerted)
 }
 
 
-ContentType StringToContentType(const std::string &type) {
+ContentType StringToContentType(const std::string &type, bool force) {
     if (boost::iequals (type, "text/x-vcard") || boost::iequals (type, "text/x-vcard:2.1")) {
         return WSPCTC_XVCARD;
     } else if (boost::iequals (type, "text/vcard") ||boost::iequals (type, "text/vcard:3.0")) {
-        return WSPCTC_VCARD;
+        return force ? WSPCTC_VCARD : WSPCTC_XVCARD;
     } else if (boost::iequals (type, "text/x-vcalendar") ||boost::iequals (type, "text/x-vcalendar:1.0")
               ||boost::iequals (type, "text/x-calendar") || boost::iequals (type, "text/x-calendar:1.0")) {
         return WSPCTC_XVCALENDAR;
     } else if (boost::iequals (type, "text/calendar") ||boost::iequals (type, "text/calendar:2.0")) {
-        return WSPCTC_ICALENDAR;
+        return force ? WSPCTC_ICALENDAR : WSPCTC_XVCALENDAR;
     } else if (boost::iequals (type, "text/plain") ||boost::iequals (type, "text/plain:1.0")) {
         return WSPCTC_TEXT_PLAIN;
     } else {
         return WSPCTC_UNKNOWN;
     }
+}
+
+std::string Status2String(SyncMLStatus status)
+{
+    string error;
+    bool local;
+    int code = status;
+
+    local = status >= static_cast<int>(sysync::LOCAL_STATUS_CODE);
+    if (local &&
+        status <= static_cast<int>(sysync::LOCAL_STATUS_CODE_END)) {
+        code = status - static_cast<int>(sysync::LOCAL_STATUS_CODE);
+    } else {
+        code = status;
+    }
+
+    switch (code) {
+    case STATUS_OK:
+    case STATUS_HTTP_OK:
+        error = "no error";
+        break;
+    case STATUS_NO_CONTENT:
+        error = "no content/end of data";
+        break;
+    case STATUS_DATA_MERGED:
+        error = "data merged";
+        break;
+    case STATUS_FORBIDDEN:
+        error = "access denied";
+        break;
+    case STATUS_NOT_FOUND:
+        error = "object not found";
+        break;
+    case STATUS_COMMAND_NOT_ALLOWED:
+        error = "operation not allowed";
+        break;
+    case STATUS_ALREADY_EXISTS:
+        error = "object exists already";
+        break;
+    case STATUS_FATAL:
+        error = "fatal error";
+        break;
+    case STATUS_DATASTORE_FAILURE:
+        error = "database failure";
+        break;
+    case STATUS_FULL:
+        error = "out of space";
+        break;
+
+    case STATUS_UNEXPECTED_SLOW_SYNC:
+        error = "unexpected slow sync";
+        break;
+
+    case STATUS_PARTIAL_FAILURE:
+        error = "some changes could not be transferred";
+        break;
+
+    case sysync::LOCERR_BADPROTO:
+        error = "bad or unknown protocol";
+        break;
+    case sysync::LOCERR_SMLFATAL:
+        error = "fatal problem with SML";
+        break;
+    case sysync::LOCERR_COMMOPEN:
+        error = "cannot open communication";
+        break;
+    case sysync::LOCERR_SENDDATA:
+        error = "cannot send data";
+        break;
+    case sysync::LOCERR_RECVDATA:
+        error = "cannot receive data";
+        break;
+    case sysync::LOCERR_BADCONTENT:
+        error = "bad content in response";
+        break;
+    case sysync::LOCERR_PROCESSMSG:
+        error = "SML (or SAN) error processing incoming message";
+        break;
+    case sysync::LOCERR_COMMCLOSE:
+        error = "cannot close communication";
+        break;
+    case sysync::LOCERR_AUTHFAIL:
+        error = "transport layer authorisation failed";
+        break;
+    case sysync::LOCERR_CFGPARSE:
+        error = "error parsing config file";
+        break;
+    case sysync::LOCERR_CFGREAD:
+        error = "error reading config file";
+        break;
+    case sysync::LOCERR_NOCFG:
+        error = "no config found";
+        break;
+    case sysync::LOCERR_NOCFGFILE:
+        error = "config file could not be found";
+        break;
+    case sysync::LOCERR_EXPIRED:
+        error = "expired";
+        break;
+    case sysync::LOCERR_WRONGUSAGE:
+        error = "bad usage";
+        break;
+    case sysync::LOCERR_BADHANDLE:
+        error = "bad handle";
+        break;
+    case sysync::LOCERR_USERABORT:
+        error = "aborted on behalf of user";
+        break;
+    case sysync::LOCERR_BADREG:
+        error = "bad registration";
+        break;
+    case sysync::LOCERR_LIMITED:
+        error = "limited trial version";
+        break;
+    case sysync::LOCERR_TIMEOUT:
+        error = "connection timeout";
+        break;
+    case sysync::LOCERR_CERT_EXPIRED:
+        error = "connection SSL certificate expired";
+        break;
+    case sysync::LOCERR_CERT_INVALID:
+        error = "connection SSL certificate invalid";
+        break;
+    case sysync::LOCERR_INCOMPLETE:
+        error = "incomplete sync session";
+        break;
+    case sysync::LOCERR_RETRYMSG:
+        error = "retry sending message";
+        break;
+    case sysync::LOCERR_OUTOFMEM:
+        error = "out of memory";
+        break;
+    case sysync::LOCERR_NOCONN:
+        error = "no means to open a connection";
+        break;
+    case sysync::LOCERR_CONN:
+        error = "connection cannot be established";
+        break;
+    case sysync::LOCERR_ALREADY:
+        error = "element is already installed";
+        break;
+    case sysync::LOCERR_TOONEW:
+        error = "this build is too new for this license";
+        break;
+    case sysync::LOCERR_NOTIMP:
+        error = "function not implemented";
+        break;
+    case sysync::LOCERR_WRONGPROD:
+        error = "this license code is valid, but not for this product";
+        break;
+    case sysync::LOCERR_USERSUSPEND:
+        error = "explicitly suspended on behalf of user";
+        break;
+    case sysync::LOCERR_TOOOLD:
+        error = "this build is too old for this SDK/plugin";
+        break;
+    case sysync::LOCERR_UNKSUBSYSTEM:
+        error = "unknown subsystem";
+        break;
+    case sysync::LOCERR_SESSIONRST:
+        error = "next message will be a session restart";
+        break;
+    case sysync::LOCERR_LOCDBNOTRDY:
+        error = "local datastore is not ready";
+        break;
+    case sysync::LOCERR_RESTART:
+        error = "session should be restarted from scratch";
+        break;
+    case sysync::LOCERR_PIPECOMM:
+        error = "internal pipe communication problem";
+        break;
+    case sysync::LOCERR_BUFTOOSMALL:
+        error = "buffer too small for requested value";
+        break;
+    case sysync::LOCERR_TRUNCATED:
+        error = "value truncated to fit into field or buffer";
+        break;
+    case sysync::LOCERR_BADPARAM:
+        error = "bad parameter";
+        break;
+    case sysync::LOCERR_OUTOFRANGE:
+        error = "out of range";
+        break;
+    case sysync::LOCERR_TRANSPFAIL:
+        error = "external transport failure";
+        break;
+    case sysync::LOCERR_CLASSNOTREG:
+        error = "class not registered";
+        break;
+    case sysync::LOCERR_IIDNOTREG:
+        error = "interface not registered";
+        break;
+    case sysync::LOCERR_BADURL:
+        error = "bad URL";
+        break;
+    case sysync::LOCERR_SRVNOTFOUND:
+        error = "server not found";
+        break;
+
+    case STATUS_MAX:
+        break;
+    }
+
+    string statusstr = StringPrintf("%s, status %d",
+                                    local ? "local" : "remote",
+                                    status);
+    string description;
+    if (error.empty()) {
+        description = statusstr;
+    } else {
+        description = StringPrintf("%s (%s)",
+                                   error.c_str(),
+                                   statusstr.c_str());
+    }
+
+    return description;
 }
 
 namespace {
@@ -162,6 +379,17 @@ void SyncSourceReport::StringToStatTuple(const std::string &str, ItemLocation &l
     state = tokens.size() > 1 ? StringToState(tokens[1]) : ITEM_STATE_MAX;
     result = tokens.size() > 2 ? StringToResult(tokens[2]) : ITEM_RESULT_MAX;
 }
+
+bool SyncSourceReport::wasChanged(ItemLocation location)
+{
+    for (int i = ITEM_ADDED; i < ITEM_ANY; i++) {
+        if (getItemStat(location, (ItemState)i, ITEM_TOTAL) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 
 std::ostream &operator << (std::ostream &out, const SyncReport &report)
 {
@@ -222,10 +450,10 @@ namespace {
 void SyncReport::prettyPrint(std::ostream &out, int flags) const
 {
     // table looks like this:
-    // +-------------------|-------ON CLIENT---------------|-------ON SERVER-------|-CON-+
-    // |                   |       rejected / total        |    rejected / total   | FLI |
-    // |            Source |  NEW  |  MOD  |  DEL  | TOTAL |  NEW  |  MOD  |  DEL  | CTS |
-    // +-------------------+-------+-------+-------+-------+-------+-------+-------+-----+
+    // +-------------------+-------------------------------+-------------------------------|-CON-+
+    // |                   |             LOCAL             |           REMOTE              | FLI |
+    // |            Source | NEW | MOD | DEL | ERR | TOTAL | NEW | MOD | DEL | ERR | TOTAL | CTS |
+    // +-------------------+-----+-----+-----+-----+-------+-----+-----+-----+-----+-------+-----+
     //
     // Most of the columns can be turned on or off dynamically.
     // Their width is calculated once (including right separators and spaces):
@@ -247,13 +475,18 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
         name_width += 2;
     }
 
-    int count_width = 8;
+    int count_width = 6;
+    int num_counts = 3;
+    if (flags & WITH_TOTAL) {
+        num_counts++;
+    }
+    if (!(flags & WITHOUT_REJECTS)) {
+        num_counts++;
+    }
     int client_width = (flags & WITHOUT_CLIENT) ? 0 :
-        (flags & WITH_TOTAL) ? 4 * count_width :
-        3 * count_width;
+        num_counts * count_width;
     int server_width = (flags & WITHOUT_SERVER) ? 0 :
-        (flags & WITH_TOTAL) ? 4 * count_width :
-        3 * count_width;
+        num_counts * count_width;
     int conflict_width = (flags & WITHOUT_CONFLICTS) ? 0 : 6;
     int text_width = name_width + client_width + server_width + conflict_width;
 
@@ -265,10 +498,10 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
 
     out << "+" << fill('-', name_width);
     if (!(flags & WITHOUT_CLIENT)) {
-        out << '|' << center('-', "ON CLIENT", client_width);
+        out << '|' << center('-', "", client_width);
     }
     if (!(flags & WITHOUT_SERVER)) {
-        out << '|' << center('-', "ON SERVER", server_width);
+        out << '|' << center('-', "", server_width);
     }
     if (!(flags & WITHOUT_CONFLICTS)) {
         out << '|' << center('-', "CON", conflict_width);
@@ -277,12 +510,11 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
 
     if (!(flags & WITHOUT_REJECTS) || !(flags & WITHOUT_CONFLICTS)) {
         out << "|" << fill(' ', name_width);
-        string header = (flags & WITHOUT_REJECTS) ? "total" : "rejected / total";
         if (!(flags & WITHOUT_CLIENT)) {
-            out << '|' << center(' ', header, client_width);
+            out << '|' << center(' ', "LOCAL", client_width);
         }
         if (!(flags & WITHOUT_SERVER)) {
-            out << '|' << center(' ', header, server_width);
+            out << '|' << center(' ', "REMOTE", server_width);
         }
         if (!(flags & WITHOUT_CONFLICTS)) {
             out << '|' << center(' ', "FLI", conflict_width);
@@ -295,6 +527,9 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
         out << '|' << center(' ', "NEW", count_width);
         out << '|' << center(' ', "MOD", count_width);
         out << '|' << center(' ', "DEL", count_width);
+        if (!(flags & WITHOUT_REJECTS)) {
+            out << '|' << center(' ', "ERR", count_width);
+        }
         if (flags & WITH_TOTAL) {
             out << '|' << center(' ', "TOTAL", count_width);
         }
@@ -303,6 +538,9 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
         out << '|' << center(' ', "NEW", count_width);
         out << '|' << center(' ', "MOD", count_width);
         out << '|' << center(' ', "DEL", count_width);
+        if (!(flags & WITHOUT_REJECTS)) {
+            out << '|' << center(' ', "ERR", count_width);
+        }
         if (flags & WITH_TOTAL) {
             out << '|' << center(' ', "TOTAL", count_width);
         }
@@ -318,6 +556,9 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
         sepstream << '+' << fill('-', count_width);
         sepstream << '+' << fill('-', count_width);
         sepstream << '+' << fill('-', count_width);
+        if (!(flags & WITHOUT_REJECTS)) {
+            sepstream << '+' << fill('-', count_width);
+        }
         if (flags & WITH_TOTAL) {
             sepstream << '+' << fill('-', count_width);
         }
@@ -326,6 +567,9 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
         sepstream << '+' << fill('-', count_width);
         sepstream << '+' << fill('-', count_width);
         sepstream << '+' << fill('-', count_width);
+        if (!(flags & WITHOUT_REJECTS)) {
+            sepstream << '+' << fill('-', count_width);
+        }
         if (flags & WITH_TOTAL) {
             sepstream << '+' << fill('-', count_width);
         }
@@ -350,14 +594,24 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
              location <= ((flags & WITHOUT_SERVER) ? SyncSourceReport::ITEM_LOCAL : SyncSourceReport::ITEM_REMOTE);
              location = SyncSourceReport::ItemLocation(int(location) + 1)) {
             for (SyncSourceReport::ItemState state = SyncSourceReport::ITEM_ADDED;
-                 state <= ((flags & WITH_TOTAL) ? SyncSourceReport::ITEM_ANY : SyncSourceReport::ITEM_REMOVED);
+                 state <= SyncSourceReport::ITEM_REMOVED;
                  state = SyncSourceReport::ItemState(int(state) + 1)) {
                 stringstream count;
-                if (!(flags & WITHOUT_REJECTS)) {
-                    count << source.getItemStat(location, state, SyncSourceReport::ITEM_REJECT)
-                          << '/';
-                }
                 count << source.getItemStat(location, state, SyncSourceReport::ITEM_TOTAL);
+                out << '|' << center(' ', count.str(), count_width);
+            }
+            if (!(flags & WITHOUT_REJECTS)) {
+                stringstream count;
+                count << source.getItemStat(location,
+                                            SyncSourceReport::ITEM_ANY,
+                                            SyncSourceReport::ITEM_REJECT);
+                out << '|' << center(' ', count.str(), count_width);
+            }
+            if (flags & WITH_TOTAL) {
+                stringstream count;
+                count << source.getItemStat(location,
+                                            SyncSourceReport::ITEM_ANY,
+                                            SyncSourceReport::ITEM_TOTAL);
                 out << '|' << center(' ', count.str(), count_width);
             }
         }
@@ -447,6 +701,11 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
             }
             out << '|' << align(' ', backup.str(), text_width, name_column) << "|\n";
         }
+        if (source.getStatus()) {
+            out  << '|' << align(' ',
+                                 Status2String(source.getStatus()),
+                                 text_width, name_column) << "|\n";
+        }
         out << sep;
     }
 
@@ -456,13 +715,16 @@ void SyncReport::prettyPrint(std::ostream &out, int flags) const
     if (getStatus()) {
         out << '|' << center(' ',
                              getStatus() != STATUS_HTTP_OK ?
-                             StringPrintf("synchronization failed (status code %d)", static_cast<int>(getStatus())) :
+                             Status2String(getStatus()) :
                              "synchronization completed successfully",
                              text_width)
             << "|\n";
     }
     if (getStatus() || getStart()) {
         out << sep;
+    }
+    if (!getError().empty()) {
+        out << "First ERROR encountered: " << getError() << endl;
     }
 }
 
@@ -489,11 +751,57 @@ std::string SyncReport::formatSyncTimes() const
     return out.str();
 }
 
+std::string SyncReport::slowSyncExplanation(const std::string &peer,
+                                            const std::set<std::string> &sources)
+{
+    if (sources.empty()) {
+        return "";
+    }
+
+    string sourceparam = boost::join(sources, " ");
+    std::string explanation =
+        StringPrintf("Doing a slow synchronization may lead to duplicated items or\n"
+                     "lost data when the server merges items incorrectly. Choosing\n"
+                     "a different synchronization mode may be the better alternative.\n"
+                     "Restart synchronization of affected source(s) with one of the\n"
+                     "following sync modes to recover from this problem:\n"
+                     "    slow, refresh-from-server, refresh-from-client\n\n"
+                     "Analyzing the current state:\n"
+                     "    syncevolution --status %s %s\n\n"
+                     "Running with one of the three modes:\n"
+                     "    syncevolution --sync [slow|refresh-from-server|refresh-from-client] %s %s\n",
+                     peer.c_str(), sourceparam.c_str(),
+                     peer.c_str(), sourceparam.c_str());
+    return explanation;
+}
+
+std::string SyncReport::slowSyncExplanation(const std::string &peer) const
+{
+    std::set<std::string> sources;
+    BOOST_FOREACH(const SyncReport::value_type &entry, *this) {
+        const std::string &name = entry.first;
+        const SyncSourceReport &source = entry.second;
+        if (source.getStatus() == STATUS_UNEXPECTED_SLOW_SYNC) {
+            string virtualsource = source.getVirtualSource();
+            sources.insert(virtualsource.empty() ?
+                           name :
+                           virtualsource);
+        }
+    }
+    return slowSyncExplanation(peer, sources);
+}
+
 ConfigNode &operator << (ConfigNode &node, const SyncReport &report)
 {
     node.setProperty("start", static_cast<long>(report.getStart()));
     node.setProperty("end", static_cast<long>(report.getEnd()));
     node.setProperty("status", static_cast<int>(report.getStatus()));
+    string error = report.getError();
+    if (!error.empty()) {
+        node.setProperty("error", error);
+    } else {
+        node.removeProperty("error");
+    }
 
     BOOST_FOREACH(const SyncReport::value_type &entry, report) {
         const std::string &name = entry.first;
@@ -513,6 +821,11 @@ ConfigNode &operator << (ConfigNode &node, const SyncReport &report)
         node.setProperty(key, source.isResumeSync());
         key = prefix + "-status";
         node.setProperty(key, static_cast<long>(source.getStatus()));
+        string virtualsource = source.getVirtualSource();
+        if (!virtualsource.empty()) {
+            key = prefix + "-virtualsource";
+            node.setProperty(key, virtualsource);
+        }
         key = prefix + "-backup-before";
         node.setProperty(key, source.m_backupBefore.getNumItems());
         key = prefix + "-backup-after";
@@ -558,6 +871,10 @@ ConfigNode &operator >> (ConfigNode &node, SyncReport &report)
     if (node.getProperty("status", status)) {
         report.setStatus(static_cast<SyncMLStatus>(status));
     }
+    string error;
+    if (node.getProperty("error", error)) {
+        report.setError(error);
+    }
 
     ConfigNode::PropsType props;
     node.readProperties(props);
@@ -599,6 +916,8 @@ ConfigNode &operator >> (ConfigNode &node, SyncReport &report)
                     if (node.getProperty(prop.first, value)) {
                         source.recordStatus(static_cast<SyncMLStatus>(value));
                     }
+                } else if (key == "virtualsource") {
+                    source.recordVirtualSource(node.readProperty(prop.first));
                 } else if (key == "backup-before") {
                     long value;
                     if (node.getProperty(prop.first, value)) {

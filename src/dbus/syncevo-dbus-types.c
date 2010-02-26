@@ -35,20 +35,21 @@ syncevo_config_get_value (SyncevoConfig *config,
     g_return_val_if_fail (config, FALSE);
     g_return_val_if_fail (value, FALSE);
 
+    *value = NULL;
+
     if (!source || strlen (source) == 0) {
         name = g_strdup ("");
     } else {
-        name = g_strdup_printf ("sources/%s", source);
+        name = g_strdup_printf ("source/%s", source);
     }
 
     source_config = (GHashTable*)g_hash_table_lookup (config, name);
     g_free (name);
 
     if (source_config) {
-        *value = (char*)g_hash_table_lookup (source_config, key);
-        return TRUE;
+        return g_hash_table_lookup_extended (source_config, key,
+                                             NULL, (gpointer*)value);
     }
-    
     return FALSE;
 }
 
@@ -69,7 +70,7 @@ syncevo_config_set_value (SyncevoConfig *config,
     if (!source || strlen (source) == 0) {
         name = g_strdup ("");
     } else {
-        name = g_strdup_printf ("sources/%s", source);
+        name = g_strdup_printf ("source/%s", source);
     }
 
     source_config = (GHashTable*)g_hash_table_lookup (config, name);
@@ -117,7 +118,9 @@ void
 syncevo_config_free (SyncevoConfig *config)
 {
     /* NOTE: Hashtables gcreated by dbus-glib should free their contents */
-    g_hash_table_destroy (config);
+    if (config) {
+        g_hash_table_destroy (config);
+    }
 }
 
 const char*
@@ -210,6 +213,59 @@ syncevo_session_status_from_string (const char *status_str)
         status = SYNCEVO_STATUS_UNKNOWN;
     }
 
+    if (status_str && strstr (status_str, ";waiting")) {
+        status |= SYNCEVO_STATUS_WAITING;
+    }
+
+    return status;
+}
+
+SyncevoSyncMode
+syncevo_sync_mode_from_string (const char *mode_str)
+{
+    if (!mode_str ||
+        g_str_has_prefix (mode_str, "none") ||
+        g_str_has_prefix (mode_str, "disabled")) {
+        return SYNCEVO_SYNC_NONE;
+    } else if (g_str_has_prefix (mode_str, "two-way")) {
+        return SYNCEVO_SYNC_TWO_WAY;
+    } else if (g_str_has_prefix (mode_str, "slow")) {
+        return SYNCEVO_SYNC_SLOW;
+    } else if (g_str_has_prefix (mode_str, "refresh-from-client")) {
+        return SYNCEVO_SYNC_REFRESH_FROM_CLIENT;
+    } else if (g_str_has_prefix (mode_str, "refresh-from-server")) {
+        return SYNCEVO_SYNC_REFRESH_FROM_SERVER;
+    } else if (g_str_has_prefix (mode_str, "one-way-from-client")) {
+        return SYNCEVO_SYNC_ONE_WAY_FROM_CLIENT;
+    } else if (g_str_has_prefix (mode_str, "one-way-from-server")) {
+        return SYNCEVO_SYNC_ONE_WAY_FROM_SERVER;
+    } else {
+        return SYNCEVO_SYNC_UNKNOWN;
+    }
+}
+
+static SyncevoSessionStatus
+syncevo_source_status_from_string (const char *status_str)
+{
+    SyncevoSessionStatus status;
+
+    if (!status_str) {
+        status = SYNCEVO_STATUS_UNKNOWN;
+    } else if (g_str_has_prefix (status_str, "idle")) {
+        status = SYNCEVO_STATUS_IDLE;
+    } else if (g_str_has_prefix (status_str, "running")) {
+        status = SYNCEVO_STATUS_RUNNING;
+    } else if (g_str_has_prefix (status_str, "done")) {
+        status = SYNCEVO_STATUS_DONE;
+    } else {
+        status = SYNCEVO_STATUS_UNKNOWN;
+    }
+
+    /* check modifiers */
+    if (status_str && strstr (status_str, ";waiting")) {
+        status |= SYNCEVO_STATUS_WAITING;
+    }
+
     return status;
 }
 
@@ -230,32 +286,14 @@ syncevo_source_statuses_foreach (SyncevoSourceStatuses *source_statuses,
         const char *mode_str;
         const char *status_str;
         SyncevoSyncMode mode;
-        SyncevoSourceStatus status;
+        SyncevoSessionStatus status;
         guint error_code;
 
         mode_str = g_value_get_string (g_value_array_get_nth (source_status, 0));
-        if (!mode_str) {
-            mode = SYNCEVO_SYNC_UNKNOWN;
-        } else if (g_str_has_prefix (mode_str, "none")) {
-            mode = SYNCEVO_SYNC_NONE;
-        } else if (g_str_has_prefix (mode_str, "two-way")) {
-            mode = SYNCEVO_SYNC_TWO_WAY;
-        } else if (g_str_has_prefix (mode_str, "slow")) {
-            mode = SYNCEVO_SYNC_SLOW;
-        } else if (g_str_has_prefix (mode_str, "refresh-from-client")) {
-            mode = SYNCEVO_SYNC_REFRESH_FROM_CLIENT;
-        } else if (g_str_has_prefix (mode_str, "refresh-from-server")) {
-            mode = SYNCEVO_SYNC_REFRESH_FROM_SERVER;
-        } else if (g_str_has_prefix (mode_str, "one-way-from-client")) {
-            mode = SYNCEVO_SYNC_ONE_WAY_FROM_CLIENT;
-        } else if (g_str_has_prefix (mode_str, "one-way-from-server")) {
-            mode = SYNCEVO_SYNC_ONE_WAY_FROM_SERVER;
-        } else {
-            mode = SYNCEVO_SYNC_UNKNOWN;
-        }
+        mode = syncevo_sync_mode_from_string (mode_str);
 
         status_str = g_value_get_string (g_value_array_get_nth (source_status, 1));
-        status = syncevo_session_status_from_string (status_str);
+        status = syncevo_source_status_from_string (status_str);
         error_code = g_value_get_uint (g_value_array_get_nth (source_status, 2));
 
         func (name, mode, status, error_code, data);
@@ -280,23 +318,21 @@ syncevo_source_statuses_free (SyncevoSourceStatuses *source_statuses)
     g_hash_table_destroy (source_statuses);
 }
 
-/* The return value contents are only valid as long as the
- * SyncevoSourceProgresses is. */
-SyncevoSourceProgress*
-syncevo_source_progresses_get_current (SyncevoSourceProgresses *source_progresses)
+void
+syncevo_source_progresses_foreach (SyncevoSourceProgresses *source_progresses,
+                                   SourceProgressFunc func,
+                                   gpointer userdata)
 {
     const char *phase_str, *name;
     GHashTableIter iter;
     GValueArray *progress_array;
-    GValue *val;
-    SyncevoSourceProgress *progress = NULL;
 
-    g_return_val_if_fail (source_progresses, FALSE);
+    g_return_if_fail (source_progresses);
 
     g_hash_table_iter_init (&iter, source_progresses);
     while (g_hash_table_iter_next (&iter, (gpointer)&name, (gpointer)&progress_array)) {
         SyncevoSourcePhase phase;
-        phase_str = g_value_get_string (g_value_array_get_nth (progress_array, 0));
+        phase_str = g_value_get_string (g_value_array_get_nth (progress_array, 0));    
 
         if (!phase_str) {
             phase = SYNCEVO_PHASE_NONE;
@@ -310,14 +346,7 @@ syncevo_source_progresses_get_current (SyncevoSourceProgresses *source_progresse
             phase = SYNCEVO_PHASE_NONE;
         }
 
-        if (phase == SYNCEVO_PHASE_NONE) {
-            continue;
-        }
-
-        progress = g_slice_new (SyncevoSourceProgress);
-        progress->name = g_strdup (name);
-        progress->phase = phase;
-
+/*
         val = g_value_array_get_nth (progress_array, 1);
         progress->prepare_current = g_value_get_int (val);
         val = g_value_array_get_nth (progress_array, 2);
@@ -330,18 +359,12 @@ syncevo_source_progresses_get_current (SyncevoSourceProgresses *source_progresse
         progress->receive_current = g_value_get_int (val);
         val = g_value_array_get_nth (progress_array, 6);
         progress->receive_total = g_value_get_int (val);
+*/
 
-        break;
+        func (name, phase, userdata);
     }
-    return progress;
 }
 
-void
-syncevo_source_progress_free (SyncevoSourceProgress *progress)
-{
-    g_free (progress->name);
-    g_slice_free (SyncevoSourceProgress, progress);
-}
 static void
 free_source_progress_item (char *source,
                            GValueArray *progress_array)

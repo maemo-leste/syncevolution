@@ -22,6 +22,7 @@
 #include <syncevo/util.h>
 #include <syncevo/SyncContext.h>
 #include <syncevo/TransportAgent.h>
+#include <syncevo/SynthesisEngine.h>
 #include <syncevo/Logging.h>
 
 #include <synthesis/syerror.h>
@@ -35,6 +36,14 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
+
+#if USE_SHA256 == 1
+# include <glib.h>
+#elif USE_SHA256 == 2
+# include <nss/sechash.h>
+# include <nss/hasht.h>
+# include <nss.h>
+#endif
 
 #ifdef ENABLE_UNIT_TESTS
 #include "test.h"
@@ -267,6 +276,54 @@ unsigned long Hash(const char *str)
     return hashval;
 }
 
+unsigned long Hash(const std::string &str)
+{
+    unsigned long hashval = 5381;
+
+    BOOST_FOREACH(int c, str) {
+        hashval = ((hashval << 5) + hashval) + c;
+    }
+
+    return hashval;
+}
+
+std::string SHA_256(const std::string &data)
+{
+#if USE_SHA256 == 1
+    GString hash(g_compute_checksum_for_data(G_CHECKSUM_SHA256, (guchar *)data.c_str(), data.size()),
+                 "g_compute_checksum_for_data() failed");
+    return std::string(hash.get());
+#elif USE_SHA256 == 2
+    std::string res;
+    unsigned char hash[SHA256_LENGTH];
+    static bool initialized;
+    if (!initialized) {
+        // https://wiki.mozilla.org/NSS_Shared_DB_And_LINUX has
+        // some comments which indicate that calling init multiple
+        // times works, but http://www.mozilla.org/projects/security/pki/nss/ref/ssl/sslfnc.html#1234224
+        // says it must only be called once. How that is supposed
+        // to work when multiple, independent libraries have to
+        // use NSS is beyond me. Bad design. At least let's do the
+        // best we can here.
+        NSS_NoDB_Init(NULL);
+	initialized = true;
+    }
+
+    if (HASH_HashBuf(HASH_AlgSHA256, hash, (unsigned char *)data.c_str(), data.size()) != SECSuccess) {
+        SE_THROW("NSS HASH_HashBuf() failed");
+    }
+    res.reserve(SHA256_LENGTH * 2);
+    BOOST_FOREACH(unsigned char value, hash) {
+        res += StringPrintf("%02x", value);
+    }
+    return res;
+#else
+    SE_THROW("Hash256() not implemented");
+    return "";
+#endif
+}
+
+
 std::string StringPrintf(const char *format, ...)
 {
     va_list ap;
@@ -314,7 +371,9 @@ std::string StringPrintfV(const char *format, va_list ap)
 
 SyncMLStatus Exception::handle(SyncMLStatus *status, Logger *logger)
 {
-    SyncMLStatus new_status = STATUS_FATAL;
+    // any problem here is a fatal local problem, unless set otherwise
+    // by the specific exception
+    SyncMLStatus new_status = SyncMLStatus(STATUS_FATAL + sysync::LOCAL_STATUS_CODE);
 
     try {
         throw;
@@ -323,6 +382,10 @@ SyncMLStatus Exception::handle(SyncMLStatus *status, Logger *logger)
                      ex.m_file.c_str(), ex.m_line);
         SE_LOG_ERROR(logger, NULL, "%s", ex.what());
         new_status = SyncMLStatus(sysync::LOCERR_TRANSPFAIL);
+    } catch (const BadSynthesisResult &ex) {
+        new_status = SyncMLStatus(ex.result());
+        SE_LOG_DEBUG(logger, NULL, "error code from Synthesis engine %s",
+                     Status2String(new_status).c_str());
     } catch (const Exception &ex) {
         SE_LOG_DEBUG(logger, NULL, "exception thrown at %s:%d",
                      ex.m_file.c_str(), ex.m_line);
@@ -409,5 +472,26 @@ std::vector<std::string> unescapeJoinedString (const std::string& src, char sep)
     return splitStrings;
 }
 
+ScopedEnvChange::ScopedEnvChange(const string &var, const string &value) :
+    m_var(var)
+{
+    const char *oldval = getenv(var.c_str());
+    if (oldval) {
+        m_oldvalset = true;
+        m_oldval = oldval;
+    } else {
+        m_oldvalset = false;
+    }
+    setenv(var.c_str(), value.c_str(), 1);
+}
+
+ScopedEnvChange::~ScopedEnvChange()
+{
+    if (m_oldvalset) {
+        setenv(m_var.c_str(), m_oldval.c_str(), 1);
+    } else {
+        unsetenv(m_var.c_str());
+    } 
+}
 
 SE_END_CXX

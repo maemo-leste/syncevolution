@@ -72,6 +72,10 @@ public:
         CPPUNIT_ASSERT(source);
         SOURCE_ASSERT_NO_FAILURE(source, source->open());
         SOURCE_ASSERT_NO_FAILURE(source, source->beginSync("", ""));
+        const char * serverMode = getenv ("CLIENT_TEST_MODE");
+        if (serverMode && !strcmp (serverMode, "server")) {
+            SOURCE_ASSERT_NO_FAILURE(source, source->enableServerMode());
+        }
     }
     ~TestingSyncSourcePtr()
     {
@@ -92,6 +96,10 @@ public:
         if (source) {
             SOURCE_ASSERT_NO_FAILURE(source, source->open());
             SOURCE_ASSERT_NO_FAILURE(source, source->beginSync("", ""));
+            const char * serverMode = getenv ("CLIENT_TEST_MODE");
+            if (serverMode && !strcmp (serverMode, "server")) {
+                SOURCE_ASSERT_NO_FAILURE(source, source->enableServerMode());
+            }
             BOOST_FOREACH(const SyncSource::Operations::CallbackFunctor_t &callback,
                           source->getOperations().m_endSession) {
                 callback();
@@ -1030,7 +1038,7 @@ void LocalTests::testLinkedItemsRemoveNormal() {
 
     deleteAll(createSourceA);
     std::string parent, child;
-    TestingSyncSourcePtr copy;
+    TestingSyncSourcePtr source, copy;
 
     // check that everything is empty, also resets change counter of sync source B
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
@@ -1052,10 +1060,19 @@ void LocalTests::testLinkedItemsRemoveNormal() {
 
     deleteItem(createSourceA, child);
 
+    SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
+    SOURCE_ASSERT_EQUAL(source.get(), 1, countItems(source.get()));
+    SOURCE_ASSERT_EQUAL(source.get(), 0, countNewItems(source.get()));
+    SOURCE_ASSERT_EQUAL(source.get(), 0, countUpdatedItems(source.get()));
+    SOURCE_ASSERT_EQUAL(source.get(), 0, countDeletedItems(source.get()));
+    CPPUNIT_ASSERT_NO_THROW(source.reset());
+
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
-    SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
+    // parent might have been updated
+    int updated = countUpdatedItems(copy.get());
+    SOURCE_ASSERT(copy.get(), 0 <= updated && updated <= 1);
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countDeletedItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countEqual(listDeletedItems(copy.get()), child));
     CPPUNIT_ASSERT_NO_THROW(copy.reset());
@@ -1377,18 +1394,31 @@ SyncTests::SyncTests(const std::string &name, ClientTest &cl, std::vector<int> s
     CppUnit::TestSuite(name),
     client(cl) {
     sourceArray = new int[sourceIndices.size() + 1];
+    int offset = 0;
     for (std::vector<int>::iterator it = sourceIndices.begin();
          it != sourceIndices.end();
          ++it) {
         ClientTest::Config config;
-        client.getSourceConfig(*it, config);
+        client.getSyncSourceConfig(*it, config);
 
         if (config.sourceName) {
-            sourceArray[sources.size()] = *it;
-            sources.push_back(std::pair<int,LocalTests *>(*it, cl.createLocalTests(config.sourceName, *it, config)));
+            sourceArray[sources.size()+offset] = *it;
+            if (config.subConfigs) {
+                vector<string> subs;
+                boost::split (subs, config.subConfigs, boost::is_any_of(","));
+                offset++;
+                ClientTest::Config subConfig;
+                BOOST_FOREACH (string sub, subs) {
+                client.getSourceConfig (sub, subConfig);
+                sources.push_back(std::pair<int,LocalTests *>(*it, cl.createLocalTests(sub, client.getLocalSourcePosition(sub), subConfig)));
+                offset--;
+                }
+            } else {
+                sources.push_back(std::pair<int,LocalTests *>(*it, cl.createLocalTests(config.sourceName, client.getLocalSourcePosition(config.sourceName), config)));
+            }
         }
     }
-    sourceArray[sources.size()] = -1;
+    sourceArray[sources.size()+ offset] = -1;
 
     // check whether we have a second client
     ClientTest *clientB = cl.getClientB();
@@ -1926,7 +1956,7 @@ void SyncTests::testTwinning() {
     accessClientB->refreshClient();
 
     // slow sync should not change anything
-    doSync("twinning", SyncOptions(SYNC_TWO_WAY));
+    doSync("twinning", SyncOptions(SYNC_SLOW));
 
     // check
     compareDatabases();
@@ -2576,13 +2606,19 @@ void SyncTests::doVarSizes(bool withMaxMsgSize,
                        withLargeObject));
 
     // copy to second client
-    accessClientB->doSync("recv",
-                          SyncOptions(SYNC_REFRESH_FROM_SERVER,
-                                      CheckSyncReport(-1,0,-1, 0,0,0, true, SYNC_REFRESH_FROM_SERVER), // number of items received from server depends on source
-                                      withLargeObject ? maxMsgSize : withMaxMsgSize ? maxMsgSize * 100 /* large enough so that server can sent the largest item */ : 0,
-                                      withMaxMsgSize ? maxMsgSize * 100 : 0,
-                                      withLargeObject));
-
+    const char *value = getenv ("CLIENT_TEST_NOREFRESH");
+    // If refresh_from_server or refresh_from_client (depending on this is a
+    // server or client) is not supported, we can still test via slow sync.
+    if (value) {
+        accessClientB->refreshClient();
+    } else {
+        accessClientB->doSync("recv",
+                SyncOptions(SYNC_REFRESH_FROM_SERVER,
+                    CheckSyncReport(-1,0,-1, 0,0,0, true, SYNC_REFRESH_FROM_SERVER), // number of items received from server depends on source
+                    withLargeObject ? maxMsgSize : withMaxMsgSize ? maxMsgSize * 100 /* large enough so that server can sent the largest item */ : 0,
+                    withMaxMsgSize ? maxMsgSize * 100 : 0,
+                    withLargeObject));
+    }
     // compare
     compareDatabases();
 }
@@ -3107,9 +3143,9 @@ public:
 
         // create local source tests
         tests = new CppUnit::TestSuite(alltests->getName() + "::Source");
-        for (source=0; source < client.getNumSources(); source++) {
+        for (source=0; source < client.getNumLocalSources(); source++) {
             ClientTest::Config config;
-            client.getSourceConfig(source, config);
+            client.getLocalSourceConfig(source, config);
             if (config.sourceName) {
                 LocalTests *sourcetests =
                     client.createLocalTests(tests->getName() + "::" + config.sourceName, source, config);
@@ -3122,9 +3158,9 @@ public:
 
         // create sync tests with just one source
         tests = new CppUnit::TestSuite(alltests->getName() + "::Sync");
-        for (source=0; source < client.getNumSources(); source++) {
+        for (source=0; source < client.getNumSyncSources(); source++) {
             ClientTest::Config config;
-            client.getSourceConfig(source, config);
+            client.getSyncSourceConfig(source, config);
             if (config.sourceName) {
                 std::vector<int> sources;
                 sources.push_back(source);
@@ -3139,9 +3175,9 @@ public:
         // that would be identical to the test above
         std::vector<int> sources;
         std::string name, name_reversed;
-        for (source=0; source < client.getNumSources(); source++) {
+        for (source=0; source < client.getNumSyncSources(); source++) {
             ClientTest::Config config;
-            client.getSourceConfig(source, config);
+            client.getSyncSourceConfig(source, config);
             if (config.sourceName) {
                 sources.push_back(source);
                 if (name.size() > 0) {
@@ -3213,12 +3249,14 @@ SyncTests *ClientTest::createSyncTests(const std::string &name, std::vector<int>
 int ClientTest::dump(ClientTest &client, TestingSyncSource &source, const char *file)
 {
     BackupReport report;
-    VolatileConfigNode node;
+    boost::shared_ptr<ConfigNode> node(new VolatileConfigNode);
 
     rm_r(file);
     mkdir_p(file);
     CPPUNIT_ASSERT(source.getOperations().m_backupData);
-    source.getOperations().m_backupData(file, node, report);
+    source.getOperations().m_backupData(SyncSource::Operations::ConstBackupInfo(),
+                                        SyncSource::Operations::BackupInfo(SyncSource::Operations::BackupInfo::BACKUP_OTHER, file, node),
+                                        report);
     return 0;
 }
 
@@ -3339,6 +3377,13 @@ void ClientTest::getTestData(const char *type, Config &config)
     config.import = import;
     config.dump = dump;
     config.compare = compare;
+
+    // redirect requests for "ical20" towards "ical20_noutc"?
+    bool noutc = false;
+    env = getenv ("CLIENT_TEST_NOUTC");
+    if (env && !strcmp (env, "t")) {
+        noutc = true;
+    }
 
     if (!strcmp(type, "vcard30")) {
         config.sourceName = "vcard30";
@@ -3471,7 +3516,7 @@ void ClientTest::getTestData(const char *type, Config &config)
         config.uniqueProperties = "FN:N";
         config.sizeProperty = "NOTE";
         config.testcases = "testcases/vcard21.vcf";
-    } else if(!strcmp(type, "ical20")) {
+    } else if (!strcmp(type, "ical20") && !noutc) {
         config.sourceName = "ical20";
         config.sourceNameServerTemplate = "calendar";
         config.uri = "cal2"; // ScheduleWorld
@@ -3666,6 +3711,97 @@ void ClientTest::getTestData(const char *type, Config &config)
         config.uniqueProperties = "SUMMARY:UID:LOCATION";
         config.sizeProperty = "DESCRIPTION";
         config.testcases = "testcases/vcal10.ics";
+    } else if (!strcmp(type, "ical20_noutc") ||
+               (!strcmp(type, "ical20") && noutc)) {
+        config.sourceName = "ical20";
+        config.sourceNameServerTemplate = "calendar";
+        config.uri = "cal2"; // ScheduleWorld
+        config.type = "text/x-vcalendar";
+        config.insertItem =
+            "BEGIN:VCALENDAR\n"
+            "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
+            "VERSION:2.0\n"
+            "METHOD:PUBLISH\n"
+            "BEGIN:VTIMEZONE\n"
+            "TZID:Asia/Shanghai\n"
+            "BEGIN:STANDARD\n"
+            "DTSTART:19670101T000000\n"
+            "TZOFFSETFROM:+0800\n"
+            "TZOFFSETTO:+0800\n"
+            "END:STANDARD\n"
+            "END:VTIMEZONE\n"
+            "BEGIN:VTIMEZONE\n"
+            "TZID:/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai\n"
+            "X-LIC-LOCATION:Asia/Shanghai\n"
+            "BEGIN:STANDARD\n"
+            "TZNAME:CST\n"
+            "DTSTART:19700914T230000\n"
+            "TZOFFSETFROM:+0800\n"
+            "TZOFFSETTO:+0800\n"
+            "END:STANDARD\n"
+            "END:VTIMEZONE\n"
+            "BEGIN:VEVENT\n"
+            "SUMMARY:phone meeting\n"
+            "DTEND;TZID=/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai:20060406T163000\n"
+            "DTSTART;TZID=/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai:20060406T160000\n"
+            "UID:1234567890!@#$%^&*()<>@dummy\n"
+            "DTSTAMP:20060406T211449Z\n"
+            "LAST-MODIFIED:20060409T213201\n"
+            "CREATED:20060409T213201\n"
+            "LOCATION:my office\n"
+            "DESCRIPTION:let's talk<<REVISION>>\n"
+            "CLASS:PUBLIC\n"
+            "TRANSP:OPAQUE\n"
+            "SEQUENCE:1\n"
+            "END:VEVENT\n"
+            "END:VCALENDAR\n";
+        config.updateItem =
+            "BEGIN:VCALENDAR\n"
+            "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
+            "VERSION:2.0\n"
+            "METHOD:PUBLISH\n"
+            "BEGIN:VTIMEZONE\n"
+            "TZID:Asia/Shanghai\n"
+            "BEGIN:STANDARD\n"
+            "DTSTART:19670101T000000\n"
+            "TZOFFSETFROM:+0800\n"
+            "TZOFFSETTO:+0800\n"
+            "END:STANDARD\n"
+            "END:VTIMEZONE\n"
+            "BEGIN:VTIMEZONE\n"
+            "TZID:/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai\n"
+            "X-LIC-LOCATION:Asia/Shanghai\n"
+            "BEGIN:STANDARD\n"
+            "TZNAME:CST\n"
+            "DTSTART:19700914T230000\n"
+            "TZOFFSETFROM:+0800\n"
+            "TZOFFSETTO:+0800\n"
+            "END:STANDARD\n"
+            "END:VTIMEZONE\n"
+            "BEGIN:VEVENT\n"
+            "SUMMARY:meeting on site\n"
+            "DTEND;TZID=/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai:20060406T163000\n"
+            "DTSTART;TZID=/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai:20060406T160000\n"
+            "UID:1234567890!@#$%^&*()<>@dummy\n"
+            "DTSTAMP:20060406T211449Z\n"
+            "LAST-MODIFIED:20060409T213201\n"
+            "CREATED:20060409T213201\n"
+            "LOCATION:big meeting room\n"
+            "DESCRIPTION:nice to see you\n"
+            "CLASS:PUBLIC\n"
+            "TRANSP:OPAQUE\n"
+            "SEQUENCE:1\n"
+            "END:VEVENT\n"
+            "END:VCALENDAR\n";
+        /* change location and description of insertItem in testMerge(), add alarm */
+        config.mergeItem1 = "";
+        config.mergeItem2 = "";
+        config.parentItem = "";
+        config.childItem = "";
+        config.templateItem = config.insertItem;
+        config.uniqueProperties = "SUMMARY:UID:LOCATION";
+        config.sizeProperty = "DESCRIPTION";
+        config.testcases = "testcases/ical20.ics";
     } else if(!strcmp(type, "itodo20")) {
         config.sourceName = "itodo20";
         config.sourceNameServerTemplate = "todo";
@@ -3787,6 +3923,9 @@ void ClientTest::getTestData(const char *type, Config &config)
         config.uniqueProperties = "SUMMARY:DESCRIPTION";
         config.sizeProperty = "DESCRIPTION";
         config.testcases = "testcases/imemo20.ics";
+    }else if (!strcmp (type, "super")) {
+        config.subConfigs = "ical20,itodo20";
+        config.uri="";
     }
 }
 
@@ -3826,6 +3965,7 @@ void CheckSyncReport::check(SyncMLStatus status, SyncReport &report) const
 
         const char* checkSyncModeStr = getenv("CLIENT_TEST_NOCHECK_SYNCMODE");
         bool checkSyncMode = true;
+        bool checkSyncStats = getenv ("CLIENT_TEST_NOCHECK_SYNCSTATS") ? false : true;
         if (checkSyncModeStr && 
                 (!strcmp(checkSyncModeStr, "1") || !strcasecmp(checkSyncModeStr, "t"))) {
             checkSyncMode = false;
@@ -3835,38 +3975,38 @@ void CheckSyncReport::check(SyncMLStatus status, SyncReport &report) const
             CLIENT_TEST_EQUAL(name, syncMode, source.getFinalSyncMode());
         }
 
-        if (clientAdded != -1) {
+        if (clientAdded != -1 && checkSyncStats) {
             CLIENT_TEST_EQUAL(name, clientAdded,
                               source.getItemStat(SyncSourceReport::ITEM_LOCAL,
                                                  SyncSourceReport::ITEM_ADDED,
                                                  SyncSourceReport::ITEM_TOTAL));
         }
-        if (clientUpdated != -1) {
+        if (clientUpdated != -1 && checkSyncStats) {
             CLIENT_TEST_EQUAL(name, clientUpdated,
                               source.getItemStat(SyncSourceReport::ITEM_LOCAL,
                                                  SyncSourceReport::ITEM_UPDATED,
                                                  SyncSourceReport::ITEM_TOTAL));
         }
-        if (clientDeleted != -1) {
+        if (clientDeleted != -1 && checkSyncStats) {
             CLIENT_TEST_EQUAL(name, clientDeleted,
                               source.getItemStat(SyncSourceReport::ITEM_LOCAL,
                                                  SyncSourceReport::ITEM_REMOVED,
                                                  SyncSourceReport::ITEM_TOTAL));
         }
 
-        if (serverAdded != -1) {
+        if (serverAdded != -1 && checkSyncStats) {
             CLIENT_TEST_EQUAL(name, serverAdded,
                               source.getItemStat(SyncSourceReport::ITEM_REMOTE,
                                                  SyncSourceReport::ITEM_ADDED,
                                                  SyncSourceReport::ITEM_TOTAL));
         }
-        if (serverUpdated != -1) {
+        if (serverUpdated != -1 && checkSyncStats) {
             CLIENT_TEST_EQUAL(name, serverUpdated,
                               source.getItemStat(SyncSourceReport::ITEM_REMOTE,
                                                  SyncSourceReport::ITEM_UPDATED,
                                                  SyncSourceReport::ITEM_TOTAL));
         }
-        if (serverDeleted != -1) {
+        if (serverDeleted != -1 && checkSyncStats) {
             CLIENT_TEST_EQUAL(name, serverDeleted,
                               source.getItemStat(SyncSourceReport::ITEM_REMOTE,
                                                  SyncSourceReport::ITEM_REMOVED,

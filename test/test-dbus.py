@@ -29,6 +29,7 @@ import heapq
 
 import dbus
 from dbus.mainloop.glib import DBusGMainLoop
+import dbus.service
 import gobject
 import sys
 
@@ -49,7 +50,7 @@ debugger = "" # "gdb"
 server = ["syncevo-dbus-server"]
 monitor = ["dbus-monitor"]
 xdg_root = "test-dbus"
-config = "scheduleworld_1"
+configName = "dbus_unittest"
 
 def timeout(seconds):
     """Function decorator which sets a non-default timeout for a test.
@@ -224,7 +225,7 @@ class DBusUtil(Timeout):
     quit_events = []
     reply = None
 
-    def runTest(self, result, own_xdg=True):
+    def runTest(self, result, own_xdg=True, serverArgs=[] ):
         """Starts the D-Bus server and dbus-monitor before the test
         itself. After the test run, the output of these two commands
         are added to the test's failure, if any. Otherwise the output
@@ -279,7 +280,7 @@ class DBusUtil(Timeout):
                     time.sleep(2)
                     break
         else:
-            pserver = subprocess.Popen(server,
+            pserver = subprocess.Popen(server + serverArgs,
                                        env=env,
                                        stdout=open(syncevolog, "w"),
                                        stderr=subprocess.STDOUT)
@@ -502,6 +503,26 @@ class DBusUtil(Timeout):
             if os.access(sourcepath, os.F_OK):
                 shutil.copytree(sourcepath, destpath)
 
+    def getDatabaseName(self, configName):
+        # get database names with the environment variable
+        prefix = os.getenv("CLIENT_TEST_EVOLUTION_PREFIX")
+        source = configName + '_1'
+        if prefix == None:
+            prefix = 'SyncEvolution_Test_'
+        return prefix + source;
+
+    def getEvolutionSources(self, config):
+        # get 'evolutionsource' for each source
+        updateProps = { }
+        for key, value in config.items():
+            if key != "":
+                tmpdict = { }
+                [source, sep, name] = key.partition('/')
+                if sep == '/':
+                    tmpdict["evolutionsource"] = self.getDatabaseName(name)
+                updateProps[key] = tmpdict
+        return updateProps
+
 class TestDBusServer(unittest.TestCase, DBusUtil):
     """Tests for the read-only Server API."""
 
@@ -522,9 +543,12 @@ class TestDBusServer(unittest.TestCase, DBusUtil):
         configs.sort()
         self.failUnlessEqual(configs, ["Funambol",
                                        "Google",
+                                       "Goosync",
                                        "Memotoo",
                                        "Mobical",
+                                       "Oracle",
                                        "ScheduleWorld",
+                                       "SyncEvolution",
                                        "Synthesis",
                                        "ZYB"])
 
@@ -546,6 +570,265 @@ class TestDBusServer(unittest.TestCase, DBusUtil):
                                  "org.syncevolution.NoSuchConfig: No configuration 'no-such-config' found")
         else:
             self.fail("no exception thrown")
+
+class TestDBusServerTerm(unittest.TestCase, DBusUtil):
+    def setUp(self):
+        self.setUpServer()
+
+    def run(self, result):
+        self.runTest(result, True, ["-d", "10"])
+
+    @timeout(100)
+    def testNoTerm(self):
+        """Test the dbus server stays alive within the duration"""
+        """The server should stay alive because we have dbus call within
+        the duration. The loop is to make sure the total time is longer 
+        than duration and the dbus server still stays alive for dbus calls.""" 
+        for i in range(0, 4):
+            time.sleep(4)
+            try:
+                self.server.GetConfigs(True, utf8_strings=True)
+            except dbus.DBusException:
+                self.fail("dbus server should work correctly")
+
+    @timeout(100)
+    def testTerm(self):
+        """Test the dbus server terminates automatically after a duration"""
+        #sleep a duration and wait for syncevo-dbus-server termination
+        time.sleep(16)
+        try:
+            self.server.GetConfigs(True, utf8_strings=True)
+        except dbus.DBusException:
+            pass
+        else:
+            self.fail("no exception thrown")
+
+    @timeout(100)
+    def testTermConnection(self):
+        """Test the dbus server doesn't terminate if it has connections"""
+        conpath = self.server.Connect({'description': 'test-dbus.py',
+                                       'transport': 'dummy'},
+                                      False,
+                                      "")
+        time.sleep(16)
+        try:
+            self.server.GetConfigs(True, utf8_strings=True)
+        except dbus.DBusException:
+            self.fail("dbus server should not terminate")
+
+        connection = dbus.Interface(bus.get_object('org.syncevolution',
+                                                   conpath),
+                                    'org.syncevolution.Connection')
+        connection.Close(False, "good bye", utf8_strings=True)
+        time.sleep(16)
+        try:
+            self.server.GetConfigs(True, utf8_strings=True)
+        except dbus.DBusException:
+            pass
+        else:
+            self.fail("no exception thrown")
+
+    @timeout(100)
+    def testTermAttachedClients(self):
+        """Test the dbus server doesn't terminate if it has attached clients"""
+        """Also it tries to test the dbus server's behavior when a client 
+        attaches the server many times"""
+        self.server.Attach()
+        self.server.Attach()
+        time.sleep(16)
+        try:
+            self.server.GetConfigs(True, utf8_strings=True)
+        except dbus.DBusException:
+            self.fail("dbus server should not terminate")
+        self.server.Detach()
+        time.sleep(16)
+
+        try:
+            self.server.GetConfigs(True, utf8_strings=True)
+        except dbus.DBusException:
+            self.fail("dbus server should not terminate")
+
+        self.server.Detach()
+        time.sleep(16)
+        try:
+            self.server.GetConfigs(True, utf8_strings=True)
+        except dbus.DBusException:
+            pass
+        else:
+            self.fail("no exception thrown")
+
+class Connman (dbus.service.Object):
+    count = 0
+    @dbus.service.method(dbus_interface='org.moblin.connman.Manager', in_signature='', out_signature='a{sv}')
+    def GetProperties(self):
+        self.count = self.count+1
+        if (self.count == 1):
+            loop.quit()
+            return {"ConnectedTechnologies":["ethernet", "some other stuff"],
+                    "EnabledTechnologies": ["bluetooth"]}
+        elif (self.count == 2):
+            """ unplug the ethernet cable """
+            loop.quit()
+            return {"ConnectedTechnologies":["some other stuff"],
+                    "EnabledTechnologies": ["bluetooth"]}
+        elif (self.count == 3):
+            """ replug the ethernet cable """
+            loop.quit()
+            return {"ConnectedTechnologies":["ethernet", "some other stuff"],
+                    "EnabledTechnologies": ["bluetooth"]}
+        elif (self.count == 4):
+            """ nothing presence """
+            loop.quit()
+            return {"ConnectedTechnologies":[""],
+                    "EnabledTechnologies": [""]}
+        elif (self.count == 5):
+            """ come back the same time """
+            loop.quit()
+            return {"ConnectedTechnologies":["ethernet", "some other stuff"],
+                    "EnabledTechnologies": ["bluetooth"]}
+    def reset(self):
+        self.count = 0
+
+class TestDBusServerPresence(unittest.TestCase, DBusUtil):
+    """Tests Presence signal and checkPresence API"""
+    name = dbus.service.BusName ("org.moblin.connman", bus);
+    conn = Connman (bus, "/")
+
+    def setUp(self):
+        self.setUpServer()
+
+    @timeout(100)
+    def testPresenceSignal(self):
+        self.conn.reset()
+        self.setUpSession("foo")
+        self.session.SetConfig(False, False, {"" : {"syncURL":
+        "http://http-only-1"}})
+        self.session.Detach()
+        def cb_http_presence(server, status, transport):
+            self.failUnlessEqual (status, "")
+            self.failUnlessEqual (server, "foo")
+            self.failUnlessEqual (transport, "http://http-only-1")
+
+        match = bus.add_signal_receiver(cb_http_presence,
+                                'Presence',
+                                'org.syncevolution.Server',
+                                'org.syncevolution',
+                                None,
+                                byte_arrays=True,
+                                utf8_strings=True)
+        loop.run()
+        time.sleep(1)
+        self.setUpSession("foo")
+        self.session.SetConfig(True, True, {"" : {"syncURL":
+        "obex-bt://temp-bluetooth-peer-changed-from-http"}})
+        def cb_bt_presence(server, status, transport):
+            self.failUnlessEqual (status, "")
+            self.failUnlessEqual (server, "foo")
+            self.failUnlessEqual (transport,
+                    "obex-bt://temp-bluetooth-peer-changed-from-http")
+        match.remove()
+        match = bus.add_signal_receiver(cb_bt_presence,
+                                'Presence',
+                                'org.syncevolution.Server',
+                                'org.syncevolution',
+                                None,
+                                byte_arrays=True,
+                                utf8_strings=True)
+        loop.run()
+        time.sleep(1)
+        self.session.Detach()
+        self.setUpSession("bar")
+        self.session.SetConfig(False, False, {"" : {"syncURL":
+            "http://http-client-2"}})
+        self.session.Detach()
+        self.foo = "random string"
+        self.bar = "random string"
+        def cb_bt_http_presence(server, status, transport):
+            if (server == "foo"):
+                self.foo = status
+            elif (server == "bar"):
+                self.bar = status
+            else:
+                self.fail("wrong server config")
+
+        match.remove()
+        match = bus.add_signal_receiver(cb_bt_http_presence,
+                                'Presence',
+                                'org.syncevolution.Server',
+                                'org.syncevolution',
+                                None,
+                                byte_arrays=True,
+                                utf8_strings=True)
+        loop.run()
+        loop.run()
+        time.sleep(1)
+        self.failUnlessEqual (self.foo, "")
+        self.failUnlessEqual (self.bar, "")
+        match.remove()
+
+    @timeout(100)
+    def testServerCheckPresence(self):
+        self.conn.reset()
+        self.setUpSession("foo")
+        self.session.SetConfig(False, False, {"" : {"syncURL":
+        "http://http-client"}})
+        self.session.Detach()
+        self.setUpSession("bar")
+        self.session.SetConfig(False, False, {"" : {"syncURL":
+            "obex-bt://bt-client"}})
+        self.session.Detach()
+        self.setUpSession("foobar")
+        self.session.SetConfig(False, False, {"" : {"syncURL":
+            "obex-bt://bt-client-mixed http://http-client-mixed"}})
+        self.session.Detach()
+
+        #let dbus server get the first presence
+        loop.run()
+        time.sleep(1)
+        (status, transports) = self.server.CheckPresence ("foo")
+        self.failUnlessEqual (status, "")
+        self.failUnlessEqual (transports, ["http://http-client"])
+        (status, transports) = self.server.CheckPresence ("bar")
+        self.failUnlessEqual (status, "")
+        self.failUnlessEqual (transports, ["obex-bt://bt-client"])
+        (status, transports) = self.server.CheckPresence ("foobar")
+        self.failUnlessEqual (status, "")
+        self.failUnlessEqual (transports, ["obex-bt://bt-client-mixed",
+        "http://http-client-mixed"])
+
+        #count = 2
+        loop.run()
+        time.sleep(1)
+        (status, transports) = self.server.CheckPresence ("foo")
+        self.failUnlessEqual (status, "no transport")
+        (status, transports) = self.server.CheckPresence ("bar")
+        self.failUnlessEqual (status, "")
+        self.failUnlessEqual (transports, ["obex-bt://bt-client"])
+        (status, transports) = self.server.CheckPresence ("foobar")
+        self.failUnlessEqual (status, "")
+        self.failUnlessEqual (transports, ["obex-bt://bt-client-mixed"])
+
+    @timeout(100)
+    def testSessionCheckPresence(self):
+        self.conn.reset()
+        self.setUpSession("foobar")
+        self.session.SetConfig(False, False, {"" : {"syncURL":
+            "obex-bt://bt-client-mixed http://http-client-mixed"}})
+        loop.run()
+        time.sleep(1)
+        status = self.session.checkPresence()
+        self.failUnlessEqual (status, "")
+        loop.run()
+        loop.run()
+        loop.run()
+        #count = 4
+        time.sleep(1)
+        status = self.session.checkPresence()
+        self.failUnlessEqual (status, "no transport")
+
+    def run(self, result):
+        os.environ["DBUS_TEST_CONNMAN"] = "session"
+        self.runTest(result, True)
 
 class TestDBusSession(unittest.TestCase, DBusUtil):
     """Tests that work with an active session."""
@@ -671,15 +954,24 @@ class TestSessionAPIsEmptyName(unittest.TestCase, DBusUtil):
             self.fail("no exception thrown")
 
     def testGetReportsEmptyName(self):
-        """Test the error is reported when the server name is empty for GetReports"""
-        try:
-            self.session.GetReports(0, 0, utf8_strings=True)
-        except dbus.DBusException, ex:
-            self.failUnlessEqual(str(ex),
-                                 "org.syncevolution.NoSuchConfig: listing reports without "
-                                 "peer name not implemented yet")
-        else:
-            self.fail("no exception thrown")
+        """Test reports from all peers are returned in order when the peer name is empty for GetReports"""
+        self.setupFiles('reports')
+        reports = self.session.GetReports(0, 0xFFFFFFFF, utf8_strings=True)
+        self.failUnlessEqual(len(reports), 7)
+        refPeers = ["dummy-test", "dummy", "dummy-test", "dummy-test",
+                    "dummy-test", "dummy_test", "dummy-test"]
+        for i in range(0, len(refPeers)):
+            self.failUnlessEqual(reports[i]["peer"], refPeers[i])
+
+    def testGetReportsContext(self):
+        """Test reports from a context are returned when the peer name is empty for GetReports"""
+        self.setupFiles('reports')
+        self.session.Detach()
+        self.setUpSession("@context")
+        reports = self.session.GetReports(0, 0xFFFFFFFF, utf8_strings=True)
+        self.failUnlessEqual(len(reports), 1)
+        self.failUnless(reports[0]["dir"].endswith("dummy_+test@context-2010-01-20-10-10"))
+
 
 class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
     """Tests that work for GetConfig/SetConfig/CheckSource/GetDatabases/GetReports in Session.
@@ -694,12 +986,14 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         self.setUpSession("dummy-test")
         # default config
         self.config = { 
-                         "" : { "syncURL" : "http://my.funambol.com/sync",
+                         "" : { "syncURL" : "http://impossible-syncurl-just-for-testing-to-avoid-conflict",
                                 "username" : "unknown",
-                                "password" : "secret",
-                                "deviceId" : "foo"
+                                "password" : "-",
+                                "deviceId" : "foo",
+                                "RetryInterval" : "10",
+                                "RetryDuration" : "20"
                               },
-                         "source/addressbook" : { "sync" : "two-way",
+                         "source/addressbook" : { "sync" : "slow",
                                                   "type" : "addressbook",
                                                   "uri" : "card"
                                                 },
@@ -707,21 +1001,26 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
                                                   "type" : "calendar",
                                                   "uri" : "cal"
                                                 },
-                         "source/todo"        : { "sync" : "two-way",
+                         "source/todo"        : { "sync" : "disabled",
                                                   "type" : "todo",
                                                   "uri" : "task"
                                                 },
-                         "source/memo"        : { "sync" : "two-way",
+                         "source/memo"        : { "sync" : "disabled",
                                                   "type" : "memo",
                                                   "uri" : "text"
                                                 }
                        }
         # update config
         self.updateConfig = { 
-                               "" : { "password" : "nosecret"},
+                               "" : { "username" : "doe"},
                                "source/addressbook" : { "sync" : "slow"}
                             }
         self.sources = ['addressbook', 'calendar', 'todo', 'memo']
+
+        #create default or user settings evolutionsource
+        updateProps = self.getEvolutionSources(self.config)
+        for key, dict in updateProps.items():
+            self.config[key]["evolutionsource"] = dict["evolutionsource"]
 
     def run(self, result):
         self.runTest(result)
@@ -749,6 +1048,8 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
 
     def testCreateGetConfig(self):
         """ test the config is created successfully. """
+        self.config[""]["username"] = "creategetconfig"
+        self.config[""]["password"] = "112233445566778"
         self.setupConfig()
         """ get config and compare """
         config = self.session.GetConfig(False, utf8_strings=True)
@@ -760,7 +1061,7 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         """ update the given config """
         self.session.SetConfig(True, False, self.updateConfig, utf8_strings=True)
         config = self.session.GetConfig(False, utf8_strings=True)
-        self.failUnlessEqual(config[""]["password"], "nosecret")
+        self.failUnlessEqual(config[""]["username"], "doe")
         self.failUnlessEqual(config["source/addressbook"]["sync"], "slow")
 
     def testUpdateConfigTemp(self):
@@ -783,8 +1084,16 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         """ GetConfig is affected """
         config = self.session.GetConfig(False, utf8_strings=True)
         """ no change of any properties """
-        self.failUnlessEqual(config[""]["password"], "nosecret")
+        self.failUnlessEqual(config[""]["username"], "doe")
         self.failUnlessEqual(config["source/addressbook"]["sync"], "slow")
+
+    def testGetConfigWithTempConfig(self):
+        """ test the config is gotten for a new temporary config. """
+        """ The given config doesn't exist on disk and it's set temporarily. Then GetConfig should
+            return the configs temporarily set. """
+        self.session.SetConfig(True, True, self.config, utf8_strings=True)
+        config = self.session.GetConfig(False, utf8_strings=True)
+        self.failUnlessEqual(config, self.config)
 
     def testUpdateConfigError(self):
         """ test the right error is reported when an invalid property value is set """
@@ -981,8 +1290,9 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         """ Test the reports are gotten correctly from reference files. Also covers boundaries """
         """ This could be extractly compared since the reference files are known """
         self.setupFiles('reports')
-        report0 = { "start" : "1258519955",
-                    "end" : "1258519964",
+        report0 = { "peer" : "dummy-test",
+                    "start" : "1258520955",
+                    "end" : "1258520964",
                     "status" : "200",
                     "source-addressbook-mode" : "slow",
                     "source-addressbook-first" : "true",
@@ -1065,6 +1375,8 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         # get only one report
         reports = self.session.GetReports(0, 1, utf8_strings=True)
         self.assertTrue(len(reports) == 1)
+        del reports[0]["dir"]
+
         self.failUnlessEqual(reports[0], report0)
         """ the number of reference sessions is totally 5. Check the returned count
         when parameter is bigger than 5 """
@@ -1079,21 +1391,156 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         reports = self.session.GetReports(5, 0xFFFFFFFF, utf8_strings=True)
         self.failUnlessEqual(reports, [])
 
+    def testRestoreByRef(self):
+        # test when the data before or after a given session is restored
+        self.setupFiles('restore')
+        self.setupConfig()
+        self.setUpListeners(self.sessionpath)
+        reports = self.session.GetReports(0, 1, utf8_strings=True)
+        dir = reports[0]["dir"]
+        sessionpath, session = self.createSession("dummy-test", False)
+        #TODO: check restore result, how?
+        #restore data before this session
+        self.session.Restore(dir, True, [], utf8_strings=True)
+        loop.run()
+        self.session.Detach()
+
+        # check recorded events in DBusUtil.events, first filter them
+        statuses = []
+        progresses = []
+        for item in DBusUtil.events:
+            if item[0] == "status":
+                statuses.append(item[1])
+            elif item[0] == "progress":
+                progresses.append(item[1])
+
+        lastStatus = ""
+        lastSources = {}
+        statusPairs = {"": 0, "idle": 1, "running" : 2, "done" : 3}
+        for status, error, sources in statuses:
+            self.failIf(status == lastStatus and lastSources == sources)
+            # no error
+            self.failUnlessEqual(error, 0)
+            for sourcename, value in sources.items():
+                # no error
+                self.failUnlessEqual(value[2], 0)
+                # keep order: source status must also be unchanged or the next status
+                if lastSources.has_key(sourcename):
+                    lastValue = lastSources[sourcename]
+                    self.failUnless(statusPairs[value[1]] >= statusPairs[lastValue[1]])
+
+            lastStatus = status
+            lastSources = sources
+
+        # check increasing progress percentage
+        lastPercent = 0
+        for percent, sources in progresses:
+            self.failIf(percent < lastPercent)
+            lastPercent = percent
+
+        session.SetConfig(False, False, self.config, utf8_strings=True)
+        #restore data after this session
+        session.Restore(dir, False, ["addressbook", "calendar"], utf8_strings=True)
+        loop.run()
+
+    def testSecondRestore(self):
+        # test the right error is thrown when session is not active
+        self.setupFiles('restore')
+        self.setupConfig()
+        self.setUpListeners(self.sessionpath)
+        reports = self.session.GetReports(0, 1, utf8_strings=True)
+        dir = reports[0]["dir"]
+        sessionpath, session = self.createSession("dummy-test", False)
+        try:
+            session.Restore(dir, False, [], utf8_strings=True)
+        except dbus.DBusException, ex:
+            self.failUnlessEqual(str(ex),
+                    "org.syncevolution.InvalidCall: session is not active, call not allowed at this time")
+        else:
+            self.fail("no exception thrown")
+
+        self.session.Detach()
+        session.SetConfig(False, False, self.config, utf8_strings=True)
+        session.Restore(dir, False, [], utf8_strings=True)
+        loop.run()
+
+    @timeout(300)
+    def testInteractivePassword(self):
+        """ test the info request is correctly working for password """
+        self.setupConfig()
+        self.setUpListeners(self.sessionpath)
+        self.lastState = "unknown"
+        # define callback for InfoRequest signals and send corresponds response
+        # to dbus server
+        def infoRequest(id, session, state, handler, type, params):
+            if state == "request":
+                self.failUnlessEqual(self.lastState, "unknown")
+                self.lastState = "request"
+                self.server.InfoResponse(id, "working", {}, utf8_strings=True)
+            elif state == "waiting":
+                self.failUnlessEqual(self.lastState, "request")
+                self.lastState = "waiting"
+                self.server.InfoResponse(id, "response", {"password" : "123456"}, utf8_strings=True)
+            elif state == "done":
+                self.failUnlessEqual(self.lastState, "waiting")
+                self.lastState = "done"
+            else:
+                self.fail("state should not be '" + state + "'")
+
+        signal = bus.add_signal_receiver(infoRequest,
+                                         'InfoRequest',
+                                         'org.syncevolution.Server',
+                                         'org.syncevolution',
+                                         None,
+                                         byte_arrays=True,
+                                         utf8_strings=True)
+
+        # dbus server will be blocked by gnome-keyring-ask dialog, so we kill it, and then 
+        # it can't get the password from gnome keyring and send info request for password
+        def callback():
+            kill = subprocess.Popen("sh -c 'killall -9 gnome-keyring-ask >/dev/null 2>&1'", shell=True)
+            kill.communicate()
+            return True
+
+        timeout_handler = Timeout.addTimeout(1, callback)
+
+        # try to sync and invoke password request
+        self.session.Sync("", {})
+        loop.run()
+        Timeout.removeTimeout(timeout_handler)
+        self.failUnlessEqual(self.lastState, "done")
+
 class TestSessionAPIsReal(unittest.TestCase, DBusUtil):
     """ This class is used to test those unit tests of session APIs, depending on doing sync.
         Thus we need a real server configuration to confirm sync could be run successfully.
         Typically we need make sure that at least one sync has been done before testing our
         desired unit tests. Note that it also covers session.Sync API itself """
+    """ All unit tests in this class have a dependency on a real sync config named 'dbus_unittest',
+        which should works correctly. """
 
     def setUp(self):
         self.setUpServer()
-        self.setUpSession(config)
+        self.setUpSession(configName)
         self.operation = "" 
 
     def run(self, result):
         self.runTest(result, own_xdg=False)
 
+    def setupConfig(self):
+        """ Apply for user settings. Used internally. """
+        configProps = { }
+        # check whether 'dbus_unittest' is configured.
+        try:
+            configProps = self.session.GetConfig(False, utf8_strings=True)
+        except dbus.DBusException, ex:
+            self.fail(str(ex) + 
+                      ". To test this case, please first set up a correct config named 'dbus_unittest'.")
+        updateProps = self.getEvolutionSources(configProps)
+        # temporarily set evolutionsource and don't change them
+        self.session.SetConfig(True, True, updateProps, utf8_strings=True)
+
     def doSync(self):
+        self.setupConfig()
         self.setUpListeners(self.sessionpath)
         self.session.Sync("", {})
         loop.run()
@@ -1135,8 +1582,13 @@ class TestSessionAPIsReal(unittest.TestCase, DBusUtil):
             # no error
             self.failUnlessEqual(error, 0)
             # keep order: session status must be unchanged or the next status 
-            self.failUnless(statusPairs.has_key(status))
-            self.failUnless(statusPairs[status] >= statusPairs[lastStatus])
+            seps = status.split(';')
+            lastSeps = lastStatus.split(';')
+            self.failUnless(statusPairs.has_key(seps[0]))
+            self.failUnless(statusPairs[seps[0]] >= statusPairs[lastSeps[0]])
+            # check specifiers
+            if len(seps) > 1:
+                self.failUnlessEqual(seps[1], "waiting")
             for sourcename, value in sources.items():
                 # no error
                 self.failUnlessEqual(value[2], 0)
@@ -1177,7 +1629,7 @@ class TestSessionAPIsReal(unittest.TestCase, DBusUtil):
         self.doSync()
         hasSuspendingStatus = False
         for item in DBusUtil.events:
-            if item[0] == "status" and item[1][0] == "suspending":
+            if item[0] == "status" and "suspending" in item[1][0] :
                 hasSuspendingStatus = True
                 break
         self.failUnlessEqual(hasSuspendingStatus, True)
@@ -1200,7 +1652,7 @@ class TestSessionAPIsReal(unittest.TestCase, DBusUtil):
 class TestDBusSyncError(unittest.TestCase, DBusUtil):
     def setUp(self):
         self.setUpServer()
-        self.setUpSession(config)
+        self.setUpSession(configName)
 
     def run(self, result):
         self.runTest(result, own_xdg=True)
@@ -1213,7 +1665,7 @@ class TestDBusSyncError(unittest.TestCase, DBusUtil):
         # TODO: check recorded events in DBusUtil.events
         status, error, sources = self.session.GetStatus(utf8_strings=True)
         self.failUnlessEqual(status, "done")
-        self.failUnlessEqual(error, 500)
+        self.failUnlessEqual(error, 10500)
 
 class TestConnection(unittest.TestCase, DBusUtil):
     """Tests Server.Connect(). Tests depend on getting one Abort signal to terminate."""
@@ -1224,9 +1676,46 @@ class TestConnection(unittest.TestCase, DBusUtil):
     def setUp(self):
         self.setUpServer()
         self.setUpListeners(None)
+        # default config
+        self.config = { 
+                         "" : { "remoteDeviceId" : "sc-api-nat",
+                                "password" : "test",
+                                "username" : "test",
+                                "PeerIsClient" : "1",
+                                "RetryInterval" : "1",
+                                "RetryDuration" : "10"
+                              },
+                         "source/addressbook" : { "sync" : "two-way",
+                                                  "type" : "addressbook",
+                                                  "uri" : "card"
+                                                },
+                         "source/calendar"    : { "sync" : "two-way",
+                                                  "type" : "calendar",
+                                                  "uri" : "cal"
+                                                },
+                         "source/todo"        : { "sync" : "two-way",
+                                                  "type" : "todo",
+                                                  "uri" : "task"
+                                                },
+                         "source/memo"        : { "sync" : "two-way",
+                                                  "type" : "memo",
+                                                  "uri" : "text"
+                                                }
+                       }
+
+        #create default or user settings evolutionsource
+        updateProps = self.getEvolutionSources(self.config)
+        for key, dict in updateProps.items():
+            self.config[key]["evolutionsource"] = dict["evolutionsource"]
+
+    def setupConfig(self, name="dummy-test", deviceId="sc-api-nat"):
+        self.setUpSession(name)
+        self.config[""]["remoteDeviceId"] = deviceId
+        self.session.SetConfig(False, False, self.config, utf8_strings=True)
+        self.session.Detach()
 
     def run(self, result):
-        self.runTest(result, own_xdg=False)
+        self.runTest(result, own_xdg=True)
 
     def getConnection(self, must_authenticate=False):
         conpath = self.server.Connect({'description': 'test-dbus.py',
@@ -1248,6 +1737,7 @@ class TestConnection(unittest.TestCase, DBusUtil):
 
     def testInvalidConnect(self):
         """get connection, send invalid initial message"""
+        self.setupConfig()
         conpath, connection = self.getConnection()
         try:
             connection.Process('1234', 'invalid message type')
@@ -1257,10 +1747,12 @@ class TestConnection(unittest.TestCase, DBusUtil):
         else:
             self.fail("no exception thrown")
         loop.run()
-        self.failUnlessEqual(DBusUtil.events, [('abort',)])
+        # 'idle' status doesn't be checked
+        self.failUnless(('abort',) in DBusUtil.events)
 
     def testStartSync(self):
         """send a valid initial SyncML message"""
+        self.setupConfig()
         conpath, connection = self.getConnection()
         connection.Process(TestConnection.message1, 'application/vnd.syncml+xml')
         loop.run()
@@ -1283,6 +1775,7 @@ class TestConnection(unittest.TestCase, DBusUtil):
 
     def testCredentialsWrong(self):
         """send invalid credentials"""
+        self.setupConfig()
         conpath, connection = self.getConnection(must_authenticate=True)
         connection.Process(TestConnection.message1, 'application/vnd.syncml+xml')
         loop.run()
@@ -1307,6 +1800,7 @@ class TestConnection(unittest.TestCase, DBusUtil):
 
     def testCredentialsRight(self):
         """send correct credentials"""
+        self.setupConfig()
         conpath, connection = self.getConnection(must_authenticate=True)
         plain_auth = TestConnection.message1.replace("<Type xmlns='syncml:metinf'>syncml:auth-md5</Type></Meta><Data>kHzMn3RWFGWSKeBpXicppQ==</Data>",
                                                      "<Type xmlns='syncml:metinf'>syncml:auth-basic</Type></Meta><Data>dGVzdDp0ZXN0</Data>")
@@ -1329,6 +1823,7 @@ class TestConnection(unittest.TestCase, DBusUtil):
 
     def testStartSyncTwice(self):
         """send the same SyncML message twice, starting two sessions"""
+        self.setupConfig()
         conpath, connection = self.getConnection()
         connection.Process(TestConnection.message1, 'application/vnd.syncml+xml')
         loop.run()
@@ -1375,6 +1870,9 @@ class TestConnection(unittest.TestCase, DBusUtil):
 
     def testKillInactive(self):
         """block server with client A, then let client B connect twice"""
+        #set up 2 configs
+        self.setupConfig()
+        self.setupConfig("dummy", "sc-pim-ppc")
         conpath, connection = self.getConnection()
         connection.Process(TestConnection.message1, 'application/vnd.syncml+xml')
         loop.run()
@@ -1405,6 +1903,27 @@ class TestConnection(unittest.TestCase, DBusUtil):
         self.failUnlessEqual(DBusUtil.quit_events, [ "connection " + conpath3 + " aborted" ])
         DBusUtil.quit_events = []
         connection.Close(False, 'good bye client A')
+        loop.run()
+        loop.run()
+        self.failUnlessEqual(DBusUtil.quit_events, ["connection " + conpath + " aborted",
+                                                    "session done"])
+
+    @timeout(20)
+    def testTimeoutSync(self):
+        """start a sync, then wait for server to detect that we stopped replying
+        
+        The server-side configuration for sc-api-nat must contain a retryDuration=10
+        because this test itself will time out with a failure after 20 seconds."""
+        self.setupConfig()
+        conpath, connection = self.getConnection()
+        connection.Process(TestConnection.message1, 'application/vnd.syncml+xml')
+        loop.run()
+        self.failUnlessEqual(DBusUtil.quit_events, ["connection " + conpath + " got reply"])
+        DBusUtil.quit_events = []
+        # TODO: check events
+        self.failIfEqual(DBusUtil.reply, None)
+        self.failUnlessEqual(DBusUtil.reply[1], 'application/vnd.syncml+xml')
+        # wait for connection reset and "session done" due to timeout
         loop.run()
         loop.run()
         self.failUnlessEqual(DBusUtil.quit_events, ["connection " + conpath + " aborted",

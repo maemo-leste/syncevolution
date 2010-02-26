@@ -22,6 +22,7 @@
 
 #include <syncevo/FilterConfigNode.h>
 #include <syncevo/SafeConfigNode.h>
+#include <syncevo/FileConfigNode.h>
 
 #include <boost/shared_ptr.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -46,7 +47,7 @@ using namespace std;
  */
 
 class SyncSourceConfig;
-class PersistentSyncSourceConfig;
+typedef SyncSourceConfig PersistentSyncSourceConfig;
 class ConfigTree;
 class ConfigUserInterface;
 class SyncSourceNodes;
@@ -836,32 +837,131 @@ class SyncConfig {
    /** absolute directory name of the configuration root */
     string getRootPath() const;
 
-    typedef list< std::pair<std::string, std::string> > ServerList;
+    typedef list< std::pair<std::string, std::string> > ConfigList;
+
+    /** A simple description of the template or the configuration based on a
+     * template. The rank field is used to indicate how good it matches the
+     * user input <MacAddress, DeviceName> */
+    struct TemplateDescription {
+        // The name of the template
+        std::string m_name;
+        // The description of the template (eg. the web server URL for a
+        // SyncML server. This is not used for UI, only CMD line used this.
+        std::string m_description;
+        // The matched percentage of the template, larger the better.
+        int m_rank;
+
+        //a unique identity of the device that the template is for, used by caller
+        std::string m_id;
+
+        // A string identify which fingerprint the template is matched with.
+        std::string m_fingerprint;
+
+        // A unique string identify the template path, so that a later operation
+        // fetching this config will be much easier
+        std::string m_path;
+
+        // A string indicates the original fingerprint in the matched template, this
+        // will not necessarily the same with m_fingerprint
+        std::string m_matchedModel;
+
+        TemplateDescription (const std::string &name, const std::string &description, 
+                const int rank, const std::string id, const std::string &fingerprint, const std::string &path, const std::string &model)
+            :   m_name (name),
+                m_description (description),
+                m_rank (rank),
+                m_id (id),
+                m_fingerprint (fingerprint),
+                m_path (path),
+                m_matchedModel(model)
+        {
+        }
+
+        TemplateDescription (const std::string &name, const std::string &description);
+
+        static bool compare_op (boost::shared_ptr<TemplateDescription> &left, boost::shared_ptr<TemplateDescription> &right);
+    };
+
+    enum MatchMode {
+        /*Match templates when we work as SyncML server, i.e. the peer is the client*/
+        MATCH_FOR_SERVER_MODE,
+        /*Match templates when work as SyncML client, i.e. the peer is the server*/
+        MATCH_FOR_CLIENT_MODE,
+        /*Match templates for both SyncML server and SyncML client*/
+        MATCH_ALL,
+        INVALID
+    };
+
+    typedef list<boost::shared_ptr <TemplateDescription> > TemplateList;
+
+    struct DeviceDescription {
+        /** the id of the device */
+        std::string m_deviceId;
+        /** the finger print of the device used for matching templates */
+        std::string m_fingerprint;
+        /** match mode used for matching templates */
+        MatchMode m_matchMode;
+        DeviceDescription(const std::string &deviceId,
+                          const std::string &fingerprint,
+                          MatchMode mode)
+            :m_deviceId(deviceId), m_fingerprint(fingerprint), m_matchMode(mode)
+        {}
+        DeviceDescription() : m_matchMode(INVALID)
+        {}
+    };
+
+    typedef list<DeviceDescription> DeviceList;
 
     /**
      * returns list of servers in either the old (.sync4j) or
      * new config directory (.config), given as server name
      * and absolute root of config
      */
-    static ServerList getServers();
+    static ConfigList getConfigs();
 
     /**
-     * returns list of available config templates
+     * returns list of available config templates:
+     * for each peer listed in @peers, matching against the fingerprint information
+     * from the peer (deviceName likely), sorted by the matching score,
+     * templates failed to match(as long as it's for SyncML server) will also
+     * be returned as a fallback mechanism so that user can select a configuration
+     * template manually.
+     * Any templates for SyncMl Client is also returned, with a default rank.
+     * The assumption currently is only work for SyncML client peers.
+     * DeviceList is a list of matching tuples <fingerprint, SyncConfig::MatchMode>.
      */
-    static ServerList getServerTemplates();
+    static TemplateList getPeerTemplates(const DeviceList &peers);
+
+    /**
+     * match the built-in templates against @param fingerprint, return a list of
+     * servers sorted by the matching rank.
+     * */
+    static TemplateList matchPeerTemplates(const DeviceList &peers, bool fuzzyMatch = true);
+
+    /**
+     * get the built-in default templates
+     */
+    static TemplateList getBuiltInTemplates ();
 
     /**
      * Creates a new instance of a configuration template.
      * The result can be modified to set filters, but it
      * cannot be flushed.
      *
-     * @param peer   a configuration name, *without* a context (scheduleworld, not scheduleworld@default)
+     * @param peer   a configuration name, *without* a context (scheduleworld, not scheduleworld@default),
+     * or a configuration path in the system directory which can avoid another fuzzy match process.
      * @return NULL if no such template
      */
-    static boost::shared_ptr<SyncConfig> createServerTemplate(const string &peer);
+    static boost::shared_ptr<SyncConfig> createPeerTemplate(const string &peer);
 
     /** true if the main configuration file already exists */
     bool exists() const;
+
+    /**
+     * The normalized, unique config name used by this instance.
+     * Empty if not backed up by a real config.
+     */
+    string getConfigName() const { return m_peer; }
 
     /**
      * Do something before doing flush to files. This is particularly
@@ -894,20 +994,14 @@ class SyncConfig {
     /**
      * Normalize a config string:
      * - lower case
+     * - non-printable and unsafe characters (colon, slash, backslash)
+     *   replaced by underscore
+     * - when no context specified: search for peer config first in @default,
+     *   then also in other contexts in alphabetical order
      * - @default stripped
      * - empty string replaced with "@default"
      */
     static string normalizeConfigString(const string &config);
-
-    /**
-     * Normalize and in addition, set original context.
-     *
-     * @param config      one of the various ways of selecting a configuration
-     *                    (@default, scheduleworld, scheduleworld@foo, ...)
-     * @retval normal     normalized form of config string       
-     * @retval context    empty if no specified, otherwise normalized value
-     */
-    static void normalizeConfigString(const string &config, string &normal, string &context);
 
     /**
      * Split a config string (normalized or not) into the peer part
@@ -1030,11 +1124,12 @@ class SyncConfig {
      * The current config still needs to be flushed to make the
      * changes permanent.
      *
-     * @param sourceFilter   if NULL, then copy all sources; if not NULL,
-     *                       then only copy sources listed here
+     * @param sources   if NULL, then copy all sources; if not NULL,
+     *                  then copy exactly the sources listed here
+     *                  (regardless whether they exist or not)
      */
     void copy(const SyncConfig &other,
-              const set<string> *sourceFilter);
+              const set<string> *sources);
 
     /**
      * @name Settings specific to SyncEvolution
@@ -1113,6 +1208,8 @@ class SyncConfig {
      */
     virtual void savePassword(ConfigUserInterface &ui); 
 
+    virtual bool getPreventSlowSync() const;
+    virtual void setPreventSlowSync(bool value, bool temporarily = false);
     virtual bool getUseProxy() const;
     virtual void setUseProxy(bool value, bool temporarily = false);
     virtual const char*  getProxyHost() const;
@@ -1124,8 +1221,9 @@ class SyncConfig {
     virtual void checkProxyPassword(ConfigUserInterface &ui);
     virtual void saveProxyPassword(ConfigUserInterface &ui);
     virtual void setProxyPassword(const string &value, bool temporarily = false);
-    virtual const char*  getSyncURL() const;
+    virtual vector<string>  getSyncURL() const;
     virtual void setSyncURL(const string &value, bool temporarily = false);
+    virtual void setSyncURL(const vector<string> &value, bool temporarily = false);
     virtual const char*  getClientAuthType() const;
     virtual void setClientAuthType(const string &value, bool temporarily = false);
     virtual unsigned long getMaxMsgSize() const;
@@ -1162,6 +1260,15 @@ class SyncConfig {
     virtual void setRemoteIdentifier (const string &value, bool temporaritly = false);
     virtual bool getPeerIsClient () const;
     virtual void setPeerIsClient (bool value, bool temporarily = false);
+
+    /**
+     * An arbitrary name assigned to the peer configuration,
+     * not necessarily unique. Can be used by a GUI instead
+     * of the config name.
+     */
+    virtual string getPeerName() const;
+    virtual void setPeerName(const string &name);
+
     /**
      * The Device ID of our peer. Typically only relevant when the
      * peer is a client. Servers don't have a Device ID, just some
@@ -1218,7 +1325,7 @@ private:
      */
     static void addPeers(const string &root,
                          const std::string &configname,
-                         SyncConfig::ServerList &res);
+                         SyncConfig::ConfigList &res);
 
     /**
      * set tree and nodes to VolatileConfigTree/Node
@@ -1228,6 +1335,9 @@ private:
     /**
      * String that identifies the peer, see constructor.
      * This is a normalized string (normalizePeerString()).
+     * The name is a bit of a misnomer, because the config
+     * might also reference just a context without any
+     * peer-specific properties ("@some-context", or "@default").
      */
     string m_peer;
 
@@ -1291,6 +1401,7 @@ private:
         return xdg_root_str ? string(xdg_root_str) + "/syncevolution" :
             getHome() + "/.config/syncevolution";
     }
+ 
 };
 
 /**
@@ -1446,8 +1557,16 @@ class SyncSourceConfig {
     /** same as SyncConfig::savePassword() */
     virtual void savePassword(ConfigUserInterface &ui, const string &serverName, FilterConfigNode& globalConfigNode);
 
+    /** selects the backend database to use */
     virtual const char *getDatabaseID() const;
     virtual void setDatabaseID(const string &value, bool temporarily = false);
+
+    /**
+     * internal property: unique integer ID for the source, needed by Synthesis XML <dbtypeid>,
+     * zero if unset
+     */
+    virtual const int getSynthesisID() const;
+    virtual void setSynthesisID(int value, bool temporarily = false);
 
     /**
      * Returns the data source type configured as part of the given
@@ -1501,18 +1620,32 @@ class SyncSourceConfig {
 };
 
 /**
- * Adds dummy implementations of the missing calls to
- * SyncSourceConfig so that the other properties can be read.
+ * Representing a configuration template node used for fuzzy matching.
  */
-class PersistentSyncSourceConfig : public SyncSourceConfig {
- public:
-    PersistentSyncSourceConfig(const string &name, const SyncSourceNodes &nodes) :
-    SyncSourceConfig(name, nodes) {}
-
-    virtual const char* getMimeType() const { return ""; }
-    virtual const char* getMimeVersion() const { return ""; }
-    virtual const char* getSupportedTypes() const { return ""; }
+class TemplateConfig
+{
+    boost::shared_ptr<FileConfigNode> m_metaNode;
+    ConfigProps m_metaProps;
+    string m_name;
+public:
+    TemplateConfig (const string &path);
+    enum {
+        NO_MATCH = 0,
+        LEVEL1_MATCH = 1,
+        LEVEL2_MATCH = 2,
+        LEVEL3_MATCH = 3,
+        LEVEL4_MATCH = 4,
+        BEST_MATCH=5
+    };
+    static bool isTemplateConfig (const string &path);
+    virtual int metaMatch (const string &fingerprint, SyncConfig::MatchMode mode);
+    virtual int serverModeMatch (SyncConfig::MatchMode mode);
+    virtual int fingerprintMatch (const string &fingerprint);
+    virtual string getName();
+    virtual string getDescription();
+    virtual string getFingerprint();
 };
+
 
 /**@}*/
 

@@ -109,6 +109,14 @@ typedef dbus_bool_t (* GDBusPropertySetFunction) (DBusConnection *connection,
 					DBusMessageIter *iter, void *user_data);
 
 /**
+ * GDBusInterfaceFunction:
+ * @user_data: user data to pass to the function
+ *
+ * Callback function for interface
+ */
+typedef void (* GDBusInterfaceFunction) (void *user_data); 
+
+/**
  * GDBusMethodFlags:
  * @G_DBUS_METHOD_FLAG_DEPRECATED: annotate deprecated methods
  * @G_DBUS_METHOD_FLAG_NOREPLY: annotate methods with no reply
@@ -208,10 +216,12 @@ typedef struct {
 } GDBusPropertyTable;
 
 void g_dbus_setup_connection(DBusConnection *connection,
+						gboolean unshared,
 						GMainContext *context);
 void g_dbus_cleanup_connection(DBusConnection *connection);
 
 DBusConnection *g_dbus_setup_bus(DBusBusType type, const char *name,
+							gboolean unshared,
 							DBusError *error);
 
 DBusConnection *g_dbus_setup_address(const char *address, DBusError *error);
@@ -230,6 +240,14 @@ gboolean g_dbus_register_interface(DBusConnection *connection,
 					GDBusPropertyTable *properties,
 					void *user_data,
 					GDBusDestroyFunction destroy);
+gboolean g_dbus_register_interface_with_callback(DBusConnection *connection,
+					const char *path, const char *name,
+					GDBusMethodTable *methods,
+					GDBusSignalTable *signals,
+					GDBusPropertyTable *properties,
+					void *user_data,
+					GDBusDestroyFunction destroy,
+					GDBusInterfaceFunction callback);
 gboolean g_dbus_unregister_interface(DBusConnection *connection,
 					const char *path, const char *name);
 

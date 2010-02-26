@@ -80,7 +80,7 @@ TYPE_rpm = -R
 # - don't force dependency on specific EDS libs via backends, their versions change too much (handled via --enable-evolution-compatibility and dynamic loading of the backends)
 # - ignore client-test dependencies (because users typically don't run it)
 REQUIRES_deb = --requires="'$(shell set -x; cd dist; LD_LIBRARY_PATH=$(distdir)/usr/lib:$(distdir)/usr/lib/syncevolution dpkg-shlibdeps -L$(srcdir)/src/shlibs.local --ignore-missing-info -O $$(for i in $$(find $(distdir) -type f -perm /u+x | grep -v -e client-test -e lib/syncevolution/sync); do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) | sed -e 's/[^=]*=//')'"
-VERSION_deb = `echo 1:$(VERSION) | perl -p -e 's/(\d+\.\d+)([-a-z0-9]+)/sprintf("%0.1f+$$1$$2", ($$1 - 0.1))/e'`
+VERSION_deb = 1:$(STABLE_VERSION)$(VERSION)
 VERSION_rpm = `echo $(VERSION) | sed -e s/-/_/g`
 RELEASE = 2
 
@@ -99,7 +99,13 @@ PKGS = $(addprefix syncevolution-evolution-, 2.6 2.8 2.12)
 #
 # --replaces is necessary for migrating from syncevolution-evolution-<evover>
 # to syncevolution-evolution (as per http://wiki.debian.org/Renaming_a_Package)
+#
+# When we build shared objects, then conflict with the corresponding
+# system libs. The assumption is that the system library is named
+# after the lib and its major version, which holds for libsmltk and
+# libsynthesis in Debian.
 deb rpm : dist/$(distdir) dist/debian/control description-pak
+	conflicts=`ls -1 dist/$(distdir)/usr/lib/*.so.[0123456789] | sed -e 's;.*/;;' -e 's/\.so\.//' -e 's/$$/, /'` && \
 	tmpdir=`mktemp -d $$HOME/syncevolution.XXXXXXXXXX` && \
 	trap "rm -rf $$tmpdir" EXIT && \
 	fakeroot checkinstall </dev/null \
@@ -113,7 +119,7 @@ deb rpm : dist/$(distdir) dist/debian/control description-pak
 		--pkgarch=$(PKGARCH) \
 		--provides=syncevolution \
 	        --replaces="'syncevolution, `echo $(filter-out $(PKGNAME), $(PKGS)) | sed -e 's/  */ (<< 1:0.8.1-2), /g'` (<< 1:0.8.1-2)'" \
-		--conflicts="'syncevolution, `echo $(filter-out $(PKGNAME), $(PKGS)) | sed -e 's/  */ (<< 1:0.8.1-2), /g'` (<< 1:0.8.1-2)'" \
+		--conflicts="'$${conflicts}syncevolution, `echo $(filter-out $(PKGNAME), $(PKGS)) | sed -e 's/  */ (<< 1:0.8.1-2), /g'` (<< 1:0.8.1-2)'" \
 		--maintainer="'Patrick Ohly <patrick.ohly@gmx.de>'" \
 		--pkgsource='http://sourceforge.net/project/showfiles.php?group_id=146288' \
 		--pkgaltsource='http://www.estamos.de/projects/SyncML/' \
@@ -129,7 +135,7 @@ dist/$(distdir): all
 	rm -rf $(call DEV_FILE_PATTERN, $@)
 clean-local: clean_dist
 clean_dist:
-	rm -rf dist doc-pak description-pak
+	rm -rf dist description-pak
 
 # install doc files via normal autotools
 dist_doc_DATA = README NEWS COPYING $(TEST_README_FILES)

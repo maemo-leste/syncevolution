@@ -82,6 +82,14 @@ class TrackingSyncSource : public TestingSyncSource,
     ~TrackingSyncSource() {}
 
     /**
+     * ConfigNode used for change tracking in SyncSourceRevisions.
+     * Derived classes might need that when implementing operations
+     * which have side effects on other items (for example,
+     * EvolutionCalendarSource::removeItem()).
+     */
+    ConfigNode &getTrackingNode() { return *m_trackingNode; }
+
+    /**
      * returns a list of all know sources for the kind of items
      * supported by this sync source
      */
@@ -90,10 +98,26 @@ class TrackingSyncSource : public TestingSyncSource,
     /**
      * Actually opens the data source specified in the constructor,
      * will throw the normal exceptions if that fails. Should
-     * not modify the state of the sync source: that can be deferred
-     * until the server is also ready and beginSync() is called.
+     * not modify the state of the sync source.
+     *
+     * The expectation is that this call is fairly light-weight, but
+     * does enough checking to determine whether the source is
+     * usable. More expensive operations (like determining changes)
+     * should be done in the beginSync() callback.
+     *
+     * In clients, it will be called for all sources before
+     * the sync starts. In servers, it is called for each source once
+     * the client asks for it, but not sooner.
      */
     virtual void open() = 0;
+
+    /**
+     * A quick check whether the source currently has data. Currently
+     * used as part of the "allow slow sync" checking after open() and
+     * before beginSync(). Returning false is acceptable when it is
+     * uncertain and too expensive to check.
+     */
+    virtual bool isEmpty() = 0;
 
     /**
      * fills the complete mapping from LUID to revision string of all
@@ -129,7 +153,10 @@ class TrackingSyncSource : public TestingSyncSource,
      *
      * @param luid     identifies the item to be modified, empty for creating
      * @param item     contains the new content of the item
-     * @param raw      item has internal format instead of engine format
+     * @param raw      item has internal format instead of engine format;
+     *                 testing and backup/restore might use such an internal format
+     *                 which may be different (more complete!) than the
+     *                 format when talking to the sync engine
      * @return the result of inserting the item
      */
     virtual InsertItemResult insertItem(const std::string &luid, const std::string &item, bool raw) = 0;
@@ -179,16 +206,10 @@ class TrackingSyncSource : public TestingSyncSource,
      */
     virtual const char *getMimeVersion() const = 0;
 
-    /**
-     * Mime type a backend provides by default, this is used to alert the
-     * remote peer in SAN during server alerted sync.
-     */
-    virtual const char *getPeerMimeType() const;
-
     using SyncSource::getName;
 
   private:
-    void checkStatus();
+    void checkStatus(SyncSourceReport &changes);
 
     /* implementations of SyncSource callbacks */
     virtual void beginSync(const std::string &lastToken, const std::string &resumeToken);
@@ -200,6 +221,7 @@ class TrackingSyncSource : public TestingSyncSource,
     virtual void readItemRaw(const std::string &luid, std::string &item);
     virtual void enableServerMode();
     virtual bool serverModeEnabled() const;
+    virtual const char *getPeerMimeType() const;
 
     boost::shared_ptr<ConfigNode> m_trackingNode;
 };

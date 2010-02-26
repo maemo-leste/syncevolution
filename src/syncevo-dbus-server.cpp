@@ -51,6 +51,11 @@
 #include <boost/noncopyable.hpp>
 
 #include <glib-object.h>
+#ifdef USE_GNOME_KEYRING
+extern "C" {
+#include <gnome-keyring.h>
+}
+#endif
 
 class DBusMessage;
 static DBusMessage *SyncEvoHandleException(DBusMessage *msg);
@@ -75,6 +80,8 @@ class Session;
 class Connection;
 class Client;
 class DBusTransportAgent;
+class DBusUserInterface;
+class DBusServer;
 
 class DBusSyncException : public DBusCXXException, public Exception
 {
@@ -177,7 +184,9 @@ class ReadOperations
 public:
     const std::string m_configName;
 
-    ReadOperations(const std::string &config_name);
+    DBusServer &m_server;
+
+    ReadOperations(const std::string &config_name, DBusServer &server);
 
     /** the double dictionary used to represent configurations */
     typedef std::map< std::string, StringMap > Config_t;
@@ -190,7 +199,7 @@ public:
     typedef SyncSource::Databases SourceDatabases_t;
 
     /** implementation of D-Bus GetConfigs() */
-    static void getConfigs(bool getTemplates, std::vector<std::string> &configNames);
+    void getConfigs(bool getTemplates, std::vector<std::string> &configNames);
 
     /** implementation of D-Bus GetConfig() for m_configName as server configuration */
     void getConfig(bool getTemplate,
@@ -210,11 +219,13 @@ private:
     /** 
      * This virtual function is used to let subclass set
      * filters to config. Only used internally.
+     * Return true if filters exists and have been set.
+     * Otherwise, nothing is set to config
      */
-    virtual void setFilters(SyncConfig &config) {}
+    virtual bool setFilters(SyncConfig &config) { return false; }
 
     /** utility method which constructs a SyncConfig which references a local configuration (never a template) */
-    boost::shared_ptr<SyncConfig> getLocalConfig(const std::string &configName);
+    boost::shared_ptr<DBusUserInterface> getLocalConfig(const std::string &configName);
 };
 
 /**
@@ -227,6 +238,240 @@ template<> struct dbus_traits<ReadOperations::SourceDatabase> :
                               dbus_member<ReadOperations::SourceDatabase, std::string, &ReadOperations::SourceDatabase::m_uri,
                               dbus_member_single<ReadOperations::SourceDatabase, bool, &ReadOperations::SourceDatabase::m_isDefault> > > >{}; 
 
+/**
+ * Automatic termination and track clients
+ * The dbus server will automatic terminate once it is idle in a given time.
+ * If any attached clients or connections, it never terminate. 
+ * Once no actives, timer is started to detect the time of idle.
+ * Note that there will be less-than TERM_INTERVAL inaccuracy in seconds,
+ * that's because we do check every TERM_INTERVAL seconds.
+ */
+class AutoTerm {
+    int m_refs;
+    guint m_elapsed;
+    guint m_interval;
+    guint m_checkSource;
+
+    static const guint TERM_INTERVAL = 5;
+
+    /* A callback is called in each TERM_INTERVAL seconds, registered to check whether the
+     * dbus server is timeout regurally.
+     * In reality it will be called after TERM_INTERVAL + delta, with delta being large
+     * if the D-Bus server is busy. Therefore m_elapsed will underestimate the real
+     * elapsed time. But because this only happens in a busy server and a busy server
+     * doesn't have to auto-terminate, this assumption could work.
+     */
+    static gboolean checkCallback(gpointer data) {
+        AutoTerm *at = static_cast<AutoTerm*>(data);
+        // if no conncetions or attached clients
+        if(at->m_refs <= 0) {
+            at->m_elapsed += TERM_INTERVAL;
+            if(at->m_elapsed >= at->m_interval) {
+                shutdownRequested = true;
+                g_main_loop_quit(loop);
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }
+
+ public:
+    /**
+     * constructor
+     * If interval is less than 0, it means 'unlimited' and never terminate
+     */
+    AutoTerm(int interval) : m_refs(0), m_elapsed(0) {
+            if(interval <= 0) {
+                ref();
+                m_interval = 0;
+                m_checkSource = 0;
+            } else {
+                m_interval = interval;
+                // call checking every 5 seconds
+                // here we don't use add/remove new sources for we might
+                // make glib source id integer overflow since its id calculation
+                // only plus one each time
+                m_checkSource = g_timeout_add_seconds(TERM_INTERVAL, 
+                                                      (GSourceFunc) checkCallback,
+                                                      static_cast<gpointer>(this));
+            }
+        }
+
+    //increase the actives objects
+    void ref(int refs = 1) {  
+        m_refs += refs; 
+    }
+
+    //decrease the actives objects
+    void unref(int refs = 1) { 
+        m_refs -= refs; 
+        if(m_refs <= 0) {
+           reset();
+           m_refs = 0;
+        }
+    }
+
+    void reset() {
+        m_elapsed = 0;
+    }
+};
+
+class InfoReq;
+
+/**
+ * Query bluetooth devices from org.bluez
+ * The basic workflow is: 
+ * 1) get default adapter from bluez by calling 'DefaultAdapter' method of org.bluez.Manager
+ * 2) get all devices of the adapter by calling 'ListDevices' method of org.bluez.Adapter
+ * 3) iterate all devices and get properties for each one by calling 'GetProperties' method of org.bluez.Device.
+ *    Then check its UUIDs whether it contains sync services and put it in the sync device list if it is
+ *
+ * To track changes of devices dynamically, here also listen signals from bluez:
+ * org.bluez.Manager - DefaultAdapterChanged: default adapter is changed and thus have to get its devices
+ *                                            and update sync device list
+ * org.bluez.Adapter - DeviceCreated, DeviceRemoved: device is created or removed and device list is updated
+ * org.bluez.Device - PropertyChanged: property is changed and device information is changed and tracked
+ *
+ * This class is to manage querying bluetooth devices from org.bluez. Also
+ * it acts a proxy to org.bluez.Manager.
+ */
+class BluezManager : public DBusRemoteObject {
+public:
+    BluezManager(DBusServer &server); 
+
+    virtual const char *getDestination() const {return "org.bluez";}
+    virtual const char *getPath() const {return "/";}
+    virtual const char *getInterface() const {return "org.bluez.Manager";}
+    virtual DBusConnection *getConnection() const {return m_bluezConn.get();}
+    bool isDone() { return m_done; }
+
+private:
+    class BluezDevice;
+
+    /**
+     * This class acts a proxy to org.bluez.Adapter. 
+     * Call methods of org.bluez.Adapter and listen signals from it
+     * to get devices list and track its changes
+     */
+    class BluezAdapter: public DBusRemoteObject
+    {
+     public:
+        BluezAdapter (BluezManager &manager, const string &path); 
+
+        virtual const char *getDestination() const {return "org.bluez";}
+        virtual const char *getPath() const {return m_path.c_str();}
+        virtual const char *getInterface() const {return "org.bluez.Adapter";}
+        virtual DBusConnection *getConnection() const {return m_manager.getConnection();}
+        void checkDone(bool forceDone = false)
+        {
+            if(forceDone || m_devReplies >= m_devNo) {
+                m_devReplies = m_devNo = 0;
+                m_manager.setDone(true);
+            } else {
+                m_manager.setDone(false);
+            }
+        }
+
+        std::vector<boost::shared_ptr<BluezDevice> >& getDevices() { return m_devices; }
+
+     private:
+        /** callback of 'ListDevices' signal. Used to get all available devices of the adapter */
+        void listDevicesCb(const std::vector<DBusObject_t> &devices, const string &error);
+
+        /** callback of 'DeviceRemoved' signal. Used to track a device is removed */
+        void deviceRemoved(const DBusObject_t &object);
+
+        /** callback of 'DeviceCreated' signal. Used to track a new device is created */
+        void deviceCreated(const DBusObject_t &object);
+
+        BluezManager &m_manager;
+        /** the object path of adapter */
+        std::string m_path;
+        /** the number of device for the default adapter */
+        int m_devNo;
+        /** the number of devices having reply */
+        int m_devReplies;
+
+        /** all available devices */
+        std::vector<boost::shared_ptr<BluezDevice> > m_devices;
+
+        /** represents 'DeviceRemoved' signal of org.bluez.Adapter*/
+        SignalWatch1<DBusObject_t> m_deviceRemoved;
+        /** represents 'DeviceAdded' signal of org.bluez.Adapter*/
+        SignalWatch1<DBusObject_t> m_deviceAdded;
+
+        friend class BluezDevice;
+    };
+
+    /**
+     * This class acts a proxy to org.bluez.Device. 
+     * Call methods of org.bluez.Device and listen signals from it
+     * to get properties of device and track its changes
+     */
+    class BluezDevice: public DBusRemoteObject
+    {
+     public:
+        typedef map<string, boost::variant<vector<string>, string > > PropDict;
+
+        BluezDevice (BluezAdapter &adapter, const string &path);
+
+        virtual const char *getDestination() const {return "org.bluez";}
+        virtual const char *getPath() const {return m_path.c_str();}
+        virtual const char *getInterface() const {return "org.bluez.Device";}
+        virtual DBusConnection *getConnection() const {return m_adapter.m_manager.getConnection();}
+        string getMac() { return m_mac; }
+
+        /**
+         * check whether the current device has sync service
+         * if yes, put it in the adapter's sync devices list
+         */
+        void checkSyncService(const std::vector<std::string> &uuids);
+
+     private:
+        /** callback of 'GetProperties' method. The properties of the device is gotten */
+        void getPropertiesCb(const PropDict &props, const string &error);
+
+        /** callback of 'PropertyChanged' signal. Changed property is tracked */
+        void propertyChanged(const string &name, const boost::variant<vector<string>, string> &prop);
+
+        BluezAdapter &m_adapter;
+        /** the object path of the device */
+        string m_path;
+        /** name of the device */
+        string m_name;
+        /** mac address of the device */
+        string m_mac;
+        /** whether the calling of 'GetProperties' is returned */
+        bool m_reply;
+
+        typedef SignalWatch2<string, boost::variant<vector<string>, string> > PropertySignal;
+        /** represents 'PropertyChanged' signal of org.bluez.Device */
+        PropertySignal m_propertyChanged;
+
+        friend class BluezAdapter;
+    };
+
+    /*
+     * check whether the data is generated. If errors, force initilization done
+     */
+    void setDone(bool done) { m_done = done; }
+
+    /** callback of 'DefaultAdapter' method to get the default bluetooth adapter  */
+    void defaultAdapterCb(const DBusObject_t &adapter, const string &error);
+
+    /** callback of 'DefaultAdapterChanged' signal to track changes of the default adapter */
+    void defaultAdapterChanged(const DBusObject_t &adapter);
+
+    DBusServer &m_server;
+    DBusConnectionPtr m_bluezConn;
+    boost::shared_ptr<BluezAdapter> m_adapter;
+
+    /** represents 'DefaultAdapterChanged' signal of org.bluez.Adapter*/
+    boost::shared_ptr<SignalWatch1<DBusObject_t> > m_adapterChanged;
+
+    /** flag to indicate whether the calls are all returned */
+    bool m_done;
+};
 
 /**
  * Implements the main org.syncevolution.Server interface.
@@ -244,6 +489,15 @@ class DBusServer : public DBusObjectHelper
     typedef std::list< std::pair< boost::shared_ptr<Watch>, boost::shared_ptr<Client> > > Clients_t;
     Clients_t m_clients;
 
+    /* clients that attach the server explicitly
+     * the pair is <client id, attached times>. Each attach has
+     * to be matched with one detach.
+     */
+    std::list<std::pair<Caller_t, int> > m_attachedClients;
+
+    /* Event source that regurally pool network manager
+     * */
+    GLibEvent m_pollConnman;
     /**
      * The session which currently holds the main lock on the server.
      * To avoid issues with concurrent modification of data or configs,
@@ -280,6 +534,31 @@ class DBusServer : public DBusObjectHelper
      * it is the currently running sync session (m_syncSession).
      */
     WorkQueue_t m_workQueue;
+
+    /**
+     * a hash of pending InfoRequest
+     */
+    typedef std::map<string, boost::weak_ptr<InfoReq> > InfoReqMap;
+
+    // hash map of pending info requests
+    InfoReqMap m_infoReqMap;
+
+    // the index of last info request
+    uint32_t m_lastInfoReq;
+
+    //automatic termination
+    AutoTerm m_autoTerm;
+
+    // a hash to represent matched templates for devices, the key is
+    // the peer name
+    typedef std::map<string, boost::shared_ptr<SyncConfig::TemplateDescription> > MatchedTemplates;
+
+    MatchedTemplates m_matchedTempls;
+
+    BluezManager m_bluezManager;
+
+    /** devices which have sync services */
+    SyncConfig::DeviceList m_syncDevices;
 
     /**
      * Watch callback for a specific client or connection.
@@ -319,7 +598,7 @@ class DBusServer : public DBusObjectHelper
                    bool getTemplate,
                    ReadOperations::Config_t &config)
     {
-        ReadOperations ops(config_name);
+        ReadOperations ops(config_name, *this);
         ops.getConfig(getTemplate , config);
     }
 
@@ -328,7 +607,7 @@ class DBusServer : public DBusObjectHelper
                     uint32_t start, uint32_t count,
                     ReadOperations::Reports_t &reports)
     {
-        ReadOperations ops(config_name);
+        ReadOperations ops(config_name, *this);
         ops.getReports(start, count, reports);
     }
 
@@ -336,7 +615,7 @@ class DBusServer : public DBusObjectHelper
     void checkSource(const std::string &configName,
                      const std::string &sourceName)
     {
-        ReadOperations ops(configName);
+        ReadOperations ops(configName, *this);
         ops.checkSource(sourceName);
     }
 
@@ -345,8 +624,15 @@ class DBusServer : public DBusObjectHelper
                       const string &sourceName,
                       ReadOperations::SourceDatabases_t &databases)
     {
-        ReadOperations ops(configName);
+        ReadOperations ops(configName, *this);
         ops.getDatabases(sourceName, databases);
+    }
+
+    void getConfigs(bool getTemplates, 
+                    std::vector<std::string> &configNames)
+    {
+        ReadOperations ops("", *this);
+        ops.getConfigs(getTemplates, configNames);
     }
 
     /** Server.CheckPresence() */
@@ -357,6 +643,29 @@ class DBusServer : public DBusObjectHelper
     /** Server.GetSessions() */
     void getSessions(std::vector<std::string> &sessions);
 
+    /** Server.InfoResponse() */
+    void infoResponse(const Caller_t &caller,
+                      const std::string &id,
+                      const std::string &state,
+                      const std::map<string, string> &response);
+
+    friend class InfoReq;
+
+    /** emit InfoRequest */
+    void emitInfoReq(const InfoReq &);
+
+    /** get the next id of InfoRequest */
+    std::string getNextInfoReq();
+
+    /** remove InfoReq from hash map */
+    void removeInfoReq(const InfoReq &req);
+
+    /*
+     * Decrease refs for a client. If allRefs, it tries to remove all refs from 'Attach()'
+     * for the client. Otherwise, decrease one ref for the client.
+     */
+    void detachClientRefs(const Caller_t &caller, bool allRefs);
+
     /** Server.SessionChanged */
     EmitSignal2<const DBusObject_t &,
                 bool> sessionChanged;
@@ -366,8 +675,174 @@ class DBusServer : public DBusObjectHelper
                 const std::string &,
                 const std::string &> presence;
 
+    /**
+     * Server.TemplatesChanged, triggered each time m_syncDevices, the
+     * input for the templates, is changed
+     */
+    EmitSignal0 templatesChanged;
+
+    /** Server.InfoRequest */
+    EmitSignal6<const std::string &,
+                const DBusObject_t &,
+                const std::string &,
+                const std::string &,
+                const std::string &,
+                const std::map<string, string> &> infoRequest;
+
+    static gboolean connmanPoll (gpointer dbus_server);
+    DBusConnectionPtr m_connmanConn;
+
+    friend class Session;
+    class PresenceStatus {
+        bool m_httpPresence;
+        bool m_btPresence;
+        bool m_initiated;
+        DBusServer &m_server;
+       
+        enum PeerStatus {
+            /* The transport is not available (local problem) */
+            NOTRANSPORT,
+            /* The peer is not contactable (remote problem) */
+            UNREACHABLE,
+            /* Not for sure whether the peer is presence but likely*/
+            MIGHTWORK,
+
+            INVALID
+        };
+
+        typedef map<string, vector<pair <string, PeerStatus> > > StatusMap;
+        typedef pair<const string, vector<pair <string, PeerStatus> > > StatusPair;
+        typedef pair <string, PeerStatus> PeerStatusPair;
+        StatusMap m_peers;
+
+        static std::string status2string (PeerStatus status) {
+            switch (status) {
+                case NOTRANSPORT:
+                    return "no transport";
+                    break;
+                case UNREACHABLE:
+                    return "not present";
+                    break;
+                case MIGHTWORK:
+                    return "";
+                    break;
+                case INVALID:
+                    return "invalid transport status";
+            }
+            // not reached, keep compiler happy
+            return "";
+        }
+
+        public:
+        PresenceStatus (DBusServer &server)
+            :m_httpPresence (false), m_btPresence (false), m_initiated (false), m_server (server)
+        {
+            init();
+        }
+        
+        void init(){
+            //initialize the configured peer list
+            if (!m_initiated) {
+                SyncConfig::ConfigList list = SyncConfig::getConfigs();
+                BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server, list) {
+                    SyncConfig config (server.first);
+                    vector<string> urls = config.getSyncURL();
+                    m_peers[server.first].clear();
+                    BOOST_FOREACH (const string &url, urls) {
+                        m_peers[server.first].push_back(make_pair(url,MIGHTWORK));
+                    }
+                }
+                m_initiated = true;
+            }
+        }
+
+        /* Implement DBusServer::checkPresence*/
+        void checkPresence (const string &peer, string& status, std::vector<std::string> &transport) {
+
+            if (!m_initiated) {
+                //might triggered by updateConfigPeers
+                init();
+            }
+
+            string peerName = SyncConfig::normalizeConfigString (peer);
+            vector< pair<string, PeerStatus> > mytransports = m_peers[peerName];
+            if (mytransports.empty()) {
+                //wrong config name?
+                status = status2string(NOTRANSPORT);
+                transport.clear();
+                return;
+            }
+            PeerStatus mystatus = MIGHTWORK;
+            transport.clear();
+            //only if all transports are unavailable can we declare the peer
+            //status as unavailable
+            BOOST_FOREACH (PeerStatusPair &mytransport, mytransports) {
+                if (mytransport.second == MIGHTWORK) {
+                    transport.push_back (mytransport.first);
+                }
+            }
+            if (transport.empty()) {
+                mystatus = NOTRANSPORT;
+            }
+            status = status2string(mystatus);
+        }
+
+        void updateConfigPeers (const std::string &peer, const ReadOperations::Config_t &config) {
+            ReadOperations::Config_t::const_iterator iter = config.find ("");
+            if (iter != config.end()) {
+                //As a simple approach, just reinitialize the whole STATUSMAP
+                //it will cause later updatePresenceStatus resend all signals
+                //and a reload in checkPresence
+                m_initiated = false;
+            }
+        }
+
+        void updatePresenceStatus (bool httpPresence, bool btPresence) {
+            bool httpChanged = (m_httpPresence != httpPresence);
+            bool btChanged = (m_btPresence != btPresence);
+            m_httpPresence = httpPresence;
+            m_btPresence = btPresence;
+
+            if (m_initiated && !httpChanged && !btChanged) {
+                //nothing changed
+                return;
+            }
+
+            //initialize the configured peer list
+            bool initiated = m_initiated;
+            if (!m_initiated) {
+                init();
+            }
+
+            //iterate all configured peers and fire singals
+            BOOST_FOREACH (StatusPair &peer, m_peers) {
+                //iterate all possible transports
+                //TODO One peer might got more than one signals, avoid this
+                std::vector<pair<string, PeerStatus> > &transports = peer.second;
+                BOOST_FOREACH (PeerStatusPair &entry, transports) {
+                    string url = entry.first;
+                    if (boost::starts_with (url, "http") && (httpChanged || !initiated)) {
+                        entry.second = m_httpPresence ? MIGHTWORK: NOTRANSPORT;
+                        m_server.presence (peer.first, status2string (entry.second), entry.first);
+                        SE_LOG_DEBUG(NULL, NULL,
+                                     "http presence signal %s,%s,%s",
+                                     peer.first.c_str(),
+                                     status2string (entry.second).c_str(), entry.first.c_str());
+                    } else if (boost::starts_with (url, "obex-bt") && (btChanged || !initiated)) {
+                        entry.second = m_btPresence ? MIGHTWORK: NOTRANSPORT;
+                        m_server.presence (peer.first, status2string (entry.second), entry.first);
+                        SE_LOG_DEBUG(NULL, NULL,
+                                    "bluetooth presence signal %s,%s,%s",
+                                    peer.first.c_str(),
+                                    status2string (entry.second).c_str(), entry.first.c_str());
+                    }
+                }
+            }
+        }
+    }m_presence;
+
 public:
-    DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn);
+    DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn, int duration);
     ~DBusServer();
 
     /** access to the GMainLoop reference used by this DBusServer instance */
@@ -419,6 +894,45 @@ public:
      * and if so, activates the first one in the queue.
      */
     void checkQueue();
+
+    boost::shared_ptr<InfoReq> createInfoReq(const string &type, 
+                                             const std::map<string, string> &parameters,
+                                             const Session *session);
+    void autoTermRef(int counts = 1) { m_autoTerm.ref(counts); }
+
+    void autoTermUnref(int counts = 1) { m_autoTerm.unref(counts); }
+
+    /** callback to reset for auto termination checking */
+    void autoTermCallback() { m_autoTerm.reset(); }
+
+    /** poll_nm callback for connman, used for presence detection*/
+    void connmanCallback(const std::map <std::string, boost::variant <std::vector <std::string> > >& props, const string &error);
+
+    PresenceStatus& getPresenceStatus() {return m_presence;}
+
+    DBusConnectionPtr getConnmanConnection() {return m_connmanConn;}
+
+    void clearPeerTempls() { m_matchedTempls.clear(); }
+    void addPeerTempl(const string &templName, const boost::shared_ptr<SyncConfig::TemplateDescription> peerTempl);
+
+    boost::shared_ptr<SyncConfig::TemplateDescription> getPeerTempl(const string &peer);
+
+    /**
+     * methods to operate device list. See DeviceList definition.
+     * The device id here is the identifier of device, the same as  definition in DeviceList.
+     * In bluetooth devices, it refers to actually the mac address of the bluetooth.
+     * The finger print and match mode is used to match templates.
+     */
+    /** get sync devices */
+    void getDeviceList(SyncConfig::DeviceList &devices);
+    /** get a device according to device id. If not found, return false. */
+    bool getDevice(const string &deviceId, SyncConfig::DeviceDescription &device);
+    /** add a device */
+    void addDevice(const SyncConfig::DeviceDescription &device);
+    /** remove a device by device id. If not found, do nothing */
+    void removeDevice(const string &deviceId);
+    /** update a device with the given device information. If not found, do nothing */
+    void updateDevice(const string &deviceId, const SyncConfig::DeviceDescription &device);
 };
 
 
@@ -571,10 +1085,34 @@ template<> struct dbus_traits<SourceProgress> :
 {};
 
 /**
+ * This class is mainly to implement two virtual functions 'askPassword'
+ * and 'savePassword' of ConfigUserInterface. The main functionality is
+ * to only get and save passwords in the gnome keyring.
+ */
+class DBusUserInterface : public SyncContext
+{
+public:
+    DBusUserInterface(const std::string &config);
+
+    /*
+     * Ask password from gnome keyring, if not found, empty string
+     * is returned
+     */
+    string askPassword(const string &passwordName, 
+                       const string &descr, 
+                       const ConfigPasswordKey &key);
+
+    //save password to gnome keyring, if not successful, false is returned.
+    bool savePassword(const string &passwordName, 
+                      const string &password, 
+                      const ConfigPasswordKey &key);
+};
+
+/**
  * A running sync engine which keeps answering on D-Bus whenever
  * possible and updates the Session while the sync runs.
  */
-class DBusSync : public SyncContext
+class DBusSync : public DBusUserInterface 
 {
     Session &m_session;
 
@@ -591,6 +1129,8 @@ protected:
                                        SyncSource &source,
                                        int32_t extra1, int32_t extra2, int32_t extra3);
 
+    virtual void reportStepCmd(sysync::uInt16 stepCmd);
+
     /**
      * Implement checkForSuspend and checkForAbort.
      * They will check whether dbus clients suspend
@@ -601,6 +1141,14 @@ protected:
     virtual bool checkForSuspend(); 
     virtual bool checkForAbort();
     virtual int sleep(int intervals);
+
+    /**
+     * Implement askPassword to retrieve password in gnome-keyring.
+     * If not found, then ask it from dbus clients. 
+     */
+    string askPassword(const string &passwordName, 
+                       const string &descr, 
+                       const ConfigPasswordKey &key);
 };
 
 /**
@@ -861,6 +1409,9 @@ class Session : public DBusObjectHelper,
     /** current sync status */
     SyncStatus m_syncStatus;
 
+    /** step info: whether engine is waiting for something */
+    bool m_stepIsWaiting;
+
     /**
      * Priority which determines position in queue.
      * Lower is more important. PRI_DEFAULT is zero.
@@ -883,6 +1434,23 @@ class Session : public DBusObjectHelper,
     Timer m_statusTimer;
     Timer m_progressTimer;
 
+    /** restore used */
+    string m_restoreDir;
+    bool m_restoreBefore;
+    /** the total number of sources to be restored */
+    int m_restoreSrcTotal;
+    /** the number of sources that have been restored */
+    int m_restoreSrcEnd;
+
+    enum RunOperation {
+        OP_SYNC = 0,
+        OP_RESTORE
+    };
+
+    static string runOpToString(RunOperation op);
+
+    RunOperation m_runOperation;
+
     /** Session.Detach() */
     void detach(const Caller_t &caller);
 
@@ -897,6 +1465,12 @@ class Session : public DBusObjectHelper,
     /** Session.GetProgress() */
     void getProgress(int32_t &progress,
                      SourceProgresses_t &sources);
+
+    /** Session.Restore() */
+    void restore(const string &dir, bool before,const std::vector<std::string> &sources);
+
+    /** Session.checkPresence() */
+    void checkPresence (string &status);
 
     /**
      * Must be called each time that properties changing the
@@ -989,6 +1563,9 @@ public:
     void sourceProgress(sysync::TProgressEventEnum type,
                         SyncSource &source,
                         int32_t extra1, int32_t extra2, int32_t extra3);
+    string askPassword(const string &passwordName, 
+                       const string &descr, 
+                       const ConfigPasswordKey &key);
 
     typedef StringMap SourceModes_t;
     /** Session.Sync() */
@@ -1001,9 +1578,16 @@ public:
     bool isSuspend() { return m_syncStatus == SYNC_SUSPEND; }
     bool isAbort() { return m_syncStatus == SYNC_ABORT; }
 
+    /**
+     * step info for engine: whether the engine is blocked by something
+     * If yes, 'waiting' will be appended as specifiers in the status string.
+     * see GetStatus documentation.
+     */
+    void setStepInfo(bool isWaiting); 
+
 private:
     /** set m_syncFilter and m_sourceFilters to config */
-    virtual void setFilters(SyncConfig &config);
+    virtual bool setFilters(SyncConfig &config);
 };
 
 
@@ -1131,14 +1715,27 @@ class DBusTransportAgent : public TransportAgent
 
     std::string m_url;
     std::string m_type;
+
+    /*
+     * When the callback is invoked, we always abort the current
+     * transmission.  If it is invoked while we are not in the wait()
+     * of this transport, then we remember that in m_eventTriggered
+     * and return from wait() right away. The main loop is only
+     * quit when the transport is waiting in it. This is a precaution
+     * to not interfere with other parts of the code.
+     */
     TransportCallback m_callback;
     void *m_callbackData;
     int m_callbackInterval;
+    GLibEvent m_eventSource;
+    bool m_eventTriggered;
+    bool m_waiting;
 
     SharedBuffer m_incomingMsg;
     std::string m_incomingMsgType;
 
     void doWait(boost::shared_ptr<Connection> &connection);
+    static gboolean timeoutCallback(gpointer transport);
 
  public:
     DBusTransportAgent(GMainLoop *loop,
@@ -1157,48 +1754,196 @@ class DBusTransportAgent : public TransportAgent
         m_callback = cb;
         m_callbackData = udata;
         m_callbackInterval = interval;
+        m_eventSource = 0;
     }
     virtual void getReply(const char *&data, size_t &len, std::string &contentType);
 };
 
+/**
+ * A wrapper for handling info request and response.
+ */
+class InfoReq {
+public:
+    typedef std::map<string, string> InfoMap;
+
+    // status of current request
+    enum Status {
+        ST_RUN, // request is running
+        ST_OK, // ok, response is gotten
+        ST_TIMEOUT, // timeout
+        ST_CANCEL // request is cancelled
+    };
+
+    /**
+     * constructor
+     * The default timeout is 120 seconds
+     */
+    InfoReq(DBusServer &server,
+            const string &type,
+            const InfoMap &parameters,
+            const Session *session,
+            uint32_t timeout = 120); 
+
+    ~InfoReq();
+
+    /**
+     * check whether the request is ready. Also give an opportunity
+     * to poll the sources and then check the response is ready
+     * @return the state of the request
+     */
+    Status check();
+
+    /**
+     * wait the response until timeout, abort or suspend. It may be blocked.
+     * The response is returned though the parameter 'response' when the Status is
+     * 'ST_OK'. Otherwise, corresponding statuses are returned.
+     * @param response the received response if gotten
+     * @param interval the interval to check abort, suspend and timeout, in seconds
+     * @return the current status
+     */
+    Status wait(InfoMap &response, uint32_t interval = 3);
+
+    /**
+     * get response when it is ready. If false, nothing will be set in response
+     */
+    bool getResponse(InfoMap &response);
+
+    /** cancel the request. If request is done, cancel won't do anything */
+    void cancel();
+
+    /** get current status in string format */
+    string getStatusStr() const { return statusToString(m_status); }
+
+private:
+    static string statusToString(Status status);
+
+    enum InfoState {
+        IN_REQ,  //request
+        IN_WAIT, // waiting
+        IN_DONE  // done
+    };
+
+    static string infoStateToString(InfoState state);
+
+    /** callback for the timemout source */
+    static gboolean checkCallback(gpointer data);
+
+    /** check whether the request is timeout */
+    bool checkTimeout();
+
+    friend class DBusServer;
+
+    /** set response from dbus clients */
+    void setResponse(const Caller_t &caller, const string &state, const InfoMap &response);
+
+    /** send 'done' state if needed */
+    void done();
+
+    string getId() const { return m_id; }
+    string getSessionPath() const { return m_session ? m_session->getPath() : ""; }
+    string getInfoStateStr() const { return infoStateToString(m_infoState); }
+    string getHandler() const { return m_handler; }
+    string getType() const { return m_type; }
+    const InfoMap& getParam() const { return m_param; }
+
+    DBusServer &m_server;
+
+    /** caller's session, might be NULL */
+    const Session *m_session;
+
+    /** unique id of this info request */
+    string m_id;
+
+    /** info req state defined in dbus api */
+    InfoState m_infoState;
+
+    /** status to indicate the info request is timeout, ok, abort, etc */
+    Status m_status;
+
+    /** the handler of the responsed dbus client */
+    Caller_t m_handler;
+
+    /** the type of the info request */
+    string m_type;
+
+    /** parameters from info request callers */
+    InfoMap m_param;
+
+    /** response returned from dbus clients */
+    InfoMap m_response;
+
+    /** default timeout is 120 seconds */
+    uint32_t m_timeout;
+
+    /** a timer */
+    Timer m_timer;
+};
+
 /***************** ReadOperations implementation ****************/
 
-ReadOperations::ReadOperations(const std::string &config_name) :
-    m_configName(config_name)
+ReadOperations::ReadOperations(const std::string &config_name, DBusServer &server) :
+    m_configName(config_name), m_server(server)
 {}
 
 void ReadOperations::getConfigs(bool getTemplates, std::vector<std::string> &configNames)
 {
-    SyncConfig::ServerList list;
     if (getTemplates) {
-        list = SyncConfig::getServerTemplates();
+        // get device list from dbus server, currently only bluetooth devices
+        SyncConfig::DeviceList devices;
+        m_server.getDeviceList(devices);
+
+        //clear existing templates in dbus server
+        m_server.clearPeerTempls();
+
+        SyncConfig::TemplateList list = SyncConfig::getPeerTemplates(devices);
+        std::map<std::string, int> numbers;
+        BOOST_FOREACH(const boost::shared_ptr<SyncConfig::TemplateDescription> peer, list) {
+            //if it is not a template for device
+            if(peer->m_fingerprint.empty()) {
+                configNames.push_back(peer->m_name);
+            } else {
+                string templName = "Bluetooth_";
+                templName += peer->m_id;
+                templName += "_";
+                std::map<std::string, int>::iterator it = numbers.find(peer->m_id);
+                if(it == numbers.end()) {
+                    numbers.insert(std::make_pair(peer->m_id, 1));
+                    templName += "1";
+                } else {
+                    it->second++;
+                    stringstream seq;
+                    seq << it->second;
+                    templName += seq.str();
+                }
+                configNames.push_back(templName);
+                m_server.addPeerTempl(templName, peer);
+            }
+        }
     } else {
-        list = SyncConfig::getServers();
-    }
-    BOOST_FOREACH(const SyncConfig::ServerList::value_type &server, list) {
-        configNames.push_back(server.first);
+        SyncConfig::ConfigList list = SyncConfig::getConfigs();
+        BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server, list) {
+            configNames.push_back(server.first);
+        }
     }
 }
 
-boost::shared_ptr<SyncConfig> ReadOperations::getLocalConfig(const string &configName)
+boost::shared_ptr<DBusUserInterface> ReadOperations::getLocalConfig(const string &configName)
 {
     string peer, context;
     SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configName),
                                   peer, context);
 
-    boost::shared_ptr<SyncConfig> syncConfig(new SyncConfig(configName));
-    // the default configuration can always be opened for reading,
-    // everything else must exist
-    if ((context != "default" || peer != "") &&
-        !syncConfig->exists()) {
-        SE_THROW_EXCEPTION(NoSuchConfig, "No configuration '" + configName + "' found");
+    boost::shared_ptr<DBusUserInterface> syncConfig(new DBusUserInterface(configName));
+
+    /** if config was not set temporarily */
+    if (!setFilters(*syncConfig)) {
+        // the default configuration can always be opened for reading,
+        // everything else must exist
+        if ((context != "default" || peer != "") &&
+                !syncConfig->exists()) {
+            SE_THROW_EXCEPTION(NoSuchConfig, "No configuration '" + configName + "' found");
+        }
     }
-
-    // TODO: handle temporary configs (MB #8116)
-    // - if config was set temporarily, it doesn't have to exist on disk =>
-    //   the check above is too strict
-    // - set temporary properties as filters
-
     return syncConfig;
 }
 
@@ -1206,42 +1951,87 @@ void ReadOperations::getConfig(bool getTemplate,
                                Config_t &config)
 {
     map<string, string> localConfigs;
-    boost::shared_ptr<SyncConfig> syncConfig;
+    boost::shared_ptr<SyncConfig> dbusConfig;
+    boost::shared_ptr<DBusUserInterface> dbusUI;
+    SyncConfig *syncConfig;
+    string syncURL;
     /** get server template */
     if(getTemplate) {
         string peer, context;
-        SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_configName),
-                                      peer, context);
 
-        syncConfig = SyncConfig::createServerTemplate(peer);
-        if(!syncConfig.get()) {
+        boost::shared_ptr<SyncConfig::TemplateDescription> peerTemplate =
+            m_server.getPeerTempl(m_configName);
+        if(peerTemplate) {
+            SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(peerTemplate->m_name),
+                    peer, context);
+            dbusConfig = SyncConfig::createPeerTemplate(peerTemplate->m_path);
+            // if we have cached template information, add match information for it
+            localConfigs.insert(pair<string, string>("description", peerTemplate->m_description));
+
+            stringstream score;
+            score << peerTemplate->m_rank;
+            localConfigs.insert(pair<string, string>("score", score.str()));
+            // Actually this fingerprint is transferred by getConfigs, which refers to device name
+            localConfigs.insert(pair<string, string>("deviceName", peerTemplate->m_fingerprint));
+            // This is the fingerprint of the template
+            localConfigs.insert(pair<string, string>("fingerPrint", peerTemplate->m_matchedModel));
+
+            // if the peer is client, then replace syncURL with bluetooth
+            // MAC address
+            syncURL = "obex-bt://";
+            syncURL += peerTemplate->m_id;
+        } else {
+            SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_configName),
+                    peer, context);
+            dbusConfig = SyncConfig::createPeerTemplate(peer);
+        }
+
+        if(!dbusConfig.get()) {
             SE_THROW_EXCEPTION(NoSuchConfig, "No template '" + m_configName + "' found");
         }
 
         // use the shared properties from the right context as filter
         // so that the returned template preserves existing properties
-        boost::shared_ptr<SyncConfig> shared = getLocalConfig(string("@") + context);
+        boost::shared_ptr<DBusUserInterface> shared = getLocalConfig(string("@") + context);
 
         ConfigProps props;
         shared->getProperties()->readProperties(props);
-        syncConfig->setConfigFilter(true, "", props);
+        dbusConfig->setConfigFilter(true, "", props);
         BOOST_FOREACH(std::string source, shared->getSyncSources()) {
             SyncSourceNodes nodes = shared->getSyncSourceNodes(source, "");
             props.clear();
             nodes.getProperties()->readProperties(props);
-            syncConfig->setConfigFilter(false, source, props);
+            dbusConfig->setConfigFilter(false, source, props);
         }
+        syncConfig = dbusConfig.get();
     } else {
-        syncConfig = getLocalConfig(m_configName);
+        dbusUI = getLocalConfig(m_configName);
+        //try to check password and read password from gnome keyring if possible
+        ConfigPropertyRegistry& registry = SyncConfig::getRegistry();
+        BOOST_FOREACH(const ConfigProperty *prop, registry) {
+            prop->checkPassword(*dbusUI, m_configName, *dbusUI->getProperties());
+        }
+        list<string> configuredSources = dbusUI->getSyncSources();
+        BOOST_FOREACH(const string &sourceName, configuredSources) {
+            ConfigPropertyRegistry& registry = SyncSourceConfig::getRegistry();
+            SyncSourceNodes sourceNodes = dbusUI->getSyncSourceNodes(sourceName);
+
+            BOOST_FOREACH(const ConfigProperty *prop, registry) {
+                prop->checkPassword(*dbusUI, m_configName, *dbusUI->getProperties(),
+                        sourceName, sourceNodes.getProperties());
+            }
+        }
+        syncConfig = dbusUI.get();
     }
-    setFilters(*syncConfig);
 
     /** get sync properties and their values */
     ConfigPropertyRegistry &syncRegistry = SyncConfig::getRegistry();
     BOOST_FOREACH(const ConfigProperty *prop, syncRegistry) {
         bool isDefault = false;
         string value = prop->getProperty(*syncConfig->getProperties(), &isDefault);
-        if(!isDefault) {
+        if(boost::iequals(prop->getName(), "syncURL") && !syncURL.empty() ) {
+            localConfigs.insert(pair<string, string>(prop->getName(), syncURL));
+        } else if(!isDefault) {
             localConfigs.insert(pair<string, string>(prop->getName(), value));
         }
     }
@@ -1268,23 +2058,28 @@ void ReadOperations::getConfig(bool getTemplate,
 void ReadOperations::getReports(uint32_t start, uint32_t count,
                                 Reports_t &reports)
 {
-    if(m_configName.empty()) {
-        // TODO: an empty config name should return reports for
-        // all peers (MB#8049)
-        SE_THROW_EXCEPTION(NoSuchConfig,
-                           "listing reports without peer name not implemented yet");
-    }
     SyncContext client(m_configName, false);
     std::vector<string> dirs;
     client.getSessions(dirs);
 
     uint32_t index = 0;
-    BOOST_FOREACH( const string &dir, dirs) {
+    // newest report firstly
+    for( int i = dirs.size() - 1; i >= 0; --i) {
         /** if start plus count is bigger than actual size, then return actual - size reports */
         if(index >= start && index - start < count) {
+            const string &dir = dirs[i];
             std::map<string, string> aReport;
+            // insert a 'dir' as an ID for the current report
+            aReport.insert(pair<string, string>("dir", dir));
             SyncReport report;
-            client.readSessionInfo(dir,report);
+            // peerName is also extracted from the dir 
+            string peerName = client.readSessionInfo(dir,report);
+            boost::shared_ptr<SyncConfig> config(new SyncConfig(m_configName));
+            string storedPeerName = config->getPeerName();
+            //if can't find peer name, use the peer name from the log dir
+            if(!storedPeerName.empty()) {
+                peerName = storedPeerName;
+            }
 
             /** serialize report to ConfigProps and then copy them to reports */
             HashFileConfigNode node("/dev/null","",true);
@@ -1295,6 +2090,8 @@ void ReadOperations::getReports(uint32_t start, uint32_t count,
             BOOST_FOREACH(const ConfigProps::value_type &entry, props) {
                 aReport.insert(entry);
             }
+            // a new key-value pair <"peer", [peer name]> is transferred
+            aReport.insert(pair<string, string>("peer", peerName));
             reports.push_back(aReport);
         }
         index++;
@@ -1320,7 +2117,7 @@ void ReadOperations::checkSource(const std::string &sourceName)
     try {
         // this can already throw exceptions when the config is invalid
         SyncSourceParams params(sourceName, config->getSyncSourceNodes(sourceName));
-        auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false));
+        auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false, config.get()));
 
         if (syncSource.get()) {
             syncSource->open();
@@ -1358,11 +2155,96 @@ void ReadOperations::getDatabases(const string &sourceName, SourceDatabases_t &d
     SE_THROW_EXCEPTION(NoSuchSource, "'" + m_configName + "' has no '" + sourceName + "' source");
 }
 
+/***************** DBusUserInterface implementation   **********************/
+DBusUserInterface::DBusUserInterface(const std::string &config):
+    SyncContext(config, true)
+{
+}
+
+inline const char *passwdStr(const std::string &str)
+{
+    return str.empty() ? NULL : str.c_str();
+}
+
+string DBusUserInterface::askPassword(const string &passwordName, 
+                                      const string &descr, 
+                                      const ConfigPasswordKey &key) 
+{
+    string password;
+#ifdef USE_GNOME_KEYRING
+    /** here we use server sync url without protocol prefix and
+     * user account name as the key in the keyring */
+    /* It is possible to let CmdlineSyncClient decide which of fields in ConfigPasswordKey it would use
+     * but currently only use passed key instead */
+    GnomeKeyringResult result;
+    GList* list;
+
+    result = gnome_keyring_find_network_password_sync(passwdStr(key.user),
+                                                      passwdStr(key.domain),
+                                                      passwdStr(key.server),
+                                                      passwdStr(key.object),
+                                                      passwdStr(key.protocol),
+                                                      passwdStr(key.authtype),
+                                                      key.port,
+                                                      &list);
+
+    /** if find password stored in gnome keyring */
+    if(result == GNOME_KEYRING_RESULT_OK && list && list->data ) {
+        GnomeKeyringNetworkPasswordData *key_data;
+        key_data = (GnomeKeyringNetworkPasswordData*)list->data;
+        password = key_data->password;
+        gnome_keyring_network_password_list_free(list);
+        return password;
+    }
+#endif
+    //if not found, return empty
+    return "";
+}
+
+bool DBusUserInterface::savePassword(const string &passwordName, 
+                                     const string &password, 
+                                     const ConfigPasswordKey &key)
+{
+#ifdef USE_GNOME_KEYRING
+    /* It is possible to let CmdlineSyncClient decide which of fields in ConfigPasswordKey it would use
+     * but currently only use passed key instead */
+    guint32 itemId;
+    GnomeKeyringResult result;
+    // write password to keyring
+    result = gnome_keyring_set_network_password_sync(NULL,
+                                                     passwdStr(key.user),
+                                                     passwdStr(key.domain),
+                                                     passwdStr(key.server),
+                                                     passwdStr(key.object),
+                                                     passwdStr(key.protocol),
+                                                     passwdStr(key.authtype),
+                                                     key.port,
+                                                     password.c_str(),
+                                                     &itemId);
+    /* if set operation is failed */
+    if(result != GNOME_KEYRING_RESULT_OK) {
+#ifdef GNOME_KEYRING_220
+        SyncContext::throwError("Try to save " + passwordName + " in gnome-keyring but get an error. " + gnome_keyring_result_to_message(result));
+#else
+        /** if gnome-keyring version is below 2.20, it doesn't support 'gnome_keyring_result_to_message'. */
+        stringstream value;
+        value << (int)result;
+        SyncContext::throwError("Try to save " + passwordName + " in gnome-keyring but get an error. The gnome-keyring error code is " + value.str() + ".");
+#endif
+    } 
+    return true;
+#else
+    /** if no support of gnome-keyring, don't save anything */
+    return false;
+#endif
+}
+
+
 /***************** DBusSync implementation **********************/
 
 DBusSync::DBusSync(const std::string &config,
                    Session &session) :
-    SyncContext(config, true),
+    DBusUserInterface(config),
     m_session(session)
 {
 }
@@ -1377,9 +2259,7 @@ boost::shared_ptr<TransportAgent> DBusSync::createTransportAgent()
     } else {
         // no connection, use HTTP via libsoup/GMainLoop
         GMainLoop *loop = m_session.getServer().getLoop();
-        g_main_loop_ref(loop);
-        boost::shared_ptr<HTTPTransportAgent> agent(new SoupTransportAgent(loop));
-        agent->setConfig(*this);
+        boost::shared_ptr<TransportAgent> agent = SyncContext::createTransportAgent(loop);
         return agent;
     }
 }
@@ -1397,6 +2277,22 @@ void DBusSync::displaySourceProgress(sysync::TProgressEventEnum type,
 {
     SyncContext::displaySourceProgress(type, source, extra1, extra2, extra3);
     m_session.sourceProgress(type, source, extra1, extra2, extra3);
+}
+
+void DBusSync::reportStepCmd(sysync::uInt16 stepCmd)
+{
+    switch(stepCmd) {
+        case sysync::STEPCMD_SENDDATA:
+        case sysync::STEPCMD_RESENDDATA:
+        case sysync::STEPCMD_NEEDDATA:
+            //sending or waiting data
+            m_session.setStepInfo(true);
+            break;
+        default:
+            // otherwise, processing
+            m_session.setStepInfo(false);
+            break;
+    }
 }
 
 bool DBusSync::checkForSuspend()
@@ -1422,6 +2318,18 @@ int DBusSync::sleep(int intervals)
             return intervals - now +start;
         }
     }
+}
+
+string DBusSync::askPassword(const string &passwordName, 
+                             const string &descr, 
+                             const ConfigPasswordKey &key) 
+{
+    string password = DBusUserInterface::askPassword(passwordName, descr, key);
+
+    if(password.empty()) {
+        password = m_session.askPassword(passwordName, descr, key);
+    }
+    return password;
 }
 
 /***************** Session implementation ***********************/
@@ -1469,6 +2377,7 @@ void Session::setConfig(bool update, bool temporary,
         throw std::runtime_error("Clearing existing configuration and temporary configuration changes which only affects the duration of the session are mutually exclusive");
     }
 
+    m_server.getPresenceStatus().updateConfigPeers (m_configName, config);
     /** check whether we need remove the entire configuration */
     if(!update && config.empty()) {
         boost::shared_ptr<SyncConfig> syncConfig(new SyncConfig(getConfigName()));
@@ -1543,7 +2452,8 @@ void Session::sync(const std::string &mode, const SourceModes_t &source_modes)
         SE_THROW_EXCEPTION(InvalidCall, "session is not active, call not allowed at this time");
     }
     if (m_sync) {
-        SE_THROW_EXCEPTION(InvalidCall, "sync started, cannot start again");
+        string msg = StringPrintf("%s started, cannot start(again)", runOpToString(m_runOperation).c_str());
+        SE_THROW_EXCEPTION(InvalidCall, msg);
     }
 
     m_sync.reset(new DBusSync(getConfigName(), *this));
@@ -1588,6 +2498,7 @@ void Session::sync(const std::string &mode, const SourceModes_t &source_modes)
     }
     fireProgress(true);
     fireStatus(true);
+    m_runOperation = OP_SYNC;
 
     // now that we have a DBusSync object, return from the main loop
     // and once that is done, transfer control to that object
@@ -1621,7 +2532,9 @@ void Session::getStatus(std::string &status,
                         SourceStatuses_t &sources)
 {
     status = syncStatusToString(m_syncStatus);
-    // TODO: append ";processing" or ";waiting"
+    if (m_stepIsWaiting) {
+        status += ";waiting";
+    }
 
     error = m_error;
     sources = m_sourceStatus;
@@ -1690,8 +2603,9 @@ Session::Session(DBusServer &server,
                  const std::string &session) :
     DBusObjectHelper(server.getConnection(),
                      std::string("/org/syncevolution/Session/") + session,
-                     "org.syncevolution.Session"),
-    ReadOperations(config_name),
+                     "org.syncevolution.Session",
+                     boost::bind(&DBusServer::autoTermCallback, &server)),
+    ReadOperations(config_name, server),
     m_server(server),
     m_sessionID(session),
     m_peerDeviceID(peerDeviceID),
@@ -1700,17 +2614,22 @@ Session::Session(DBusServer &server,
     m_tempConfig(false),
     m_active(false),
     m_syncStatus(SYNC_QUEUEING),
+    m_stepIsWaiting(false),
     m_priority(PRI_DEFAULT),
     m_progress(0),
     m_progData(m_progress),
     m_error(0),
     m_statusTimer(100),
     m_progressTimer(50),
+    m_restoreBefore(true),
+    m_restoreSrcTotal(0),
+    m_restoreSrcEnd(0),
+    m_runOperation(OP_SYNC),
     emitStatus(*this, "StatusChanged"),
     emitProgress(*this, "ProgressChanged")
 {
     add(this, &Session::detach, "Detach");
-    add(&ReadOperations::getConfigs, "GetConfigs");
+    add(static_cast<ReadOperations *>(this), &ReadOperations::getConfigs, "GetConfigs");
     add(static_cast<ReadOperations *>(this), &ReadOperations::getConfig, "GetConfig");
     add(this, &Session::setConfig, "SetConfig");
     add(static_cast<ReadOperations *>(this), &ReadOperations::getReports, "GetReports");
@@ -1721,6 +2640,8 @@ Session::Session(DBusServer &server,
     add(this, &Session::suspend, "Suspend");
     add(this, &Session::getStatus, "GetStatus");
     add(this, &Session::getProgress, "GetProgress");
+    add(this, &Session::restore, "Restore");
+    add(this, &Session::checkPresence, "checkPresence");
     add(emitStatus);
     add(emitProgress);
 }
@@ -1789,58 +2710,96 @@ void Session::sourceProgress(sysync::TProgressEventEnum type,
                              SyncSource &source,
                              int32_t extra1, int32_t extra2, int32_t extra3)
 {
-    SourceProgress &progress = m_sourceProgress[source.getName()];
-    SourceStatus &status = m_sourceStatus[source.getName()];
-    switch(type) {
-    case sysync::PEV_SYNCSTART:
-        if(source.getFinalSyncMode() != SYNC_NONE) {
-            m_progData.setStep(ProgressData::PRO_SYNC_UNINIT);
-            fireProgress();
+    switch(m_runOperation) {
+    case OP_SYNC: {
+        SourceProgress &progress = m_sourceProgress[source.getName()];
+        SourceStatus &status = m_sourceStatus[source.getName()];
+        switch(type) {
+        case sysync::PEV_SYNCSTART:
+            if(source.getFinalSyncMode() != SYNC_NONE) {
+                m_progData.setStep(ProgressData::PRO_SYNC_UNINIT);
+                fireProgress();
+            }
+            break;
+        case sysync::PEV_SYNCEND:
+            if(source.getFinalSyncMode() != SYNC_NONE) {
+                status.set(PrettyPrintSyncMode(source.getFinalSyncMode()), "done", extra1);
+                fireStatus(true);
+            }
+            break;
+        case sysync::PEV_PREPARING:
+            if(source.getFinalSyncMode() != SYNC_NONE) {
+                progress.m_phase        = "preparing";
+                progress.m_prepareCount = extra1;
+                progress.m_prepareTotal = extra2;
+                m_progData.itemPrepare();
+                fireProgress(true);
+            }
+            break;
+        case sysync::PEV_ITEMSENT:
+            if(source.getFinalSyncMode() != SYNC_NONE) {
+                progress.m_phase     = "sending";
+                progress.m_sendCount = extra1;
+                progress.m_sendTotal = extra2;
+                fireProgress(true);
+            }
+            break;
+        case sysync::PEV_ITEMRECEIVED:
+            if(source.getFinalSyncMode() != SYNC_NONE) {
+                progress.m_phase        = "receiving";
+                progress.m_receiveCount = extra1;
+                progress.m_receiveTotal = extra2;
+                m_progData.itemReceive(source.getName(), extra1, extra2);
+                fireProgress(true);
+            }
+            break;
+        case sysync::PEV_ALERTED:
+            if(source.getFinalSyncMode() != SYNC_NONE) {
+                status.set(PrettyPrintSyncMode(source.getFinalSyncMode()), "running", 0);
+                fireStatus(true);
+                m_progData.setStep(ProgressData::PRO_SYNC_DATA);
+                m_progData.addSyncMode(source.getFinalSyncMode());
+                fireProgress();
+            }
+            break;
+        default:
+            ;
         }
         break;
-    case sysync::PEV_SYNCEND:
-        if(source.getFinalSyncMode() != SYNC_NONE) {
-            status.set(PrettyPrintSyncMode(source.getFinalSyncMode()), "done", extra1);
-            fireStatus(true);
+    }
+    case OP_RESTORE: {
+        switch(type) {
+        case sysync::PEV_ALERTED:
+            // count the total number of sources to be restored
+            m_restoreSrcTotal++;
+            break;
+        case sysync::PEV_SYNCSTART: {
+            if (source.getFinalSyncMode() != SYNC_NONE) {
+                SourceStatus &status = m_sourceStatus[source.getName()];
+                // set statuses as 'restore-from-backup'
+                status.set(PrettyPrintSyncMode(source.getFinalSyncMode()), "running", 0);
+                fireStatus(true);
+            }
+            break;
+        }
+        case sysync::PEV_SYNCEND: {
+            if (source.getFinalSyncMode() != SYNC_NONE) {
+                m_restoreSrcEnd++;
+                SourceStatus &status = m_sourceStatus[source.getName()];
+                status.set(PrettyPrintSyncMode(source.getFinalSyncMode()), "done", 0);
+                m_progress = 100 * m_restoreSrcEnd / m_restoreSrcTotal;
+                fireStatus(true);
+                fireProgress(true);
+            }
+            break;
+        }
+        default:
+            break;
         }
         break;
-    case sysync::PEV_PREPARING:
-        if(source.getFinalSyncMode() != SYNC_NONE) {
-            progress.m_phase        = "preparing";
-            progress.m_prepareCount = extra1;
-            progress.m_prepareTotal = extra2;
-            m_progData.itemPrepare();
-            fireProgress(true);
-        }
-        break;
-    case sysync::PEV_ITEMSENT:
-        if(source.getFinalSyncMode() != SYNC_NONE) {
-            progress.m_phase     = "sending";
-            progress.m_sendCount = extra1;
-            progress.m_sendTotal = extra2;
-            fireProgress(true);
-        }
-        break;
-    case sysync::PEV_ITEMRECEIVED:
-        if(source.getFinalSyncMode() != SYNC_NONE) {
-            progress.m_phase        = "receiving";
-            progress.m_receiveCount = extra1;
-            progress.m_receiveTotal = extra2;
-            m_progData.itemReceive(source.getName(), extra1, extra2);
-            fireProgress(true);
-        }
-        break;
-    case sysync::PEV_ALERTED:
-        if(source.getFinalSyncMode() != SYNC_NONE) {
-            status.set(PrettyPrintSyncMode(source.getFinalSyncMode()), "running", 0);
-            fireStatus(true);
-            m_progData.setStep(ProgressData::PRO_SYNC_DATA);
-            m_progData.addSyncMode(source.getFinalSyncMode());
-            fireProgress();
-        }
-        break;
+    }
     default:
-        ;
+        break;
     }
 }
 
@@ -1850,35 +2809,47 @@ void Session::run()
         try {
             m_syncStatus = SYNC_RUNNING;
             fireStatus(true);
-            SyncMLStatus status;
-            m_progData.setStep(ProgressData::PRO_SYNC_PREPARE);
-            try {
-                status = m_sync->sync();
-            } catch (...) {
-                status = m_sync->handleException();
+            switch(m_runOperation) {
+            case OP_SYNC: {
+                SyncMLStatus status;
+                m_progData.setStep(ProgressData::PRO_SYNC_PREPARE);
+                try {
+                    status = m_sync->sync();
+                } catch (...) {
+                    status = m_sync->handleException();
+                }
+                if (!m_error) {
+                    m_error = status;
+                }
+                // if there is a connection, then it is no longer needed
+                boost::shared_ptr<Connection> c = m_connection.lock();
+                if (c) {
+                    c->shutdown();
+                }
+                break;
             }
-            if (!m_error) {
-                m_error = status;
-            }
-
-            // if there is a connection, then it is no longer needed
-            boost::shared_ptr<Connection> c = m_connection.lock();
-            if (c) {
-                c->shutdown();
-            }
+            case OP_RESTORE:
+                m_sync->restore(m_restoreDir, 
+                                m_restoreBefore ? SyncContext::DATABASE_BEFORE_SYNC : SyncContext::DATABASE_AFTER_SYNC);
+                break;
+            default:
+                break;
+            };
         } catch (...) {
             // we must enter SYNC_DONE under all circumstances,
             // even when failing during connection shutdown
             m_syncStatus = SYNC_DONE;
+            m_stepIsWaiting = false;
             fireStatus(true);
             throw;
         }
         m_syncStatus = SYNC_DONE;
+        m_stepIsWaiting = false;
         fireStatus(true);
     }
 }
 
-void Session::setFilters(SyncConfig &config)
+bool Session::setFilters(SyncConfig &config)
 {
     /** apply temporary configs to config */
     config.setConfigFilter(true, "", m_syncFilter);
@@ -1886,6 +2857,107 @@ void Session::setFilters(SyncConfig &config)
     BOOST_FOREACH(const SourceFilters_t::value_type &value, m_sourceFilters) {
         config.setConfigFilter(false, value.first, value.second);
     }
+    return m_tempConfig;
+}
+
+void Session::setStepInfo(bool isWaiting)
+{
+    // if stepInfo doesn't change, then ignore it to avoid duplicate status info
+    if(m_stepIsWaiting != isWaiting) {
+        m_stepIsWaiting = isWaiting;
+        fireStatus(true);
+    }
+}
+
+void Session::restore(const string &dir, bool before, const std::vector<std::string> &sources)
+{
+    if (!m_active) {
+        SE_THROW_EXCEPTION(InvalidCall, "session is not active, call not allowed at this time");
+    }
+    if (m_sync) {
+        // actually this never happen currently, for during the real restore process, 
+        // it never poll the sources in default main context 
+        string msg = StringPrintf("%s started, cannot restore(again)", runOpToString(m_runOperation).c_str());
+        SE_THROW_EXCEPTION(InvalidCall, msg);
+    }
+
+    m_sync.reset(new DBusSync(getConfigName(), *this));
+
+    if(!sources.empty()) {
+        BOOST_FOREACH(const std::string &source, sources) {
+            FilterConfigNode::ConfigFilter filter;
+            filter[SyncSourceConfig::m_sourcePropSync.getName()] = "two-way";
+            m_sync->setConfigFilter(false, source, filter);
+        }
+        // disable other sources
+        FilterConfigNode::ConfigFilter disabled;
+        disabled[SyncSourceConfig::m_sourcePropSync.getName()] = "disabled";
+        m_sync->setConfigFilter(false, "", disabled);
+    }
+    m_restoreBefore = before;
+    m_restoreDir = dir;
+    m_runOperation = OP_RESTORE;
+
+    // initiate status and progress and sourceProgress is not calculated currently
+    BOOST_FOREACH(const std::string source,
+                  m_sync->getSyncSources()) {
+        m_sourceStatus[source];
+    }
+    fireProgress(true);
+    fireStatus(true);
+
+    g_main_loop_quit(loop);
+}
+
+string Session::runOpToString(RunOperation op)
+{
+    switch(op) {
+    case OP_SYNC:
+        return "sync";
+    case OP_RESTORE:
+        return "restore";
+    default:
+        return "";
+    };
+}
+
+inline void insertPair(std::map<string, string> &params,
+                       const string &key, 
+                       const string &value)
+{
+    if(!value.empty()) {
+        params.insert(pair<string, string>(key, value));
+    }
+}
+
+string Session::askPassword(const string &passwordName, 
+                             const string &descr, 
+                             const ConfigPasswordKey &key) 
+{
+    std::map<string, string> params;
+    insertPair(params, "description", descr);
+    insertPair(params, "user", key.user);
+    insertPair(params, "SyncML server", key.server);
+    insertPair(params, "domain", key.domain);
+    insertPair(params, "object", key.object);
+    insertPair(params, "protocol", key.protocol);
+    insertPair(params, "authtype", key.authtype);
+    insertPair(params, "port", key.port ? StringPrintf("%u",key.port) : "");
+    boost::shared_ptr<InfoReq> req = m_server.createInfoReq("password", params, this);
+    std::map<string, string> response;
+    if(req->wait(response) == InfoReq::ST_OK) {
+        return response["password"];
+    } 
+
+    SyncContext::throwError("can't get the password from clients. The password request is '" + req->getStatusStr() + "'");
+    return "";
+}
+
+/*Implementation of Session.CheckPresence */
+void Session::checkPresence (string &status)
+{
+    vector<string> transport;
+    m_server.m_presence.checkPresence (m_configName, status, transport);
 }
 
 /************************ ProgressData implementation *****************/
@@ -2187,21 +3259,49 @@ void Connection::process(const Caller_t &caller,
                     // same serverID ("PC Suite"), so check properties of the
                     // of our configs first before going back to the name itself.
                     std::string serverID = san.fServerID;
-                    SyncConfig::ServerList servers = SyncConfig::getServers();
-                    BOOST_FOREACH(const SyncConfig::ServerList::value_type &server,
-                    	          servers) {
-                    	SyncContext context(server.first);
-                    	if (context.getSyncURL() == serverID) {
-                            config = server.first;
-                    	    break;
-                    	}
-
-                    	// TODO: for other transports match against
-                    	// transport specific properties, like Bluetooth MAC
-                        // address
+                    SyncConfig::ConfigList servers = SyncConfig::getConfigs();
+                    BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server,
+                            servers) {
+                        SyncConfig conf(server.first);
+                        vector<string> urls = conf.getSyncURL();
+                        BOOST_FOREACH (const string &url, urls) {
+                            if (url == serverID) {
+                                config = server.first;
+                                break;
+                            }
+                        }
+                        if (!config.empty()) {
+                            break;
+                        }
                     }
+
+                    // for Bluetooth transports match against mac address.
+                    StringMap::const_iterator id = m_peer.find("id"),
+                        trans = m_peer.find("transport");
+                    if (trans != m_peer.end() && id != m_peer.end()) {
+                        if (trans->second == "org.openobex.obexd") {
+                            string btAddr = id->second.substr(0, id->second.find("+"));
+                            BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server,
+                                    servers) {
+                                SyncConfig conf(server.first);
+                                vector<string> urls = conf.getSyncURL();
+                                BOOST_FOREACH (string &url, urls){
+                                    url = url.substr (0, url.find("+"));
+                                    SE_LOG_DEBUG (NULL, NULL, "matching against %s",url.c_str());
+                                    if (url.find ("obex-bt://") ==0 && url.substr(strlen("obex-bt://"), url.npos) == btAddr) {
+                                        config = server.first;
+                                        break;
+                                    } 
+                                }
+                                if (!config.empty()){
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     if (config.empty()) {
-                        BOOST_FOREACH(const SyncConfig::ServerList::value_type &server,
+                        BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server,
                                       servers) {
                             if (server.first == serverID) {
                                 config = serverID;
@@ -2303,8 +3403,8 @@ void Connection::process(const Caller_t &caller,
                     // TODO: proper exception
                     throw runtime_error("could not extract LocURI=deviceID from initial message");
                 }
-                BOOST_FOREACH(const StringPair &entry,
-                              SyncConfig::getServers()) {
+                BOOST_FOREACH(const SyncConfig::ConfigList::value_type &entry,
+                              SyncConfig::getConfigs()) {
                     SyncConfig peer(entry.first);
                     if (info.m_deviceID == peer.getRemoteDevID()) {
                         config = entry.first;
@@ -2441,7 +3541,8 @@ Connection::Connection(DBusServer &server,
                        bool must_authenticate) :
     DBusObjectHelper(conn.get(),
                      std::string("/org/syncevolution/Connection/") + sessionID,
-                     "org.syncevolution.Connection"),
+                     "org.syncevolution.Connection",
+                     boost::bind(&DBusServer::autoTermCallback, &server)),
     m_server(server),
     m_peer(peer),
     m_mustAuthenticate(must_authenticate),
@@ -2457,6 +3558,7 @@ Connection::Connection(DBusServer &server,
     add(this, &Connection::close, "Close");
     add(sendAbort);
     add(reply);
+    m_server.autoTermRef();
 }
 
 Connection::~Connection()
@@ -2479,6 +3581,7 @@ Connection::~Connection()
         // destructing
         Exception::handle();
     }
+    m_server.autoTermUnref();
 }
 
 void Connection::ready()
@@ -2494,7 +3597,10 @@ DBusTransportAgent::DBusTransportAgent(GMainLoop *loop,
                                        boost::weak_ptr<Connection> connection) :
     m_loop(loop),
     m_session(session),
-    m_connection(connection)
+    m_connection(connection),
+    m_callback(NULL),
+    m_eventTriggered(false),
+    m_waiting(false)
 {
 }
 
@@ -2525,6 +3631,12 @@ void DBusTransportAgent::send(const char *data, size_t len)
     connection->m_state = Connection::WAITING;
     connection->m_incomingMsg = SharedBuffer();
 
+    // setup regular callback
+    if (m_callback) {
+        m_eventSource = g_timeout_add_seconds(m_callbackInterval, timeoutCallback, static_cast<gpointer>(this));
+    }
+    m_eventTriggered = false;
+
     // TODO: turn D-Bus exceptions into transport exceptions
     StringMap meta;
     meta["URL"] = m_url;
@@ -2550,6 +3662,18 @@ void DBusTransportAgent::shutdown()
     }
 }
 
+gboolean DBusTransportAgent::timeoutCallback(gpointer transport)
+{
+    DBusTransportAgent *me = static_cast<DBusTransportAgent *>(transport);
+    me->m_callback(me->m_callbackData);
+    // TODO: check or remove return code from callback?!
+    me->m_eventTriggered = true;
+    if (me->m_waiting) {
+        g_main_loop_quit(me->m_loop);
+    }
+    return false;
+}
+
 void DBusTransportAgent::doWait(boost::shared_ptr<Connection> &connection)
 {
     // let Connection wake us up when it has a reply or
@@ -2560,10 +3684,10 @@ void DBusTransportAgent::doWait(boost::shared_ptr<Connection> &connection)
     // be destructed when requested by the D-Bus peer
     connection.reset();
 
-    // TODO: setup regular callback
-
     // now wait
+    m_waiting = true;
     g_main_loop_run(m_loop);
+    m_waiting = false;
 }
 
 DBusTransportAgent::Status DBusTransportAgent::wait(bool noReply)
@@ -2582,6 +3706,9 @@ DBusTransportAgent::Status DBusTransportAgent::wait(bool noReply)
         return GOT_REPLY;
         break;
     case Connection::FINAL:
+        if (m_eventTriggered) {
+            return TIME_OUT;
+        }
         doWait(connection);
 
         // if the connection is still available, then keep waiting
@@ -2601,6 +3728,9 @@ DBusTransportAgent::Status DBusTransportAgent::wait(bool noReply)
             return INACTIVE;
         }
 
+        if (m_eventTriggered) {
+            return TIME_OUT;
+        }
         doWait(connection);
 
         // tell caller to check again
@@ -2644,6 +3774,8 @@ void DBusServer::clientGone(Client *c)
             return;
         }
     }
+    // remove the client if it attaches the dbus server
+    detachClientRefs(c->m_ID, true);
     SE_LOG_DEBUG(NULL, NULL, "unknown client has disconnected?!");
 }
 
@@ -2662,11 +3794,47 @@ std::string DBusServer::getNextSession()
 void DBusServer::attachClient(const Caller_t &caller,
                               const boost::shared_ptr<Watch> &watch)
 {
-    // TODO: implement idle detection and automatic shutdown of the server
+    boost::shared_ptr<Client> client = addClient(getConnection(),
+                                                 caller,
+                                                 watch);
+    std::list<std::pair<Caller_t, int> >::iterator it;
+    for(it = m_attachedClients.begin(); it != m_attachedClients.end(); ++it) {
+        if (it->first == caller) {
+            break;
+        }
+    }
+    autoTermRef();
+    // if not attach before, then create it
+    if(it == m_attachedClients.end()) {
+        m_attachedClients.push_back(std::pair<Caller_t, int>(caller, 1));
+        watch->setCallback(boost::bind(&DBusServer::clientGone, this, client.get()));
+    } else {
+        it->second++;
+    }
 }
 
 void DBusServer::detachClient(const Caller_t &caller)
 {
+    detachClientRefs(caller, false);
+}
+
+void DBusServer::detachClientRefs(const Caller_t &caller, bool allRefs)
+{
+    std::list<std::pair<Caller_t, int> >::iterator it;
+    for(it = m_attachedClients.begin(); it != m_attachedClients.end(); ++it) {
+        if (it->first == caller) {
+            if(allRefs) {
+                autoTermUnref(it->second);
+                m_attachedClients.erase(it);
+            } else if(--it->second == 0) {
+                autoTermUnref();
+                m_attachedClients.erase(it);
+            } else {
+                autoTermUnref();
+            }
+            break;
+        }
+    }
 }
 
 void DBusServer::connect(const Caller_t &caller,
@@ -2724,7 +3892,7 @@ void DBusServer::checkPresence(const std::string &server,
                                std::string &status,
                                std::vector<std::string> &transports)
 {
-    // TODO: implement this, right now always return status = "" = available
+    return m_presence.checkPresence(server, status, transports);
 }
 
 void DBusServer::getSessions(std::vector<std::string> &sessions)
@@ -2741,13 +3909,22 @@ void DBusServer::getSessions(std::vector<std::string> &sessions)
     }
 }
 
-DBusServer::DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn) :
-    DBusObjectHelper(conn.get(), "/org/syncevolution/Server", "org.syncevolution.Server"),
+DBusServer::DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn, int duration) :
+    DBusObjectHelper(conn.get(), 
+                     "/org/syncevolution/Server", 
+                     "org.syncevolution.Server", 
+                     boost::bind(&DBusServer::autoTermCallback, this)),
     m_loop(loop),
     m_lastSession(time(NULL)),
     m_activeSession(NULL),
+    m_lastInfoReq(0),
+    m_autoTerm(duration),
+    m_bluezManager(*this),
     sessionChanged(*this, "SessionChanged"),
-    presence(*this, "Presence")
+    presence(*this, "Presence"),
+    templatesChanged(*this, "TemplatesChanged"),
+    infoRequest(*this, "InfoRequest"),
+    m_presence(*this)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -2756,15 +3933,25 @@ DBusServer::DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn) :
     add(this, &DBusServer::detachClient, "Detach");
     add(this, &DBusServer::connect, "Connect");
     add(this, &DBusServer::startSession, "StartSession");
-    add(&ReadOperations::getConfigs, "GetConfigs");
+    add(this, &DBusServer::getConfigs, "GetConfigs");
     add(this, &DBusServer::getConfig, "GetConfig");
     add(this, &DBusServer::getReports, "GetReports");
     add(this, &DBusServer::checkSource, "CheckSource");
     add(this, &DBusServer::getDatabases, "GetDatabases");
     add(this, &DBusServer::checkPresence, "CheckPresence");
     add(this, &DBusServer::getSessions, "GetSessions");
+    add(this, &DBusServer::infoResponse, "InfoResponse");
     add(sessionChanged);
+    add(templatesChanged);
     add(presence);
+    add(infoRequest);
+
+    const char *connmanTest = getenv ("DBUS_TEST_CONNMAN");
+    m_connmanConn = g_dbus_setup_bus (connmanTest ? DBUS_BUS_SESSION: DBUS_BUS_SYSTEM, NULL, true, NULL);
+    if (m_connmanConn) {
+        m_pollConnman =  g_timeout_add_seconds (10, connmanPoll, static_cast <gpointer> (this));
+    }
+
 }
 
 DBusServer::~DBusServer()
@@ -2773,6 +3960,7 @@ DBusServer::~DBusServer()
     m_syncSession.reset();
     m_workQueue.clear();
     m_clients.clear();
+    m_attachedClients.clear();
 }
 
 void DBusServer::run()
@@ -2956,6 +4144,526 @@ void DBusServer::checkQueue()
     }
 }
 
+void DBusServer::infoResponse(const Caller_t &caller,
+                              const std::string &id,
+                              const std::string &state,
+                              const std::map<string, string> &response)
+{
+    InfoReqMap::iterator it = m_infoReqMap.find(id);
+    // if not found, ignore
+    if(it != m_infoReqMap.end()) {
+        boost::shared_ptr<InfoReq> infoReq = it->second.lock();
+        infoReq->setResponse(caller, state, response);
+    }
+}
+
+boost::shared_ptr<InfoReq> DBusServer::createInfoReq(const string &type,
+                                                     const std::map<string, string> &parameters,
+                                                     const Session *session)
+{
+    boost::shared_ptr<InfoReq> infoReq(new InfoReq(*this, type, parameters, session)); 
+    boost::weak_ptr<InfoReq> item(infoReq) ;
+    m_infoReqMap.insert(pair<string, boost::weak_ptr<InfoReq> >(infoReq->getId(), item));
+    return infoReq;
+}
+
+std::string DBusServer::getNextInfoReq()
+{
+    return StringPrintf("%u", ++m_lastInfoReq);
+}
+
+void DBusServer::emitInfoReq(const InfoReq &req)
+{
+    infoRequest(req.getId(), 
+                req.getSessionPath(), 
+                req.getInfoStateStr(), 
+                req.getHandler(), 
+                req.getType(), 
+                req.getParam());
+}
+
+void DBusServer::removeInfoReq(const InfoReq &req)
+{
+    // remove InfoRequest from hash map
+    InfoReqMap::iterator it = m_infoReqMap.find(req.getId());
+    if(it != m_infoReqMap.end()) {
+        m_infoReqMap.erase(it);
+    }
+}
+
+gboolean DBusServer::connmanPoll (gpointer dbusserver)
+{
+    DBusServer *me = static_cast<DBusServer *>(dbusserver);
+    DBusConnectionPtr conn = me->getConnmanConnection();
+    struct ConnmanClient : public DBusCallObject
+    {
+        DBusConnectionPtr m_connection;
+        ConnmanClient (DBusConnectionPtr conn ) : m_connection (conn) {}
+        virtual const char *getDestination() const {return "org.moblin.connman";}
+        virtual const char *getPath() const {return "/";}
+        virtual const char *getInterface() const {return "org.moblin.connman.Manager";}
+        virtual const char *getMethod() const {return "GetProperties"; }
+        virtual DBusConnection *getConnection() const {return m_connection.get();}
+    }connman (conn);
+
+    typedef std::map <std::string, boost::variant <std::vector <std::string> > > PropDict;
+    DBusClientCall0<PropDict>  getProp(connman);
+    getProp (boost::bind(&DBusServer::connmanCallback, me, _1, _2));
+    return TRUE;
+}
+
+
+void DBusServer::connmanCallback (const std::map <std::string, boost::variant <std::vector <std::string> > >& props, const string &error)
+{
+    if (!error.empty()) {
+        if (error == "org.freedesktop.DBus.Error.ServiceUnknown") {
+            // no connman available, remove connmanPoll.
+            m_pollConnman.set(0);
+            // ensure there is still first set of singal set in case of no
+            // connman available
+            m_presence.updatePresenceStatus (true, true);
+            SE_LOG_DEBUG (NULL, NULL, "No connman service available %s", error.c_str());
+            return;
+        }
+        SE_LOG_DEBUG (NULL, NULL, "error in connmanCallback %s", error.c_str());
+        return;
+    }
+
+    typedef std::pair <std::string, boost::variant <std::vector <std::string> > > element;
+    bool httpPresence = false, btPresence = false;
+    BOOST_FOREACH (element entry, props) {
+        //match connected for HTTP based peers (wifi/wimax/ethernet)
+        if (entry.first == "ConnectedTechnologies") {
+            std::vector <std::string> connected = boost::get <std::vector <std::string> > (entry.second);
+            BOOST_FOREACH (std::string tech, connected) {
+                if (boost::iequals (tech, "wifi") || boost::iequals (tech, "ethernet") 
+                || boost::iequals (tech, "wimax")) {
+                    httpPresence = true;
+                    break;
+                }
+            }
+        } else if (entry.first == "EnabledTechnologies") {
+            std::vector <std::string> enabled = boost::get <std::vector <std::string> > (entry.second);
+            BOOST_FOREACH (std::string tech, enabled){
+                if (boost::iequals (tech, "bluetooth")) {
+                    btPresence = true;
+                    break;
+                }
+            }
+        } else {
+            continue;
+        }
+    }
+    //now delivering the signals
+    m_presence.updatePresenceStatus (httpPresence, btPresence);
+}
+
+void DBusServer::getDeviceList(SyncConfig::DeviceList &devices)
+{
+    //wait bluez or other device managers
+    while(!m_bluezManager.isDone()) {
+        g_main_loop_run(m_loop);
+    }
+
+    devices.clear();
+    devices = m_syncDevices;
+}
+
+void DBusServer::addPeerTempl(const string &templName, 
+                              const boost::shared_ptr<SyncConfig::TemplateDescription> peerTempl)
+{
+    std::string lower = templName;
+    boost::to_lower(lower);
+    m_matchedTempls.insert(MatchedTemplates::value_type(lower, peerTempl));
+}
+
+boost::shared_ptr<SyncConfig::TemplateDescription> DBusServer::getPeerTempl(const string &peer)
+{
+    std::string lower = peer;
+    boost::to_lower(lower);
+    MatchedTemplates::iterator it = m_matchedTempls.find(lower);
+    if(it != m_matchedTempls.end()) {
+        return it->second;
+    } else {
+        return boost::shared_ptr<SyncConfig::TemplateDescription>();
+    }
+}
+
+bool DBusServer::getDevice(const string &deviceId, SyncConfig::DeviceDescription &device)
+{
+    SyncConfig::DeviceList::iterator syncDevIt;
+    for(syncDevIt = m_syncDevices.begin(); syncDevIt != m_syncDevices.end(); ++syncDevIt) {
+        if(boost::equals(syncDevIt->m_deviceId, deviceId)) {
+            device = *syncDevIt;
+            return true;
+        }
+    }
+    return false;
+}
+
+void DBusServer::addDevice(const SyncConfig::DeviceDescription &device)
+{
+    SyncConfig::DeviceList::iterator it;
+    for(it = m_syncDevices.begin(); it != m_syncDevices.end(); ++it) {
+        if(boost::iequals(it->m_deviceId, device.m_deviceId)) {
+            break;
+        }
+    }
+    if(it == m_syncDevices.end()) {
+        m_syncDevices.push_back(device);
+        templatesChanged();
+    }
+}
+
+void DBusServer::removeDevice(const string &deviceId)
+{
+    SyncConfig::DeviceList::iterator syncDevIt;
+    for(syncDevIt = m_syncDevices.begin(); syncDevIt != m_syncDevices.end(); ++syncDevIt) {
+        if(boost::equals(syncDevIt->m_deviceId, deviceId)) {
+            m_syncDevices.erase(syncDevIt);
+            templatesChanged();
+            break;
+        }
+    }
+}
+
+void DBusServer::updateDevice(const string &deviceId,
+                              const SyncConfig::DeviceDescription &device)
+{
+    SyncConfig::DeviceList::iterator it;
+    for(it = m_syncDevices.begin(); it != m_syncDevices.end(); ++it) {
+        if(boost::iequals(it->m_deviceId, deviceId)) {
+            (*it) = device; 
+            templatesChanged();
+            break;
+        }
+    }
+}
+
+/********************** InfoReq implementation ******************/
+InfoReq::InfoReq(DBusServer &server,
+                 const string &type,
+                 const InfoMap &parameters,
+                 const Session *session,
+                 uint32_t timeout) :
+    m_server(server), m_session(session), m_infoState(IN_REQ),
+    m_status(ST_RUN), m_type(type), m_param(parameters), 
+    m_timeout(timeout), m_timer(m_timeout * 1000)
+{
+    m_id = m_server.getNextInfoReq();
+    m_server.emitInfoReq(*this);
+    m_param.clear();
+}
+
+InfoReq::~InfoReq()
+{
+    m_handler = "";
+    done();
+    m_server.removeInfoReq(*this);
+}
+
+InfoReq::Status InfoReq::check()
+{
+    if(m_status == ST_RUN) {
+        // give an opportunity to poll the sources on the main context
+        g_main_context_iteration(g_main_loop_get_context(m_server.getLoop()), false);
+        checkTimeout();
+    }
+    return m_status;
+}
+
+bool InfoReq::getResponse(InfoMap &response)
+{
+    if (m_status == ST_OK) {
+        response = m_response;
+        return true;
+    }
+    return false;
+}
+
+InfoReq::Status InfoReq::wait(InfoMap &response, uint32_t interval)
+{
+    // give a chance to check whether it has been timeout
+    check();
+    if(m_status == ST_RUN) {
+        guint checkSource = g_timeout_add_seconds(interval, 
+                                                  (GSourceFunc) checkCallback,
+                                                  static_cast<gpointer>(this));
+        while(m_status == ST_RUN) {
+            g_main_context_iteration(g_main_loop_get_context(m_server.getLoop()), true);
+        }
+
+        // if the source is not removed
+        if(m_status != ST_TIMEOUT && m_status != ST_CANCEL) {
+            g_source_remove(checkSource);
+        }
+    }
+    if (m_status == ST_OK) {
+        response = m_response;
+    }
+    return m_status;
+}
+
+void InfoReq::cancel()
+{
+    if(m_status == ST_RUN) {
+        m_handler = "";
+        done();
+        m_status = ST_CANCEL;
+    }
+}
+
+string InfoReq::statusToString(Status status)
+{
+    switch(status) {
+    case ST_RUN:
+        return "running";
+    case ST_OK:
+        return "ok";
+    case ST_CANCEL:
+        return "cancelled";
+    case ST_TIMEOUT:
+        return "timeout";
+    default:
+        return "";
+    };
+}
+
+string InfoReq::infoStateToString(InfoState state)
+{
+    switch(state) {
+    case IN_REQ:
+        return "request";
+    case IN_WAIT:
+        return "waiting";
+    case IN_DONE:
+        return "done";
+    default:
+        return "";
+    }
+}
+
+gboolean InfoReq::checkCallback(gpointer data)
+{
+    // TODO: check abort and suspend(MB#8730)
+
+    // if InfoRequest("request") is sent and waiting for InfoResponse("working"),
+    // add a timeout mechanism
+    InfoReq *req = static_cast<InfoReq*>(data);
+    if (req->checkTimeout()) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+bool InfoReq::checkTimeout()
+{
+    // if waiting for 'working' response, check time out
+    if(m_status == ST_RUN && m_infoState == IN_REQ) {
+        if (m_timer.timeout()) {
+            m_status = ST_TIMEOUT;
+            return true;
+        }
+    }
+    return false;
+}
+
+void InfoReq::setResponse(const Caller_t &caller, const string &state, const InfoMap &response)
+{
+    if(m_status != ST_RUN) {
+        return;
+    } else if(m_infoState == IN_REQ && state == "working") {
+        m_handler = caller;
+        m_infoState = IN_WAIT;
+        m_server.emitInfoReq(*this);
+    } else if(m_infoState == IN_WAIT && state == "response") {
+        m_response = response;
+        m_handler = caller;
+        done();
+        m_status = ST_OK;
+    }
+}
+
+void InfoReq::done()
+{
+    if (m_infoState != IN_DONE) {
+        m_infoState = IN_DONE;
+        m_server.emitInfoReq(*this);
+    }
+}
+
+/********************** BluezManager implementation ******************/
+BluezManager::BluezManager(DBusServer &server) :
+    m_server(server)
+{
+    m_bluezConn = g_dbus_setup_bus(DBUS_BUS_SYSTEM, NULL, true, NULL);
+    if(m_bluezConn) {
+        m_done = false;
+        DBusClientCall0<DBusObject_t> getAdapter(*this, "DefaultAdapter");
+        getAdapter(boost::bind(&BluezManager::defaultAdapterCb, this, _1, _2 ));
+        m_adapterChanged.reset(new SignalWatch1<DBusObject_t>(*this, "DefaultAdapterChanged"));
+        (*m_adapterChanged)(boost::bind(&BluezManager::defaultAdapterChanged, this, _1));
+    } else {
+        m_done = true;
+    }
+}
+
+void BluezManager::defaultAdapterChanged(const DBusObject_t &adapter)
+{
+    m_done = false;
+    //remove devices that belong to this original adapter
+    if(m_adapter) {
+        BOOST_FOREACH(boost::shared_ptr<BluezDevice> &device, m_adapter->getDevices()) {
+            m_server.removeDevice(device->getMac());
+        }
+    }
+    string error;
+    defaultAdapterCb(adapter, error);
+}
+
+void BluezManager::defaultAdapterCb(const DBusObject_t &adapter, const string &error)
+{
+    if(!error.empty()) {
+        SE_LOG_DEBUG (NULL, NULL, "Error in calling DefaultAdapter of Interface org.bluez.Manager: %s", error.c_str());
+        m_done = true;
+        return;
+    }
+    m_adapter.reset(new BluezAdapter(*this, adapter)); 
+}
+
+BluezManager::BluezAdapter::BluezAdapter(BluezManager &manager, const string &path)
+    : m_manager(manager), m_path(path), m_devNo(0), m_devReplies(0),
+      m_deviceRemoved(*this,  "DeviceRemoved"), m_deviceAdded(*this, "DeviceCreated")
+{
+    DBusClientCall0<std::vector<DBusObject_t> > listDevices(*this, "ListDevices");
+    listDevices(boost::bind(&BluezAdapter::listDevicesCb, this, _1, _2));
+    //m_deviceRemoved.reset(new SignalWatch1<DBusObject_t>(*this, "DeviceRemoved"));
+    m_deviceRemoved(boost::bind(&BluezAdapter::deviceRemoved, this, _1));
+
+    //m_deviceAdded.reset(new SignalWatch1<DBusObject_t>(*this, "DeviceCreated"));
+    m_deviceAdded(boost::bind(&BluezAdapter::deviceCreated, this, _1));
+}
+
+void BluezManager::BluezAdapter::listDevicesCb(const std::vector<DBusObject_t> &devices, const string &error)
+{
+    if(!error.empty()) {
+        SE_LOG_DEBUG (NULL, NULL, "Error in calling ListDevices of Interface org.bluez.Adapter: %s", error.c_str());
+        checkDone(true);
+        return;
+    }
+    m_devNo = devices.size();
+    BOOST_FOREACH(const DBusObject_t &device, devices) {
+        boost::shared_ptr<BluezDevice> bluezDevice(new BluezDevice(*this, device));
+        m_devices.push_back(bluezDevice);
+    }
+    checkDone();
+}
+
+void BluezManager::BluezAdapter::deviceRemoved(const DBusObject_t &object)
+{
+    string address;
+    std::vector<boost::shared_ptr<BluezDevice> >::iterator devIt;
+    for(devIt = m_devices.begin(); devIt != m_devices.end(); ++devIt) {
+        if(boost::equals((*devIt)->getPath(), object)) {
+            address = (*devIt)->m_mac;
+            if((*devIt)->m_reply) {
+                m_devReplies--;
+            }
+            m_devNo--;
+            m_devices.erase(devIt);
+            break;
+        }
+    }
+    m_manager.m_server.removeDevice(address);
+}
+
+void BluezManager::BluezAdapter::deviceCreated(const DBusObject_t &object)
+{
+    m_devNo++;
+    boost::shared_ptr<BluezDevice> bluezDevice(new BluezDevice(*this, object));
+    m_devices.push_back(bluezDevice);
+}
+
+BluezManager::BluezDevice::BluezDevice (BluezAdapter &adapter, const string &path)
+    : m_adapter(adapter), m_path(path), m_reply(false), m_propertyChanged(*this, "PropertyChanged")
+{
+    DBusClientCall0<PropDict> getProperties(*this, "GetProperties");
+    getProperties(boost::bind(&BluezDevice::getPropertiesCb, this, _1, _2));
+
+    m_propertyChanged(boost::bind(&BluezDevice::propertyChanged, this, _1, _2));
+}
+
+void BluezManager::BluezDevice::checkSyncService(const std::vector<std::string> &uuids)
+{
+    static const char * SYNCML_CLIENT_UUID = "00000002-0000-1000-8000-0002ee000002";
+    bool hasSyncService = false;
+    DBusServer &server = m_adapter.m_manager.m_server;
+    BOOST_FOREACH(const string &uuid, uuids) {
+        //if the device has sync service, add it to the device list
+        if(boost::iequals(uuid, SYNCML_CLIENT_UUID)) {
+            hasSyncService = true;
+            if(!m_mac.empty()) {
+                server.addDevice(SyncConfig::DeviceDescription(m_mac, m_name, SyncConfig::MATCH_FOR_SERVER_MODE));
+            }
+            break;
+        }
+    }
+    // if sync service is not available now, possible to remove device
+    if(!hasSyncService && !m_mac.empty()) {
+        server.removeDevice(m_mac);
+    }
+}
+
+void BluezManager::BluezDevice::getPropertiesCb(const PropDict &props, const string &error)
+{
+    m_adapter.m_devReplies++;
+    m_reply = true;
+    if(!error.empty()) {
+        SE_LOG_DEBUG (NULL, NULL, "Error in calling GetProperties of Interface org.bluez.Device: %s", error.c_str());
+    } else {
+        PropDict::const_iterator it = props.find("Name");
+        if(it != props.end()) {
+            m_name = boost::get<string>(it->second);
+        }
+        it = props.find("Address");
+        if(it != props.end()) {
+            m_mac = boost::get<string>(it->second);
+        }
+
+        PropDict::const_iterator uuids = props.find("UUIDs");
+        if(uuids != props.end()) {
+            const std::vector<std::string> uuidVec = boost::get<std::vector<std::string> >(uuids->second);
+            checkSyncService(uuidVec);
+        }
+    }
+    m_adapter.checkDone();
+}
+
+void BluezManager::BluezDevice::propertyChanged(const string &name,
+                                                const boost::variant<vector<string>, string> &prop)
+{
+    DBusServer &server = m_adapter.m_manager.m_server;
+    if(boost::iequals(name, "Name")) {
+        m_name = boost::get<std::string>(prop);
+        SyncConfig::DeviceDescription device;
+        if(server.getDevice(m_mac, device)) {
+            device.m_fingerprint = m_name;
+            server.updateDevice(m_mac, device);
+        }
+    } else if(boost::iequals(name, "UUIDs")) {
+        const std::vector<std::string> uuidVec = boost::get<std::vector<std::string> >(prop);
+        checkSyncService(uuidVec);
+    } else if(boost::iequals(name, "Address")) {
+        string mac = boost::get<std::string>(prop);
+        SyncConfig::DeviceDescription device;
+        if(server.getDevice(m_mac, device)) {
+            device.m_deviceId = mac;
+            server.updateDevice(m_mac, device);
+        }
+        m_mac = mac;
+    }
+}
+
 /**************************** main *************************/
 
 void niam(int sig)
@@ -2965,8 +4673,41 @@ void niam(int sig)
     g_main_loop_quit (loop);
 }
 
+static bool parseDuration(int &duration, const char* value)
+{
+    if(value == NULL) {
+        return false;
+    } else if (boost::iequals(value, "unlimited")) {
+        duration = -1;
+        return true;
+    } else if ((duration = atoi(value)) > 0) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 int main(int argc, char **argv)
 {
+    int duration = 600;
+    int opt = 1;
+    while(opt < argc) {
+        if(argv[opt][0] != '-') {
+            break;
+        }
+        if (boost::iequals(argv[opt], "--duration") ||
+            boost::iequals(argv[opt], "-d")) {
+            opt++;
+            if(!parseDuration(duration, opt== argc ? NULL : argv[opt])) {
+                std::cout << argv[opt-1] << ": unknown parameter value or not set" << std::endl;
+                return false;
+            }
+        } else {
+            std::cout << argv[opt] << ": unknown parameter" << std::endl;
+            return false;
+        }
+        opt++;
+    }
     try {
         g_type_init();
         g_thread_init(NULL);
@@ -2984,12 +4725,13 @@ int main(int argc, char **argv)
         DBusErrorCXX err;
         DBusConnectionPtr conn = g_dbus_setup_bus(DBUS_BUS_SESSION,
                                                   "org.syncevolution",
+                                                  true,
                                                   &err);
         if (!conn) {
             err.throwFailure("g_dbus_setup_bus()");
         }
 
-        DBusServer server(loop, conn);
+        DBusServer server(loop, conn, duration);
         server.activate();
 
         std::cout << argv[0] << " ready to run\n" << std::flush;

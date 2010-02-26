@@ -1,3 +1,12 @@
+syncevolution (1.0+ds1~b2a-1) unstable; urgency=low
+
+  * New upstream beta
+  * According to http://bugzilla.moblin.org/show_bug.cgi?id=8758,
+    syncevolution is now smarter about retrying in certain situations.
+    (Closes: #565527).
+
+ -- David Bremner <bremner@unb.ca>  Fri, 26 Feb 2010 15:45:00 -0400
+
 syncevolution (1.0+ds1~a1-2) experimental; urgency=low
 
   * Don't build depend on libopenobex1-dev on kfreebsd-*. This avoids

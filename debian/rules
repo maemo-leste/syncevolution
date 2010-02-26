@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
-UPSTREAMTAG=syncevolution-1-0-alpha-1
+UPSTREAMTAG=syncevolution-1-0-beta-2a
 
 SOURCEPKG=$(shell dpkg-parsechangelog | sed  -n 's/^Source: \(.*\)/\1/p')
 UPSTREAM=$(shell dpkg-parsechangelog |  sed -n 's/^Version: \(.*\)-[^-]*/\1/p')

@@ -1,6 +1,6 @@
-syncevolution (1.0+ds1~b2a-1) unstable; urgency=low
+syncevolution (1.0+ds1~beta2a-1) unstable; urgency=low
 
-  * New upstream beta
+  * New upstream beta (Closes: #572640)
   * According to http://bugzilla.moblin.org/show_bug.cgi?id=8758,
     syncevolution is now smarter about retrying in certain situations.
     (Closes: #565527).

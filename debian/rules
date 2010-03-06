@@ -18,5 +18,4 @@ override_dh_auto_configure:
 			--libexecdir=/usr/lib/syncevolution --enable-gui
 
 get-orig-source: 
-	echo ${UPSTREAM}
 	git archive --format=tar ${UPSTREAMTAG} | gzip -9 > ../${ORIG}

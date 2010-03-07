@@ -7,6 +7,7 @@ usr/share/syncevolution/close_hover.png
 usr/share/syncevolution/settings.png
 usr/share/syncevolution/sync-ui.rc
 usr/share/syncevolution/sync-generic.png
+usr/share/syncevolution/sync-spinner.gif
 usr/share/syncevolution/ui.xml
 usr/share/applications/sync.desktop
 usr/share/dbus-1/services/org.syncevolution.service
@@ -29,3 +30,5 @@ usr/share/locale/da/LC_MESSAGES/syncevolution.mo
 usr/share/locale/fr/LC_MESSAGES/syncevolution.mo
 usr/share/locale/nl/LC_MESSAGES/syncevolution.mo
 usr/share/locale/it/LC_MESSAGES/syncevolution.mo
+usr/share/locale/th/LC_MESSAGES/syncevolution.mo
+usr/share/locale/ca/LC_MESSAGES/syncevolution.mo

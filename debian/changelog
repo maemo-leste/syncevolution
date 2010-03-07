@@ -4,6 +4,7 @@ syncevolution (1.0+ds1~beta2a-1) unstable; urgency=low
   * According to http://bugzilla.moblin.org/show_bug.cgi?id=8758,
     syncevolution is now smarter about retrying in certain situations.
     (Closes: #565527).
+  * Update Standard-Version to 3.8.4 (No changes).
 
  -- David Bremner <bremner@unb.ca>  Fri, 26 Feb 2010 15:45:00 -0400
 

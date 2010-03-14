@@ -1,3 +1,9 @@
+syncevolution (1.0+ds1~beta2a-2) unstable; urgency=low
+
+  * Add syncevo-http-server.py to sync-ui examples (Closes: #573265)
+
+ -- David Bremner <bremner@unb.ca>  Sun, 14 Mar 2010 08:37:03 -0300
+
 syncevolution (1.0+ds1~beta2a-1) unstable; urgency=low
 
   * New upstream beta (Closes: #572640)

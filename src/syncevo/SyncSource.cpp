@@ -407,6 +407,20 @@ std::string VirtualSyncSource::getDataTypeSupport()
     return datatypes;
 }
 
+SyncSource::Databases VirtualSyncSource::getDatabases()
+{
+    SyncSource::Databases dbs;
+    BOOST_FOREACH (boost::shared_ptr<SyncSource> &source, m_sources) {
+        SyncSource::Databases sub = source->getDatabases();
+        if (sub.empty()) {
+            return dbs;
+        }
+    }
+    Database db ("calendar+todo", "");
+    dbs.push_back (db);
+    return dbs;
+}
+
 void SyncSourceSession::init(SyncSource::Operations &ops)
 {
     ops.m_startDataRead = boost::bind(&SyncSourceSession::startDataRead, this, _1, _2);
@@ -1186,25 +1200,35 @@ void SyncSourceAdmin::mapid2entry(sysync::cMapID mID, string &key, string &value
     key = StringPrintf ("%s-%x",
                          SafeConfigNode::escape(mID->localID ? mID->localID : "", true, false).c_str(),
                          mID->ident);
-    value = StringPrintf("%s %x",
-                         SafeConfigNode::escape(mID->remoteID ? mID->remoteID : "", true, false).c_str(),
-                         mID->flags);
+    if (mID->remoteID && mID->remoteID[0]) {
+        value = StringPrintf("%s %x",
+                             SafeConfigNode::escape(mID->remoteID ? mID->remoteID : "", true, false).c_str(),
+                             mID->flags);
+    } else {
+        value = StringPrintf("%x", mID->flags);
+    }
 }
 
 void SyncSourceAdmin::entry2mapid(const string &key, const string &value, sysync::MapID mID)
 {
-    std::string rawkey = SafeConfigNode::unescape(key);
-    size_t found = rawkey.find_last_of ("-");
-    mID->localID = StrAlloc(rawkey.substr(0,found).c_str());
-    if (found != rawkey.npos) {
-        mID->ident =  strtol(rawkey.substr(found+1).c_str(), NULL, 16);
+    size_t found = key.rfind('-');
+    mID->localID = StrAlloc(SafeConfigNode::unescape(key.substr(0,found)).c_str());
+    if (found != key.npos) {
+        mID->ident =  strtol(key.substr(found+1).c_str(), NULL, 16);
     } else {
         mID->ident = 0;
     }
     std::vector< std::string > tokens;
     boost::split(tokens, value, boost::is_from_range(' ', ' '));
-    mID->remoteID = tokens.size() > 0 ? StrAlloc(tokens[0].c_str()) : NULL;
-    mID->flags = tokens.size() > 1 ? strtol(tokens[1].c_str(), NULL, 16) : 0;
+    if (tokens.size() >= 2) {
+        // if branch from mapid2entry above
+        mID->remoteID = StrAlloc(SafeConfigNode::unescape(tokens[0]).c_str());
+        mID->flags = strtol(tokens[1].c_str(), NULL, 16);
+    } else {
+        // else branch from above
+        mID->remoteID = NULL;
+        mID->flags = strtol(tokens[0].c_str(), NULL, 16);
+    }
 }
 
 void SyncSourceAdmin::init(SyncSource::Operations &ops,
@@ -1240,6 +1264,20 @@ void SyncSourceAdmin::init(SyncSource::Operations &ops,
          source->getProperties(true),
          SourceAdminDataName,
          source->getServerNode());
+}
+
+void SyncSourceBlob::init(SyncSource::Operations &ops,
+                          const std::string &dir)
+{
+    m_blob.Init(getSynthesisAPI(),
+                getName(),
+                dir, "", "", "");
+    ops.m_readBlob = boost::bind(&SyncSourceBlob::readBlob, this,
+                                 _1, _2, _3, _4, _5, _6, _7);
+    ops.m_writeBlob = boost::bind(&SyncSourceBlob::writeBlob, this,
+                                  _1, _2, _3, _4, _5, _6, _7);
+    ops.m_deleteBlob = boost::bind(&SyncSourceBlob::deleteBlob, this,
+                                   _1, _2);
 }
 
 SE_END_CXX

@@ -27,6 +27,7 @@
 using namespace std;
 
 #include <boost/shared_ptr.hpp>
+#include <boost/scoped_array.hpp>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -42,6 +43,7 @@ public:
      * @param err      stderr stream for error messages
      */
     Cmdline(int argc, const char * const *argv, ostream &out, ostream &err);
+    Cmdline(const vector<string> &args, ostream &out, ostream &err);
 
     /**
      * parse the command line options
@@ -50,21 +52,62 @@ public:
      */
     bool parse();
 
+    /**
+     * parse the command line options
+     * relative paths in the arguments are converted to absolute paths
+     * if it returns false, then the content of args is undefined.
+     *
+     * @retval true if command line was okay
+     */
+    bool parse(vector<string> &args);
+
+    /**
+     * @return false if run() still needs to be invoked, true when parse() already did
+     *         the job (like --sync-property ?)
+     */
+    bool dontRun() const;
+
     bool run();
 
-protected:
+    /**
+     * Acts like a boolean, but in addition, can also tell whether the
+     * value was explicitly set.
+     */
     class Bool { 
     public:
-        Bool(bool val = false) : m_value(val) {}
-        operator bool () { return m_value; }
-        Bool & operator = (bool val) { m_value = val; return *this; }
+    Bool(bool val = false) : m_value(val), m_wasSet(false) {}
+        operator bool () const { return m_value; }
+        Bool & operator = (bool val) { m_value = val; m_wasSet = true; return *this; }
+        bool wasSet() const { return m_wasSet; }
     private:
         bool m_value;
+        bool m_wasSet;
     };
+
+    Bool useDaemon() { return m_useDaemon; }
+
+    /** whether '--monitor' is set */
+    bool monitor() { return m_monitor; }
+
+    /** whether 'status' is set */
+    bool status() { return m_status; }
+
+    /* server name */
+    string getConfigName() { return m_server; }
+
+    /* check whether command line runs sync. It should be called after parsing. */
+    bool isSync();
+
+protected:
+    // vector to store strings for arguments 
+    vector<string> m_args;
 
     int m_argc;
     const char * const * m_argv;
     ostream &m_out, &m_err;
+
+    //array to store pointers of arguments
+    boost::scoped_array<const char *> m_argvArray;
 
     Bool m_quiet;
     Bool m_dryrun;
@@ -81,6 +124,8 @@ protected:
     Bool m_printSessions;
     Bool m_dontrun;
     Bool m_keyring;
+    Bool m_monitor;
+    Bool m_useDaemon;
     FilterConfigNode::ConfigFilter m_syncProps, m_sourceProps;
     const ConfigPropertyRegistry &m_validSyncProps;
     const ConfigPropertyRegistry &m_validSourceProps;
@@ -132,6 +177,13 @@ protected:
                     SourceFilters_t &sourceFilters);
 
     /**
+     * check that m_syncProps and m_sourceProps don't contain
+     * properties which only apply to peers, throw error
+     * if found
+     */
+    void checkForPeerProps();
+
+    /**
      * list all known data sources of a certain type
      */
     void listSources(SyncSource &syncSource, const string &header);
@@ -143,9 +195,20 @@ protected:
                      const SyncConfig::TemplateList &templates,
                      bool printRank = false);
 
+    enum DumpPropertiesFlags {
+        DUMP_PROPS_NORMAL = 0,
+        HIDE_LEGEND = 1<<0,       /**<
+                                   * do not show the explanation which properties are shared,
+                                   * used while dumping any source which is not the last one
+                                   */
+        HIDE_PER_PEER = 1<<1      /**<
+                                   * config is for a context, not a peer, so do not show those
+                                   * properties which are only per-peer
+                                   */
+    };
     void dumpProperties(const ConfigNode &configuredProps,
                         const ConfigPropertyRegistry &allProps,
-                        bool hideLegend);
+                        int flags);
 
     void copyProperties(const ConfigNode &fromProps,
                         ConfigNode &toProps,
@@ -170,6 +233,22 @@ protected:
     virtual SyncContext* createSyncClient();
 
     friend class CmdlineTest;
+
+ private:
+    /**
+     * Utility function to check m_argv[opt] against a specific boolean
+     * parameter of the form "<longName|shortName>[=yes/1/t/true/no/0/f/false].
+     *
+     * @param opt        current index in m_argv
+     * @param longName   long form of the parameter, including --, may be NULL
+     * @param shortName  short form, including -, may be NULL
+     * @param  def       default value if m_argv[opt] contains no explicit value
+     * @retval value     if and only if m_argv[opt] matches, then this is set to to true or false
+     * @retval ok        true if parsing succeeded, false if not and error message was printed
+     */
+    bool parseBool(int opt, const char *longName, const char *shortName,
+                   bool def, Bool &value,
+                   bool &ok);
 };
 
 

@@ -64,6 +64,13 @@ typedef map<string, string> StringMap;
  */
 string normalizePath(const string &path);
 
+/**
+ * convert relative path to canonicalized absolute path
+ * @param path will be turned into absolute path if possible, otherwise left unchanged
+ * @return true if conversion is successful, false otherwise(errno will be set)
+ */
+bool relToAbs(string &path);
+
 /** ensure that m_path is writable, otherwise throw error */
 void mkdir_p(const string &path);
 
@@ -106,6 +113,30 @@ bool isDir(const string &path);
  * @return true if file could be read
  */
 bool ReadFile(const string &filename, string &content);
+
+enum ExecuteFlags {
+    EXECUTE_NO_STDERR = 1<<0,       /**< suppress stderr of command */
+    EXECUTE_NO_STDOUT = 1<<1        /**< suppress stdout of command */
+};
+
+/**
+ * system() replacement
+ *
+ * If called without output redirection active (see LogRedirect),
+ * then it will simply call system(). If output redirection is
+ * active, the command is executed in a forked process without
+ * blocking the parent process and the parent reads the output,
+ * passing it through LogRedirect for processing.
+ *
+ * This is necessary to capture all output reliably: LogRedirect
+ * ensures that we don't deadlock, but to achieve that, it drops
+ * data when the child prints too much of it.
+ *
+ * @param cmd      command including parameters, without output redirection
+ * @param flags    see ExecuteFlags
+ * @return same as in system(): use WEXITSTATUS() et.al. to decode it
+ */
+int Execute(const std::string &cmd, ExecuteFlags flags) throw();
 
 /**
  * Simple string hash function, derived from Dan Bernstein's algorithm.
@@ -231,6 +262,24 @@ class Exception : public std::runtime_error
 };
 
 /**
+ * StatusException by wrapping a SyncML status
+ */
+class StatusException : public Exception
+{
+public:
+    StatusException(const std::string &file,
+                    int line,
+                    const std::string &what,
+                    SyncMLStatus status)
+        : Exception(file, line, what), m_status(status)
+    {}
+
+    SyncMLStatus syncMLStatus() const { return m_status; }
+protected:
+    SyncMLStatus m_status;
+};
+
+/**
  * replace ${} with environment variables, with
  * XDG_DATA_HOME, XDG_CACHE_HOME and XDG_CONFIG_HOME having their normal
  * defaults
@@ -262,6 +311,8 @@ class ScopedEnvChange
     bool m_oldvalset;
 };
 
+std::string getCurrentTime();
+
 /** throw a normal SyncEvolution Exception, including source information */
 #define SE_THROW(_what) \
     SE_THROW_EXCEPTION(Exception, _what)
@@ -269,6 +320,10 @@ class ScopedEnvChange
 /** throw a class which accepts file, line, what parameters */
 #define SE_THROW_EXCEPTION(_class,  _what) \
     throw _class(__FILE__, __LINE__, _what)
+
+/** throw a class which accepts file, line, what parameters and status parameters*/
+#define SE_THROW_EXCEPTION_STATUS(_class,  _what, _status) \
+    throw _class(__FILE__, __LINE__, _what, _status)
 
 SE_END_CXX
 #endif // INCL_SYNCEVOLUTION_UTIL

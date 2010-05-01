@@ -59,6 +59,7 @@ class Logger
      * - a non-fatal error: => WARNING
      * - it changes during each sync or marks important steps
      *   in the sync: INFO
+     * - same as before, but without the [INFO] prefix added to each line: => SHOW
      * - small, non-recurring message which is important for developers
      *   who read a log produced at LOG_LEVEL_INFO: DEVELOPER
      * - everything else: DEBUG
@@ -72,6 +73,11 @@ class Logger
          * error and warning messages printed
          */
         WARNING,
+        /**
+         * "Normal" stdout output which is meant to be seen by a
+         * user.
+         */
+        SHOW,
         /**
          * errors and info messages for users and developers will be
          * printed: use this to keep the output consise and small
@@ -89,6 +95,9 @@ class Logger
     } Level;
     static const char *levelToStr(Level level);
 
+    /** always returns a valid level, also for NULL, by falling back to DEBUG */
+    static Level strToLevel(const char *str);
+    
     virtual ~Logger() {}
 
     /**
@@ -195,6 +204,7 @@ class LoggerBase : public Logger
         } \
     } while(false)
 
+#define SE_LOG_SHOW(_instance, _prefix, _format, _args...) SE_LOG(Logger::SHOW, _instance, _prefix, _format, ##_args)
 #define SE_LOG_ERROR(_instance, _prefix, _format, _args...) SE_LOG(Logger::ERROR, _instance, _prefix, _format, ##_args)
 #define SE_LOG_WARNING(_instance, _prefix, _format, _args...) SE_LOG(Logger::WARNING, _instance, _prefix, _format, ##_args)
 #define SE_LOG_INFO(_instance, _prefix, _format, _args...) SE_LOG(Logger::INFO, _instance, _prefix, _format, ##_args)

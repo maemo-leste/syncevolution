@@ -70,7 +70,8 @@ class CheckSyncReport {
         serverUpdated(srUpdated),
         serverDeleted(srDeleted),
         mustSucceed(mstSucceed),
-        syncMode(mode)
+        syncMode(mode),
+        m_report(NULL)
         {}
 
     virtual ~CheckSyncReport() {}
@@ -79,6 +80,13 @@ class CheckSyncReport {
         serverAdded, serverUpdated, serverDeleted;
     bool mustSucceed;
     SyncMode syncMode;
+
+    // if set, then the report is copied here
+    SyncReport *m_report;
+
+    CheckSyncReport &setMode(SyncMode mode) { syncMode = mode; return *this; }
+    CheckSyncReport &setReport(SyncReport *report) { m_report = report; return *this; }
+
 
     /**
      * checks that the sync completed as expected and throws
@@ -115,6 +123,9 @@ struct SyncOptions {
     bool m_loSupport;
     /** enabled WBXML (default) */
     bool m_isWBXML;
+    /** overrides resend properties */
+    int m_retryDuration;
+    int m_retryInterval;
 
     bool m_isSuspended; 
     
@@ -146,6 +157,8 @@ struct SyncOptions {
         m_maxObjSize(maxObjSize),
         m_loSupport(loSupport),
         m_isWBXML(isWBXML),
+        m_retryDuration(300),
+        m_retryInterval(60),
         m_isSuspended(false),
         m_isAborted(false),
         m_startCallback(startCallback),
@@ -158,6 +171,8 @@ struct SyncOptions {
     SyncOptions &setMaxObjSize(long maxObjSize) { m_maxObjSize = maxObjSize; return *this; }
     SyncOptions &setLOSupport(bool loSupport) { m_loSupport = loSupport; return *this; }
     SyncOptions &setWBXML(bool isWBXML) { m_isWBXML = isWBXML; return *this; }
+    SyncOptions &setRetryDuration(int retryDuration) { m_retryDuration = retryDuration; return *this; }
+    SyncOptions &setRetryInterval(int retryInterval) { m_retryInterval = retryInterval; return *this; }
     SyncOptions &setStartCallback(const Callback_t &callback) { m_startCallback = callback; return *this; }
     SyncOptions &setTransportAgent(const boost::shared_ptr<TransportAgent> transport)
                                   {m_transport = transport; return *this;}
@@ -680,13 +695,25 @@ protected:
 
     virtual void doInterruptResume(int changes,
                   boost::shared_ptr<TransportWrapper> wrapper); 
+
+    /**
+     * CLIENT_ = change made on client B before interrupting
+     * SERVER_ = change made on client A and applied to server before interrupting
+     *           while sending to B
+     * _ADD = new item added
+     * _REMOVE = existing item deleted
+     * _UPDATE = existing item replaced
+     * BIG = when adding or updating, make the new item so large that it does
+     *       not fit into a single message
+     */
     enum {
         CLIENT_ADD = (1<<0),
         CLIENT_REMOVE = (1<<1),
         CLIENT_UPDATE = (1<<2),
         SERVER_ADD = (1<<3),
         SERVER_REMOVE = (1<<4),
-        SERVER_UPDATE = (1<<5)
+        SERVER_UPDATE = (1<<5),
+        BIG = (1<<6)
     };
     virtual void testInterruptResumeClientAdd();
     virtual void testInterruptResumeClientRemove();
@@ -694,6 +721,10 @@ protected:
     virtual void testInterruptResumeServerAdd();
     virtual void testInterruptResumeServerRemove();
     virtual void testInterruptResumeServerUpdate();
+    virtual void testInterruptResumeClientAddBig();
+    virtual void testInterruptResumeClientUpdateBig();
+    virtual void testInterruptResumeServerAddBig();
+    virtual void testInterruptResumeServerUpdateBig();
     virtual void testInterruptResumeFull();
 
     virtual void testUserSuspendClientAdd();
@@ -702,6 +733,10 @@ protected:
     virtual void testUserSuspendServerAdd();
     virtual void testUserSuspendServerRemove();
     virtual void testUserSuspendServerUpdate();
+    virtual void testUserSuspendClientAddBig();
+    virtual void testUserSuspendClientUpdateBig();
+    virtual void testUserSuspendServerAddBig();
+    virtual void testUserSuspendServerUpdateBig();
     virtual void testUserSuspendFull();
 
     virtual void testResendClientAdd();

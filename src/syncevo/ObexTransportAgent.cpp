@@ -57,9 +57,6 @@ ObexTransportAgent::ObexTransportAgent (OBEX_TRANS_TYPE type, GMainLoop *loop) :
 
 ObexTransportAgent::~ObexTransportAgent()
 {
-    if(m_buffer){
-        free (m_buffer);
-    }
 }
 
 /*
@@ -176,6 +173,7 @@ void ObexTransportAgent::connectInit () {
         // blocking.
         sockaddr_rc any;
         bdaddr_t anyaddr ={{0,0,0,0,0,0}};
+        memset(&any, 0, sizeof(any));
         any.rc_family = AF_BLUETOOTH;
         bacpy (&any.rc_bdaddr, &anyaddr);
         any.rc_channel = 0;
@@ -195,6 +193,7 @@ void ObexTransportAgent::connectInit () {
         cxxptr<ObexEvent> obexEvent (new ObexEvent (obexEventSource));
         //connect to remote device
         sockaddr_rc peer;
+        memset(&peer, 0, sizeof(peer));
         peer.rc_family = AF_BLUETOOTH;
         bacpy (&peer.rc_bdaddr , &bdaddr);
         peer.rc_channel = m_port;
@@ -252,6 +251,7 @@ void ObexTransportAgent::connectReq() {
     header.bs = (unsigned char *) "SYNCML-SYNC";
     OBEX_ObjectAddHeader(m_handle->get(), connect, OBEX_HDR_TARGET, header, strlen ((char *) header.bs), OBEX_FL_FIT_ONE_PACKET);
     m_obexReady = false;
+    m_requestStart = time (NULL);
     if (OBEX_Request (m_handle->get(), connect) <0) {
         SE_THROW_EXCEPTION (TransportException, "ObexTransport: OBEX connect init failed");
     }
@@ -703,7 +703,8 @@ void ObexTransportAgent::obex_callback (obex_object_t *object, int mode, int eve
                                         m_connectId = header.bq4;
                                     } else if (headertype == OBEX_HDR_WHO) { 
                                         SE_LOG_DEV (NULL, NULL, 
-                                                "OBEX Transport: get header who from connect response with value %s", header.bs);
+                                                "OBEX Transport: get header who from connect response with value %.*s",
+                                                len, header.bs);
                                     } else {
                                         SE_LOG_WARNING (NULL, NULL, 
                                                 "OBEX Transport: Unknow header from connect response");
@@ -747,19 +748,9 @@ void ObexTransportAgent::obex_callback (obex_object_t *object, int mode, int eve
                                             SE_LOG_ERROR (NULL, NULL, 
                                                     "ObexTransport: Get zero sized response body for Get");
                                         }
-                                        if(!m_buffer) {
-                                            free (m_buffer);
-                                            m_buffer = NULL;
-                                        }
-                                        m_buffer = new char[length];
+                                        m_buffer.set(new char[length], "buffer");
                                         m_bufferSize = length;
-                                        if(m_buffer) {
-                                            memcpy (m_buffer, header.bs, length);
-                                        } else {
-                                            m_status = FAILED;
-                                            SE_LOG_ERROR (NULL, NULL, "Allocating buffer failed");
-                                            return;
-                                        }
+                                        memcpy (m_buffer, header.bs, length);
                                     } else {
                                         SE_LOG_WARNING (NULL, NULL, "Unknow header received for Get cmd");
                                     }
@@ -780,6 +771,8 @@ void ObexTransportAgent::obex_callback (obex_object_t *object, int mode, int eve
                         //disconnct event
                         m_connectStatus = END;
                         OBEX_TransportDisconnect (m_handle->get());
+                        //a normal case, same as OBEX_EV_DONE
+                        m_obexReady = true;
                         m_status = CLOSED;
                     } else if (obex_rsp !=0) {
                         SE_LOG_ERROR (NULL, NULL, "ObexTransport Error %d", obex_rsp);

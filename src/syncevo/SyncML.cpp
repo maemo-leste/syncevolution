@@ -108,6 +108,24 @@ ContentType StringToContentType(const std::string &type, bool force) {
     }
 }
 
+std::string GetLegacyMIMEType (const std::string &type, bool force) {
+    if (boost::iequals (type, "text/x-vcard") || boost::iequals (type, "text/x-vcard:2.1")) {
+        return  "text/x-vcard";
+    } else if (boost::iequals (type, "text/vcard") ||boost::iequals (type, "text/vcard:3.0")) {
+        return force ? "text/vcard" : "text/x-vcard";
+    } else if (boost::iequals (type, "text/x-vcalendar") ||boost::iequals (type, "text/x-vcalendar:1.0")
+              ||boost::iequals (type, "text/x-calendar") || boost::iequals (type, "text/x-calendar:1.0")) {
+        return "text/x-vcalendar";
+    } else if (boost::iequals (type, "text/calendar") ||boost::iequals (type, "text/calendar:2.0")) {
+        return force ? "text/vcalendar" : "text/x-calendar";
+    } else if (boost::iequals (type, "text/plain") ||boost::iequals (type, "text/plain:1.0")) {
+        return "text/plain";
+    } else {
+        return "";
+    }
+}
+
+
 std::string Status2String(SyncMLStatus status)
 {
     string error;
@@ -161,6 +179,10 @@ std::string Status2String(SyncMLStatus status)
 
     case STATUS_PARTIAL_FAILURE:
         error = "some changes could not be transferred";
+        break;
+
+    case STATUS_PASSWORD_TIMEOUT:
+        error = "password request timed out";
         break;
 
     case sysync::LOCERR_BADPROTO:

@@ -1519,6 +1519,10 @@ void SyncTests::addTests() {
             ADD_TEST_TO_SUITE(retryTests, SyncTests, testInterruptResumeServerAdd);
             ADD_TEST_TO_SUITE(retryTests, SyncTests, testInterruptResumeServerRemove);
             ADD_TEST_TO_SUITE(retryTests, SyncTests, testInterruptResumeServerUpdate);
+            ADD_TEST_TO_SUITE(retryTests, SyncTests, testInterruptResumeClientAddBig);
+            ADD_TEST_TO_SUITE(retryTests, SyncTests, testInterruptResumeClientUpdateBig);
+            ADD_TEST_TO_SUITE(retryTests, SyncTests, testInterruptResumeServerAddBig);
+            ADD_TEST_TO_SUITE(retryTests, SyncTests, testInterruptResumeServerUpdateBig);
             ADD_TEST_TO_SUITE(retryTests, SyncTests, testInterruptResumeFull);
             addTest(FilterTest(retryTests));
         }
@@ -1536,6 +1540,10 @@ void SyncTests::addTests() {
             ADD_TEST_TO_SUITE(suspendTests, SyncTests, testUserSuspendServerAdd);
             ADD_TEST_TO_SUITE(suspendTests, SyncTests, testUserSuspendServerRemove);
             ADD_TEST_TO_SUITE(suspendTests, SyncTests, testUserSuspendServerUpdate);
+            ADD_TEST_TO_SUITE(suspendTests, SyncTests, testUserSuspendClientAddBig);
+            ADD_TEST_TO_SUITE(suspendTests, SyncTests, testUserSuspendClientUpdateBig);
+            ADD_TEST_TO_SUITE(suspendTests, SyncTests, testUserSuspendServerAddBig);
+            ADD_TEST_TO_SUITE(suspendTests, SyncTests, testUserSuspendServerUpdateBig);
             ADD_TEST_TO_SUITE(suspendTests, SyncTests, testUserSuspendFull);
             addTest(FilterTest(suspendTests));
         }
@@ -1597,6 +1605,11 @@ bool SyncTests::compareDatabases(const char *refFileBase, bool raiseAssert) {
 void SyncTests::deleteAll(DeleteAllMode mode) {
     source_it it;
     SyncPrefix prefix("deleteall", *this);
+
+    const char *value = getenv ("CLIENT_TEST_DELETE_REFRESH");
+    if (value) {
+        mode = DELETE_ALL_REFRESH;
+    }
 
     switch(mode) {
      case DELETE_ALL_SYNC:
@@ -1682,7 +1695,7 @@ void SyncTests::testDeleteAllRefresh() {
     doSync("insert", SyncOptions(SYNC_SLOW));
 
     // now ensure we can delete it
-    deleteAll(DELETE_ALL_SYNC);
+    deleteAll(DELETE_ALL_REFRESH);
 
     // nothing stored locally?
     for (it = sources.begin(); it != sources.end(); ++it) {
@@ -2623,6 +2636,16 @@ void SyncTests::doVarSizes(bool withMaxMsgSize,
     compareDatabases();
 }
 
+/**
+ * Send message to server, then pretend that we timed out at exactly
+ * one specific message, specified via m_interruptAtMessage.  The
+ * caller is expected to resend the message, without aborting the
+ * session. That resend and all following message will get through
+ * again.
+ *
+ * Each send() is counted as one message, starting at 1 for the first
+ * message.
+ */
 class TransportResendInjector : public TransportWrapper{
 private:
     int timeout;
@@ -2664,6 +2687,14 @@ public:
     }
 };
 
+/**
+ * Stop sending at m_interruptAtMessage. The caller is forced to abort
+ * the current session and will recover by retrying in another
+ * session.
+ *
+ * Each send() increments the counter by two, so that 1 aborts before
+ * the first message and 2 after it.
+ */
 class TransportFaultInjector : public TransportWrapper{
 public:
     TransportFaultInjector()
@@ -2791,19 +2822,37 @@ public:
  *
  * Set the CLIENT_TEST_INTERRUPT_AT env variable to a message number
  * >= 0 to execute one uninterrupted run and then interrupt at that
- * message.
+ * message. Set to -1 to just do the uninterrupted run.
  */
 void SyncTests::doInterruptResume(int changes, 
                   boost::shared_ptr<TransportWrapper> wrapper)
 {
     int interruptAtMessage = -1;
     const char *t = getenv("CLIENT_TEST_INTERRUPT_AT");
-    int requestedInterruptAt = t ? atoi(t) : -1;
+    int requestedInterruptAt = t ? atoi(t) : -2;
     const char *s = getenv("CLIENT_TEST_INTERRUPT_SLEEP");
     int sleep_t = s ? atoi(s) : 0;
     size_t i;
     std::string refFileBase = getCurrentTest() + ".ref.";
     bool equal = true;
+    bool resend = dynamic_cast <TransportResendInjector *> (wrapper.get()) != NULL;
+    bool suspend = dynamic_cast <UserSuspendInjector *> (wrapper.get()) != NULL;
+    bool interrupt = dynamic_cast <TransportFaultInjector *> (wrapper.get()) != NULL;
+
+    // better be large enough for complete DevInf, 20000 is already a
+    // bit small when running with many stores
+    size_t maxMsgSize = 20000;
+    size_t changedItemSize = (changes & BIG) ?
+        5 * maxMsgSize / 2 : // large enough to be split over three messages
+        0;
+
+    // After running the uninterrupted sync, we remember the number
+    // of sent messages. We never interrupt between sending our
+    // own last message and receiving the servers last reply,
+    // because the server is unable to detect that we didn't get
+    // the reply. It will complete the session whereas the client
+    // suspends, leading to an unexpected slow sync the next time.
+    int maxMsgNum = 0;
 
     while (true) {
         char buffer[80];
@@ -2842,7 +2891,7 @@ void SyncTests::doInterruptResume(int changes,
         for (i = 0; i < sources.size(); i++) {
             if (changes & SERVER_ADD) {
                 sources[i].second->insertManyItems(sources[i].second->createSourceA,
-                                                   4, 1, 0);
+                                                   4, 1, changedItemSize);
             }
             if (changes & SERVER_REMOVE) {
                 // remove second item
@@ -2853,19 +2902,21 @@ void SyncTests::doInterruptResume(int changes,
                 // update third item
                 updateItem(sources[i].second->createSourceA,
                            *(++ ++clientAluids[i].begin()),
-                           sources[i].second->createItem(3, "updated", 0).c_str());
+                           sources[i].second->createItem(3, "updated", changedItemSize).c_str());
                                               
             }
         }
+
+        // send using the same mode as in the interrupted sync with client B
         if (changes & (SERVER_ADD|SERVER_REMOVE|SERVER_UPDATE)) {
-            doSync("changesFromA", SyncOptions(SYNC_TWO_WAY));
+            doSync("changesFromA", SyncOptions(SYNC_TWO_WAY).setMaxMsgSize(maxMsgSize));
         }
 
         // make changes as requested on client B
         for (i = 0; i < sources.size(); i++) {
             if (changes & CLIENT_ADD) {
                 accessClientB->sources[i].second->insertManyItems(accessClientB->sources[i].second->createSourceA,
-                                                                  14, 1, 0);
+                                                                  14, 1, changedItemSize);
             }
             if (changes & CLIENT_REMOVE) {
                 // remove second item
@@ -2876,7 +2927,7 @@ void SyncTests::doInterruptResume(int changes,
                 // update third item
                 updateItem(accessClientB->sources[i].second->createSourceA,
                            *(++ ++clientBluids[i].begin()),
-                           accessClientB->sources[i].second->createItem(13, "updated", 0).c_str());
+                           accessClientB->sources[i].second->createItem(13, "updated", changedItemSize).c_str());
             }
         }
 
@@ -2885,13 +2936,26 @@ void SyncTests::doInterruptResume(int changes,
         // by overloading the delete operator.
         int wasInterrupted;
         {
+            CheckSyncReport check(-1, -1, -1, -1, -1, -1, false);
+            if (resend && interruptAtMessage != 0) {
+                // resend tests must succeed, except for the first
+                // message in the session, which is not resent
+                check.mustSucceed = true;
+            }
+            SyncOptions options(SYNC_TWO_WAY, check);
+            options.setTransportAgent(wrapper);
+            options.setMaxMsgSize(maxMsgSize);
+            if (!resend) {
+                // disable resending completely
+                options.setRetryInterval(0);
+            }
             wrapper->setInterruptAtMessage(interruptAtMessage);
-            accessClientB->doSync("changesFromB",
-                                  SyncOptions(SYNC_TWO_WAY,
-                                              CheckSyncReport(-1, -1, -1, -1,
-                                                  -1, -1, false)).setTransportAgent(wrapper));
+            accessClientB->doSync("changesFromB", options);
             wasInterrupted = interruptAtMessage != -1 &&
                 wrapper->getMessageCount() <= interruptAtMessage;
+            if (!maxMsgNum) {
+                maxMsgNum = wrapper->getMessageCount();
+            }
             wrapper->rewind();
         }
 
@@ -2905,9 +2969,24 @@ void SyncTests::doInterruptResume(int changes,
             if(sleep_t) 
                 sleep (sleep_t);
 
-            // no need for resend tests 
-            if (!dynamic_cast <TransportResendInjector *> (wrapper.get())) {
-                accessClientB->doSync("retryB", SyncOptions(SYNC_TWO_WAY));
+            // no need for resend tests, unless they were interrupted at the first message
+            if (!resend || interruptAtMessage == 0) {
+                SyncReport report;
+                accessClientB->doSync("retryB",
+                                      SyncOptions(SYNC_TWO_WAY,
+                                                  CheckSyncReport().setMode(SYNC_TWO_WAY).setReport(&report)));
+                // Suspending at first and last message doesn't need a
+                // resume, everything else does. When multiple sources
+                // are involved, some may suspend, some may not, so we
+                // cannot check.
+                if (suspend &&
+                    interruptAtMessage != 0 &&
+                    interruptAtMessage + 1 != maxMsgNum &&
+                    report.size() == 1) {
+                    BOOST_FOREACH(const SyncReport::SourceReport_t &sourceReport, report) {
+                        CPPUNIT_ASSERT(sourceReport.second.isResumeSync());
+                    }
+                }
             }
         }
 
@@ -2945,8 +3024,11 @@ void SyncTests::doInterruptResume(int changes,
             }
         }
 
-        // pick next iterration
-        if (requestedInterruptAt != -1) {
+        // pick next iteration
+        if (requestedInterruptAt == -1) {
+            // user requested to stop after first iteration
+            break;
+        } else if (requestedInterruptAt >= 0) {
             // only do one interrupted run of the test
             if (requestedInterruptAt == interruptAtMessage) {
                 break;
@@ -2956,6 +3038,19 @@ void SyncTests::doInterruptResume(int changes,
         } else {
             // interrupt one message later than before
             interruptAtMessage++;
+            if (interrupt &&
+                interruptAtMessage + 1 >= maxMsgNum) {
+                // Don't interrupt before the server's last reply,
+                // because then the server thinks we completed the
+                // session when we think we didn't, which leads to a
+                // slow sync. Testing that is better done with a
+                // specific test.
+                break;
+            }
+            if (interruptAtMessage >= maxMsgNum) {
+                // next run would not interrupt at all, stop now
+                break;
+            }
         }
     }
 
@@ -2992,6 +3087,26 @@ void SyncTests::testInterruptResumeServerUpdate()
     doInterruptResume(SERVER_UPDATE, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector()));
 }
 
+void SyncTests::testInterruptResumeClientAddBig()
+{
+    doInterruptResume(CLIENT_ADD|BIG, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector()));
+}
+
+void SyncTests::testInterruptResumeClientUpdateBig()
+{
+    doInterruptResume(CLIENT_UPDATE|BIG, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector()));
+}
+
+void SyncTests::testInterruptResumeServerAddBig()
+{
+    doInterruptResume(SERVER_ADD|BIG, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector()));
+}
+
+void SyncTests::testInterruptResumeServerUpdateBig()
+{
+    doInterruptResume(SERVER_UPDATE|BIG, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector()));
+}
+
 void SyncTests::testInterruptResumeFull()
 {
     doInterruptResume(CLIENT_ADD|CLIENT_REMOVE|CLIENT_UPDATE|
@@ -3026,6 +3141,26 @@ void SyncTests::testUserSuspendServerRemove()
 void SyncTests::testUserSuspendServerUpdate()
 {
     doInterruptResume(SERVER_UPDATE, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector()));
+}
+
+void SyncTests::testUserSuspendClientAddBig()
+{
+    doInterruptResume(CLIENT_ADD|BIG, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector()));
+}
+
+void SyncTests::testUserSuspendClientUpdateBig()
+{
+    doInterruptResume(CLIENT_UPDATE|BIG, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector()));
+}
+
+void SyncTests::testUserSuspendServerAddBig()
+{
+    doInterruptResume(SERVER_ADD|BIG, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector()));
+}
+
+void SyncTests::testUserSuspendServerUpdateBig()
+{
+    doInterruptResume(SERVER_UPDATE|BIG, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector()));
 }
 
 void SyncTests::testUserSuspendFull()
@@ -3521,7 +3656,7 @@ void ClientTest::getTestData(const char *type, Config &config)
         config.sourceNameServerTemplate = "calendar";
         config.uri = "cal2"; // ScheduleWorld
         config.type = "text/x-vcalendar";
-        config.insertItem =
+        static string insertItem =
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
@@ -3541,7 +3676,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SEQUENCE:1\n"
             "END:VEVENT\n"
             "END:VCALENDAR\n";
-        config.updateItem =
+        static string updateItem =
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
@@ -3562,7 +3697,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "END:VEVENT\n"
             "END:VCALENDAR\n";
         /* change location and description of insertItem in testMerge(), add alarm */
-        config.mergeItem1 =
+        static string mergeItem1 =
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
@@ -3588,7 +3723,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "END:VEVENT\n"
             "END:VCALENDAR\n";
         /* change location to something else, add category */
-        config.mergeItem2 =
+        static string mergeItem2 =
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
@@ -3609,6 +3744,19 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SEQUENCE:1\n"
             "END:VEVENT\n"
             "END:VCALENDAR\n";
+
+        if (getenv("CLIENT_TEST_SIMPLE_UID")) {
+            boost::replace_all(insertItem, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
+            boost::replace_all(updateItem, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
+            boost::replace_all(mergeItem1, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
+            boost::replace_all(mergeItem2, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
+        }
+
+        config.insertItem = insertItem.c_str();
+        config.updateItem = updateItem.c_str();
+        config.mergeItem1 = mergeItem1.c_str();
+        config.mergeItem2 = mergeItem2.c_str();
+
         config.parentItem =
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
@@ -3923,14 +4071,18 @@ void ClientTest::getTestData(const char *type, Config &config)
         config.uniqueProperties = "SUMMARY:DESCRIPTION";
         config.sizeProperty = "DESCRIPTION";
         config.testcases = "testcases/imemo20.ics";
-    }else if (!strcmp (type, "super")) {
-        config.subConfigs = "ical20,itodo20";
+    }else if (!strcmp (type, "calendar+todo")) {
         config.uri="";
+        config.sourceNameServerTemplate = "calendar+todo";
     }
 }
 
 void CheckSyncReport::check(SyncMLStatus status, SyncReport &report) const
 {
+    if (m_report) {
+        *m_report = report;
+    }
+
     stringstream str;
 
     str << report;
@@ -3944,6 +4096,10 @@ void CheckSyncReport::check(SyncMLStatus status, SyncReport &report) const
     SE_LOG_INFO(NULL, NULL, "sync report:\n%s\n", str.str().c_str());
 
     if (mustSucceed) {
+        // both STATUS_OK and STATUS_HTTP_OK map to the same
+        // string, so check the formatted status first, then
+        // the numerical one
+        CPPUNIT_ASSERT_EQUAL(string("no error (remote, status 0)"), Status2String(status));
         CPPUNIT_ASSERT_EQUAL(STATUS_OK, status);
     }
 

@@ -100,10 +100,10 @@
         }
       }
       // a workaround for funambol: adding 'action' for 'alarm'
-      if (ITEMDATATYPE()=="iCalendar20") {
-        if (ALARM_TIME!=EMPTY && ALARM_ACTION==EMPTY) {
-            ALARM_ACTION = "DISPLAY";
-        }
+      // if item data type is vCalendar1.0, also add 'action' for 'alarm'.
+      // This is a workaround for Mobical.net, which uses vCalendar1.0.
+      if (ALARM_TIME!=EMPTY && ALARM_ACTION==EMPTY) {
+          ALARM_ACTION = "DISPLAY";
       }
     ]]></macro>
 
@@ -148,5 +148,23 @@
         else {
           if (ALARM_MSG==EMPTY) ALARM_MSG="alarm";
         }
+      }
+
+      // for 'ALARM_TIME', convert duration time to UTC time
+      // This workaround is for Mobical.net can't understand duration time
+      if (SESSIONVAR("alarmTimeToUTC") && ITEMDATATYPE()=="vCalendar10"
+            && ALARM_TIME!=EMPTY && ISDURATION(ALARM_TIME)) {
+        TIMESTAMP ts;
+        if (ALARM_REL==2)
+          ts = DTEND; // relative to end
+        else {
+          if (ISEVENT)
+            ts = DTSTART; // relative to start for events
+          else
+            ts = DUE; // relative to due for todos
+        }
+
+        ALARM_TIME = CONVERTTOUSERZONE(POINTINTIME(ts), TRUE) + ALARM_TIME;
+        ALARM_TIME = CONVERTTOZONE(ALARM_TIME, "UTC");
       }
     ]]></macro>

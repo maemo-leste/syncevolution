@@ -23,12 +23,15 @@
 #endif
 
 #include <syncevo/Logging.h>
+#include <syncevo/LogStdout.h>
+#include <syncevo/LogRedirect.h>
 #include <syncevo/util.h>
 #include <syncevo/SyncContext.h>
 #include <syncevo/SoupTransportAgent.h>
 #include <syncevo/SyncSource.h>
 #include <syncevo/SyncML.h>
 #include <syncevo/FileConfigNode.h>
+#include <syncevo/Cmdline.h>
 
 #include <synthesis/san.h>
 
@@ -51,10 +54,15 @@
 #include <boost/noncopyable.hpp>
 
 #include <glib-object.h>
+#include <glib/gi18n.h>
 #ifdef USE_GNOME_KEYRING
 extern "C" {
 #include <gnome-keyring.h>
 }
+#endif
+
+#ifdef HAS_NOTIFY
+#include <libnotify/notify.h>
 #endif
 
 class DBusMessage;
@@ -66,6 +74,7 @@ using namespace SyncEvo;
 
 static GMainLoop *loop = NULL;
 static bool shutdownRequested = false;
+static LogRedirect *redirectPtr;
 
 /**
  * Anything that can be owned by a client, like a connection
@@ -224,8 +233,14 @@ private:
      */
     virtual bool setFilters(SyncConfig &config) { return false; }
 
-    /** utility method which constructs a SyncConfig which references a local configuration (never a template) */
-    boost::shared_ptr<DBusUserInterface> getLocalConfig(const std::string &configName);
+    /**
+     * utility method which constructs a SyncConfig which references a local configuration (never a template)
+     *
+     * In general, the config must exist, except in two cases:
+     * - configName = @default (considered always available)
+     * - mustExist = false (used when reading a templates for a context which might not exist yet)
+     */
+    boost::shared_ptr<DBusUserInterface> getLocalConfig(const std::string &configName, bool mustExist = true);
 };
 
 /**
@@ -248,31 +263,33 @@ template<> struct dbus_traits<ReadOperations::SourceDatabase> :
  */
 class AutoTerm {
     int m_refs;
-    guint m_elapsed;
-    guint m_interval;
+    time_t m_interval;
     guint m_checkSource;
+    time_t m_lastUsed;
 
-    static const guint TERM_INTERVAL = 5;
-
-    /* A callback is called in each TERM_INTERVAL seconds, registered to check whether the
-     * dbus server is timeout regurally.
-     * In reality it will be called after TERM_INTERVAL + delta, with delta being large
-     * if the D-Bus server is busy. Therefore m_elapsed will underestimate the real
-     * elapsed time. But because this only happens in a busy server and a busy server
-     * doesn't have to auto-terminate, this assumption could work.
+    /**
+     * This callback is called as soon as we might have to terminate.
+     * If it finds that the server has been used in the meantime, it
+     * will simply set another timeout and check again later.
      */
     static gboolean checkCallback(gpointer data) {
         AutoTerm *at = static_cast<AutoTerm*>(data);
-        // if no conncetions or attached clients
-        if(at->m_refs <= 0) {
-            at->m_elapsed += TERM_INTERVAL;
-            if(at->m_elapsed >= at->m_interval) {
+        if (!at->m_refs) {
+            // currently idle, but also long enough?
+            time_t now = time(NULL);
+            if (at->m_lastUsed + at->m_interval <= now) {
+                // yes, shut down event loop and daemon
                 shutdownRequested = true;
                 g_main_loop_quit(loop);
-                return FALSE;
+            } else {
+                // check again later
+                at->m_checkSource = g_timeout_add_seconds(at->m_lastUsed + at->m_interval - now,
+                                                          checkCallback,
+                                                          data);
             }
         }
-        return TRUE;
+        // always remove the current timeout, its job is done
+        return FALSE;
     }
 
  public:
@@ -280,39 +297,68 @@ class AutoTerm {
      * constructor
      * If interval is less than 0, it means 'unlimited' and never terminate
      */
-    AutoTerm(int interval) : m_refs(0), m_elapsed(0) {
-            if(interval <= 0) {
-                ref();
-                m_interval = 0;
-                m_checkSource = 0;
-            } else {
-                m_interval = interval;
-                // call checking every 5 seconds
-                // here we don't use add/remove new sources for we might
-                // make glib source id integer overflow since its id calculation
-                // only plus one each time
-                m_checkSource = g_timeout_add_seconds(TERM_INTERVAL, 
-                                                      (GSourceFunc) checkCallback,
-                                                      static_cast<gpointer>(this));
-            }
+    AutoTerm(int interval) :
+        m_refs(0),
+        m_checkSource(0),
+        m_lastUsed(0)
+    {
+        if (interval <= 0) {
+            m_interval = 0;
+            // increasing reference counts prevents shutdown forever
+            ref();
+        } else {
+            m_interval = interval;
         }
+        reset();
+    }
+
+    ~AutoTerm()
+    {
+        if (m_checkSource) {
+            g_source_remove(m_checkSource);
+        }
+    }
 
     //increase the actives objects
     void ref(int refs = 1) {  
         m_refs += refs; 
+        reset();
     }
 
     //decrease the actives objects
     void unref(int refs = 1) { 
         m_refs -= refs; 
         if(m_refs <= 0) {
-           reset();
            m_refs = 0;
         }
+        reset();
     }
 
-    void reset() {
-        m_elapsed = 0;
+    /**
+     * To be called each time the server interacts with a client,
+     * which includes adding or removing a client. If necessary,
+     * this installs a timeout to stop the daemon when it has been
+     * idle long enough.
+     */
+    void reset()
+    {
+        if (m_refs > 0) {
+            // in use, don't need timeout
+            if (m_checkSource) {
+                g_source_remove(m_checkSource);
+                m_checkSource = 0;
+            }
+        } else {
+            // An already active timeout will trigger at the chosen time,
+            // then notice that the server has been used in the meantime and
+            // reset the timer. Therefore we don't have to remove it.
+            m_lastUsed = time(NULL);
+            if (!m_checkSource) {
+                m_checkSource = g_timeout_add_seconds(m_interval,
+                                                      checkCallback,
+                                                      static_cast<gpointer>(this));
+            }
+        }
     }
 };
 
@@ -467,10 +513,425 @@ private:
     boost::shared_ptr<BluezAdapter> m_adapter;
 
     /** represents 'DefaultAdapterChanged' signal of org.bluez.Adapter*/
-    boost::shared_ptr<SignalWatch1<DBusObject_t> > m_adapterChanged;
+    SignalWatch1<DBusObject_t> m_adapterChanged;
 
     /** flag to indicate whether the calls are all returned */
     bool m_done;
+};
+
+/**
+ * a listener to listen changes of session 
+ * currently only used to track changes of running a sync in a session
+ */
+class SessionListener
+{
+public:
+    /**
+     * method is called when a sync is successfully started.
+     * Here 'successfully started' means the synthesis engine starts
+     * to access the sources.
+     */
+    virtual void syncSuccessStart() {}
+
+    /**
+     * method is called when a sync is done. Also
+     * sync status are passed.
+     */
+    virtual void syncDone(SyncMLStatus status) {}
+
+    virtual ~SessionListener() {}
+};
+
+/**
+ * Manager to manage automatic sync.
+ * Once a configuration is enabled with automatic sync, possibly http or obex-bt or both, one or more
+ * tasks for different URLs are added in the task map, grouped by their intervals. 
+ * A task have to be checked whether there is an existing same task in the working queue. Once actived,
+ * it is put in the working queue. 
+ *
+ * At any time, there is at most one session for the first task. Once it is active by DBusServer,
+ * we prepare it and make it ready to run. After completion, a new session is created again for the
+ * next task. And so on.
+ *
+ * The DBusServer is in charge of dispatching requests from dbus clients and automatic sync tasks.
+ * See DBusServer::run().
+ *
+ * Here there are 3 scenarios which have been considered to do automatic sync right now:
+ * 1) For a config enables autosync, an interval has passed.
+ * 2) Once users log in or resume and an interval has passed. Not implemented yet.
+ * 3) Evolution data server notify any changes. Not implemented yet. 
+ */
+class AutoSyncManager : public SessionListener
+{
+    DBusServer &m_server;
+
+    /**
+     * A single task for automatic sync.
+     * Each task maintain one task for only one sync URL, which never combines
+     * more than one sync URLs. The difference from 'syncURL' property here is
+     * that different URLs may have different transports with different statuses.
+     * Another reason is that SyncContext only use the first URL if it has many sync
+     * URLs when running. So we split, schedule and process them one by one. 
+     * Each task contains one peer name, peer duration and peer url.
+     * It is created in initialization and may be updated due to config change.
+     * It is scheduled by AutoSyncManager to be put in the working queue.
+     */
+    class AutoSyncTask
+    {
+     public:
+        /** the peer name of a config */
+        string m_peer;
+        /** the time that the peer must at least have been around (seconds) */
+        unsigned int m_delay;
+        /** the 'syncURL' used by synchronization. It always contains only one sync URL. */
+        string m_url;
+
+        AutoSyncTask(const string &peer, unsigned int delay, const string &url)
+            : m_peer(peer), m_delay(delay), m_url(url)
+        {}
+
+        /** compare whether two tasks are the same. May refine it later with more information */
+        bool operator==(const AutoSyncTask &right) const
+        {
+            if(boost::iequals(m_peer, right.m_peer) &&
+                    boost::iequals(m_url, right.m_url)) {
+                return true;
+            }
+            return false;
+        }
+    };
+
+    /**
+     * AutoSyncTaskList is used to manage sync tasks which are grouped by the
+     * interval. Each list has one timeout gsource.
+     */
+    class AutoSyncTaskList : public list<AutoSyncTask>
+    {
+        AutoSyncManager &m_manager;
+        /** the interval used to create timeout source (seconds) */
+        unsigned int m_interval;
+
+        /** timeout gsource */
+        GLibEvent m_source;
+
+        /** callback of timeout source */
+        static gboolean taskListTimeoutCb(gpointer data);
+
+     public:
+        AutoSyncTaskList(AutoSyncManager &manager, unsigned int interval)
+            : m_manager(manager), m_interval(interval), m_source(0) 
+        {}
+        ~AutoSyncTaskList() {
+            if(m_source) {
+                g_source_remove(m_source);
+            }
+        }
+
+        /** create timeout source once all tasks are added */
+        void createTimeoutSource();
+
+        /** check task list and put task into working queue */
+        void scheduleTaskList();
+    };
+
+#ifdef HAS_NOTIFY
+    /**
+     * This class is to send notifications to notification server.
+     * Notifications are sent via 'send'. Once a new noficication is
+     * to be sent, the old notification will be closed and a new one
+     * is created for the new requirement.
+     */
+    class Notification
+    {
+    public:
+        Notification(); 
+        ~Notification();
+
+        /** callback of click button(actions) of notification */
+        static void notifyAction(NotifyNotification *notify, gchar *action, gpointer userData);
+
+        /**
+         * send a notification in the notification server
+         * Action for 'view' may pop up a sync-ui, but needs some
+         * parameters. 'viewParams' is the params used by sync-ui.
+         */
+        void send(const char *summary, const char *body, const char *viewParams = NULL);
+    private:
+        /** flag to indicate whether libnotify is initalized successfully */
+        bool m_init;
+
+        /** flag to indicate whether libnotify accepts actions */
+        bool m_actions;
+
+        /** the current notification */
+        NotifyNotification *m_notification;
+    };
+#endif
+
+    /** init a config and set up auto sync task for it */
+    void initConfig(const string &configName);
+
+    /** remove tasks from m_peerMap and m_workQueue created from the config */
+    void remove(const string &configName);
+
+    /** a map to contain all auto sync tasks. All initialized tasks are stored here.
+     * Tasks here are grouped by auto sync interval */
+    typedef std::map<unsigned int, boost::shared_ptr<AutoSyncTaskList> > PeerMap;
+    PeerMap m_peerMap;
+
+    /** 
+     * a working queue that including tasks which are pending for doing sync.
+     * Tasks here are picked from m_peerMap and scheduled to do auto sync */
+    list<AutoSyncTask> m_workQueue;
+
+    /**
+     * the current active task, which may own a session 
+     */
+    boost::shared_ptr<AutoSyncTask> m_activeTask;
+
+    /** 
+     * the only session created for active task and is put in the session queue.
+     * at most one session at any time no matter how many tasks we actually have 
+     */
+    boost::shared_ptr<Session> m_session;
+
+    /** the current sync of session is successfully started */
+    bool m_syncSuccessStart;
+
+#ifdef HAS_NOTIFY
+    /** used to send notifications */
+    Notification m_notify;
+#endif
+
+    /** 
+     * It reads all peers which are enabled to do auto sync and store them in
+     * the m_peerMap and then add timeout sources in the main loop to schedule
+     * auto sync tasks.
+     */
+    void init();
+
+    /** operations on tasks queue */
+    void clearAllTasks() { m_workQueue.clear(); }
+
+    /** check m_peerMap and put all tasks in it to working queue */
+    void scheduleAll();
+
+    /** 
+     * add an auto sync task in the working queue
+     * Do check before adding a task in the working queue
+     * Return true if the task is added in the list.
+     */
+    bool addTask(const AutoSyncTask &syncTask);
+
+    /** find an auto sync task in the working queue or is running */
+    bool findTask(const AutoSyncTask &syncTask);
+
+    /** 
+     * check whether a task is suitable to put in the working queue
+     * Manager has the information needed to make the decision
+     */
+    bool taskLikelyToRun(const AutoSyncTask &syncTask);
+
+ public:
+    AutoSyncManager(DBusServer &server)
+        : m_server(server), m_syncSuccessStart(false) 
+    { 
+        init();
+    }
+
+    /**
+     * prevent dbus server automatic termination when it has
+     * any auto sync task enabled in the configs.
+     * If returning true, prevent automatic termination.
+     */
+    bool preventTerm() { return !m_peerMap.empty(); }
+
+    /**
+     * called when a config is changed. This causes re-loading the config 
+     */
+    void update(const string &configName);
+
+    /* Is there any auto sync task in the queue? */
+    bool hasTask() { return !m_workQueue.empty(); }
+
+    /** 
+     * pick the front task from the working queue and create a session for it.
+     * The session won't be used to do sync until it is active so 'prepare' is
+     * for calling 'sync' to make the session ready to run
+     * If there has been a session for the front task, do nothing
+     */
+    void startTask();
+
+    /** check whether the active session is owned by Automatic Sync Manger */
+    bool hasActiveSession();
+
+    /** set config and run sync to make the session ready to run */
+    void prepare();
+
+    /**
+     * Acts as a session listener to track sync statuses if the session is 
+     * belonged to auto sync manager to do auto sync. 
+     * Two methods to listen to session sync changes.
+     */
+    virtual void syncSuccessStart();
+    virtual void syncDone(SyncMLStatus status);
+};
+
+/**
+ * A timer helper to check whether now is timeout according to
+ * user's setting. Timeout is calculated in milliseconds
+ */ 
+class Timer {
+    timeval m_startTime;  ///< start time
+    unsigned long m_timeoutMs; ///< timeout in milliseconds, set by user
+
+    /**
+     * calculate duration between now and start time
+     * return value is in milliseconds
+     */
+    unsigned long duration(const timeval &minuend, const timeval &subtrahend)
+    {
+        unsigned long result = 0;
+        if(minuend.tv_sec > subtrahend.tv_sec || 
+                (minuend.tv_sec == subtrahend.tv_sec && minuend.tv_usec > subtrahend.tv_usec)) {
+            result = minuend.tv_sec - subtrahend.tv_sec;
+            result *= 1000;
+            result += (minuend.tv_usec - subtrahend.tv_usec) / 1000;
+        }
+        return result;
+    }
+
+ public:
+    /**
+     * constructor
+     * @param timeoutMs timeout in milliseconds
+     */
+    Timer(unsigned long timeoutMs = 0) : m_timeoutMs(timeoutMs)
+    {
+        reset();
+    }
+
+    /**
+     * reset the timer and mark start time as current time
+     */
+    void reset() { gettimeofday(&m_startTime, NULL); }
+
+    /**
+     * check whether it is timeout
+     */
+    bool timeout() 
+    {
+        return timeout(m_timeoutMs);
+    }
+
+    /** 
+     * check whether the duration timer records is longer than the given duration 
+     */
+    bool timeout(unsigned long timeoutMs)
+    {
+        timeval now;
+        gettimeofday(&now, NULL);
+        return duration(now, m_startTime) >= timeoutMs;
+    }
+};
+
+class PresenceStatus {
+    bool m_httpPresence;
+    bool m_btPresence;
+    bool m_initiated;
+    DBusServer &m_server;
+
+    /** two timers to record when the statuses of network and bt are changed */
+    Timer m_httpTimer;
+    Timer m_btTimer;
+
+    enum PeerStatus {
+        /* The transport is not available (local problem) */
+        NOTRANSPORT,
+        /* The peer is not contactable (remote problem) */
+        UNREACHABLE,
+        /* Not for sure whether the peer is presence but likely*/
+        MIGHTWORK,
+
+        INVALID
+    };
+
+    typedef map<string, vector<pair <string, PeerStatus> > > StatusMap;
+    typedef pair<const string, vector<pair <string, PeerStatus> > > StatusPair;
+    typedef pair <string, PeerStatus> PeerStatusPair;
+    StatusMap m_peers;
+
+    static std::string status2string (PeerStatus status) {
+        switch (status) {
+            case NOTRANSPORT:
+                return "no transport";
+                break;
+            case UNREACHABLE:
+                return "not present";
+                break;
+            case MIGHTWORK:
+                return "";
+                break;
+            case INVALID:
+                return "invalid transport status";
+        }
+        // not reached, keep compiler happy
+        return "";
+    }
+
+    public:
+    PresenceStatus (DBusServer &server)
+        :m_httpPresence (false), m_btPresence (false), m_initiated (false), m_server (server),
+        m_httpTimer(), m_btTimer()
+    {
+    }
+
+    enum TransportType{
+        HTTP_TRANSPORT,
+        BT_TRANSPORT,
+        INVALID_TRANSPORT
+    };
+
+    void init();
+
+    /* Implement DBusServer::checkPresence*/
+    void checkPresence (const string &peer, string& status, std::vector<std::string> &transport); 
+
+    void updateConfigPeers (const std::string &peer, const ReadOperations::Config_t &config);
+
+    void updatePresenceStatus (bool httpPresence, bool btPresence); 
+    void updatePresenceStatus (bool newStatus, TransportType type);
+
+    bool getHttpPresence() { return m_httpPresence; }
+    bool getBtPresence() { return m_btPresence; }
+    Timer& getHttpTimer() { return m_httpTimer; }
+    Timer& getBtTimer() { return m_btTimer; }
+};
+
+/*
+ * Implements org.moblin.connman.Manager
+ * GetProperty  : getPropCb
+ * PropertyChanged: propertyChanged
+ **/
+class ConnmanClient : public DBusRemoteObject
+{
+public:
+    ConnmanClient (DBusServer &server);
+    virtual const char *getDestination() const {return "org.moblin.connman";}
+    virtual const char *getPath() const {return "/";}
+    virtual const char *getInterface() const {return "org.moblin.connman.Manager";}
+    virtual DBusConnection *getConnection() const {return m_connmanConn.get();}
+
+    void propertyChanged(const string &name,
+                         const boost::variant<vector<string>, string> &prop);
+
+    void getPropCb(const std::map <std::string, boost::variant <std::vector <std::string> > >& props, const string &error);
+
+private:
+    DBusServer &m_server;
+    DBusConnectionPtr m_connmanConn;
+
+    SignalWatch2 <string,boost::variant<vector<string>, string> > m_propertyChanged;
 };
 
 /**
@@ -482,7 +943,8 @@ private:
  * of these objects and deletes them before destructing itself,
  * that reference is guaranteed to remain valid.
  */
-class DBusServer : public DBusObjectHelper
+class DBusServer : public DBusObjectHelper,
+                   public LoggerBase
 {
     GMainLoop *m_loop;
     uint32_t m_lastSession;
@@ -546,9 +1008,6 @@ class DBusServer : public DBusObjectHelper
     // the index of last info request
     uint32_t m_lastInfoReq;
 
-    //automatic termination
-    AutoTerm m_autoTerm;
-
     // a hash to represent matched templates for devices, the key is
     // the peer name
     typedef std::map<string, boost::shared_ptr<SyncConfig::TemplateDescription> > MatchedTemplates;
@@ -564,13 +1023,6 @@ class DBusServer : public DBusObjectHelper
      * Watch callback for a specific client or connection.
      */
     void clientGone(Client *c);
-
-    /**
-     * Returns new unique session ID. Implemented with a running
-     * counter. Checks for overflow, but not currently for active
-     * sessions.
-     */
-    std::string getNextSession();
 
     /** Server.Attach() */
     void attachClient(const Caller_t &caller,
@@ -641,7 +1093,7 @@ class DBusServer : public DBusObjectHelper
                        std::vector<std::string> &transports);
 
     /** Server.GetSessions() */
-    void getSessions(std::vector<std::string> &sessions);
+    void getSessions(std::vector<DBusObject_t> &sessions);
 
     /** Server.InfoResponse() */
     void infoResponse(const Caller_t &caller,
@@ -689,157 +1141,25 @@ class DBusServer : public DBusObjectHelper
                 const std::string &,
                 const std::map<string, string> &> infoRequest;
 
-    static gboolean connmanPoll (gpointer dbus_server);
-    DBusConnectionPtr m_connmanConn;
+    /** Server.LogOutput */
+    EmitSignal3<const DBusObject_t &,
+                string,
+                const std::string &> logOutput;
 
     friend class Session;
-    class PresenceStatus {
-        bool m_httpPresence;
-        bool m_btPresence;
-        bool m_initiated;
-        DBusServer &m_server;
-       
-        enum PeerStatus {
-            /* The transport is not available (local problem) */
-            NOTRANSPORT,
-            /* The peer is not contactable (remote problem) */
-            UNREACHABLE,
-            /* Not for sure whether the peer is presence but likely*/
-            MIGHTWORK,
 
-            INVALID
-        };
+    PresenceStatus m_presence;
+    ConnmanClient m_connman;
 
-        typedef map<string, vector<pair <string, PeerStatus> > > StatusMap;
-        typedef pair<const string, vector<pair <string, PeerStatus> > > StatusPair;
-        typedef pair <string, PeerStatus> PeerStatusPair;
-        StatusMap m_peers;
+    /** manager to automatic sync */
+    AutoSyncManager m_autoSync;
 
-        static std::string status2string (PeerStatus status) {
-            switch (status) {
-                case NOTRANSPORT:
-                    return "no transport";
-                    break;
-                case UNREACHABLE:
-                    return "not present";
-                    break;
-                case MIGHTWORK:
-                    return "";
-                    break;
-                case INVALID:
-                    return "invalid transport status";
-            }
-            // not reached, keep compiler happy
-            return "";
-        }
+    //automatic termination
+    AutoTerm m_autoTerm;
 
-        public:
-        PresenceStatus (DBusServer &server)
-            :m_httpPresence (false), m_btPresence (false), m_initiated (false), m_server (server)
-        {
-            init();
-        }
-        
-        void init(){
-            //initialize the configured peer list
-            if (!m_initiated) {
-                SyncConfig::ConfigList list = SyncConfig::getConfigs();
-                BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server, list) {
-                    SyncConfig config (server.first);
-                    vector<string> urls = config.getSyncURL();
-                    m_peers[server.first].clear();
-                    BOOST_FOREACH (const string &url, urls) {
-                        m_peers[server.first].push_back(make_pair(url,MIGHTWORK));
-                    }
-                }
-                m_initiated = true;
-            }
-        }
-
-        /* Implement DBusServer::checkPresence*/
-        void checkPresence (const string &peer, string& status, std::vector<std::string> &transport) {
-
-            if (!m_initiated) {
-                //might triggered by updateConfigPeers
-                init();
-            }
-
-            string peerName = SyncConfig::normalizeConfigString (peer);
-            vector< pair<string, PeerStatus> > mytransports = m_peers[peerName];
-            if (mytransports.empty()) {
-                //wrong config name?
-                status = status2string(NOTRANSPORT);
-                transport.clear();
-                return;
-            }
-            PeerStatus mystatus = MIGHTWORK;
-            transport.clear();
-            //only if all transports are unavailable can we declare the peer
-            //status as unavailable
-            BOOST_FOREACH (PeerStatusPair &mytransport, mytransports) {
-                if (mytransport.second == MIGHTWORK) {
-                    transport.push_back (mytransport.first);
-                }
-            }
-            if (transport.empty()) {
-                mystatus = NOTRANSPORT;
-            }
-            status = status2string(mystatus);
-        }
-
-        void updateConfigPeers (const std::string &peer, const ReadOperations::Config_t &config) {
-            ReadOperations::Config_t::const_iterator iter = config.find ("");
-            if (iter != config.end()) {
-                //As a simple approach, just reinitialize the whole STATUSMAP
-                //it will cause later updatePresenceStatus resend all signals
-                //and a reload in checkPresence
-                m_initiated = false;
-            }
-        }
-
-        void updatePresenceStatus (bool httpPresence, bool btPresence) {
-            bool httpChanged = (m_httpPresence != httpPresence);
-            bool btChanged = (m_btPresence != btPresence);
-            m_httpPresence = httpPresence;
-            m_btPresence = btPresence;
-
-            if (m_initiated && !httpChanged && !btChanged) {
-                //nothing changed
-                return;
-            }
-
-            //initialize the configured peer list
-            bool initiated = m_initiated;
-            if (!m_initiated) {
-                init();
-            }
-
-            //iterate all configured peers and fire singals
-            BOOST_FOREACH (StatusPair &peer, m_peers) {
-                //iterate all possible transports
-                //TODO One peer might got more than one signals, avoid this
-                std::vector<pair<string, PeerStatus> > &transports = peer.second;
-                BOOST_FOREACH (PeerStatusPair &entry, transports) {
-                    string url = entry.first;
-                    if (boost::starts_with (url, "http") && (httpChanged || !initiated)) {
-                        entry.second = m_httpPresence ? MIGHTWORK: NOTRANSPORT;
-                        m_server.presence (peer.first, status2string (entry.second), entry.first);
-                        SE_LOG_DEBUG(NULL, NULL,
-                                     "http presence signal %s,%s,%s",
-                                     peer.first.c_str(),
-                                     status2string (entry.second).c_str(), entry.first.c_str());
-                    } else if (boost::starts_with (url, "obex-bt") && (btChanged || !initiated)) {
-                        entry.second = m_btPresence ? MIGHTWORK: NOTRANSPORT;
-                        m_server.presence (peer.first, status2string (entry.second), entry.first);
-                        SE_LOG_DEBUG(NULL, NULL,
-                                    "bluetooth presence signal %s,%s,%s",
-                                    peer.first.c_str(),
-                                    status2string (entry.second).c_str(), entry.first.c_str());
-                    }
-                }
-            }
-        }
-    }m_presence;
+    //records the parent logger, dbus server acts as logger to 
+    //send signals to clients and put logs in the parent logger.
+    LoggerBase &m_parentLogger;
 
 public:
     DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn, int duration);
@@ -910,8 +1230,6 @@ public:
 
     PresenceStatus& getPresenceStatus() {return m_presence;}
 
-    DBusConnectionPtr getConnmanConnection() {return m_connmanConn;}
-
     void clearPeerTempls() { m_matchedTempls.clear(); }
     void addPeerTempl(const string &templName, const boost::shared_ptr<SyncConfig::TemplateDescription> peerTempl);
 
@@ -933,8 +1251,35 @@ public:
     void removeDevice(const string &deviceId);
     /** update a device with the given device information. If not found, do nothing */
     void updateDevice(const string &deviceId, const SyncConfig::DeviceDescription &device);
-};
 
+    /** emit a presence signal */
+    void emitPresence(const string &server, const string &status, const string &transport)
+    { 
+        presence(server, status, transport); 
+    }
+
+    /**
+     * Returns new unique session ID. Implemented with a running
+     * counter. Checks for overflow, but not currently for active
+     * sessions.
+     */
+    std::string getNextSession();
+
+    AutoSyncManager &getAutoSyncManager() { return m_autoSync; }
+
+    /**
+     * implement virtual method from LogStdout.
+     * Not only print the message in the console
+     * but also send them as signals to clients
+     */
+    virtual void messagev(Level level,
+                          const char *prefix,
+                          const char *file,
+                          int line,
+                          const char *function,
+                          const char *format,
+                          va_list args);
+};
 
 /**
  * Tracks a single client and all sessions and connections that it is
@@ -1131,6 +1476,9 @@ protected:
 
     virtual void reportStepCmd(sysync::uInt16 stepCmd);
 
+    /** called when a sync is successfully started */
+    virtual void syncSuccessStart(); 
+
     /**
      * Implement checkForSuspend and checkForAbort.
      * They will check whether dbus clients suspend
@@ -1149,56 +1497,6 @@ protected:
     string askPassword(const string &passwordName, 
                        const string &descr, 
                        const ConfigPasswordKey &key);
-};
-
-/**
- * A timer helper to check whether now is timeout according to
- * user's setting. Timeout is calculated in milliseconds
- */ 
-class Timer {
-    timeval m_startTime;  ///< start time
-    unsigned long m_timeoutMs; ///< timeout in milliseconds, set by user
-
-    /**
-     * calculate duration between now and start time
-     * return value is in milliseconds
-     */
-    unsigned long duration(const timeval &minuend, const timeval &subtrahend)
-    {
-        unsigned long result = 0;
-        if(minuend.tv_sec > subtrahend.tv_sec || 
-                (minuend.tv_sec == subtrahend.tv_sec && minuend.tv_usec > subtrahend.tv_usec)) {
-            result = minuend.tv_sec - subtrahend.tv_sec;
-            result *= 1000;
-            result += (minuend.tv_usec - subtrahend.tv_usec) / 1000;
-        }
-        return result;
-    }
-
- public:
-    /**
-     * constructor
-     * @param timeoutMs timeout in milliseconds
-     */
-    Timer(unsigned long timeoutMs) : m_timeoutMs(timeoutMs)
-    {
-        reset();
-    }
-
-    /**
-     * reset the timer and mark start time as current time
-     */
-    void reset() { gettimeofday(&m_startTime, NULL); }
-
-    /**
-     * check whether it is timeout
-     */
-    bool timeout() 
-    {
-        timeval now;
-        gettimeofday(&now, NULL);
-        return duration(now, m_startTime) >= m_timeoutMs;
-    }
 };
 
 /**
@@ -1349,6 +1647,8 @@ private:
     string m_source;
 };
 
+class CmdlineWrapper;
+
 /**
  * Represents and implements the Session interface.  Use
  * boost::shared_ptr to track it and ensure that there are references
@@ -1380,6 +1680,9 @@ class Session : public DBusObjectHelper,
     /** whether dbus clients set temporary configs */
     bool m_tempConfig;
 
+    /** whether dbus clients update or clear configs, not include temporary set */
+    bool m_setConfig;
+
     /**
      * True while clients are allowed to make calls other than Detach(),
      * which is always allowed. Some calls are not allowed while this
@@ -1387,6 +1690,11 @@ class Session : public DBusObjectHelper,
      * pointer.
      */
     bool m_active;
+
+    /**
+     * Indicates whether this session was initiated by the peer or locally.
+     */
+    bool m_remoteInitiated;
 
     /**
      * The SyncEvolution instance which currently prepares or runs a sync.
@@ -1444,19 +1752,23 @@ class Session : public DBusObjectHelper,
 
     enum RunOperation {
         OP_SYNC = 0,
-        OP_RESTORE
+        OP_RESTORE = 1,
+        OP_CMDLINE = 2,
+        OP_NULL
     };
 
     static string runOpToString(RunOperation op);
 
     RunOperation m_runOperation;
 
+    /** listener to listen to changes of sync */
+    SessionListener *m_listener;
+
+    /** Cmdline to execute command line args */
+    boost::shared_ptr<CmdlineWrapper> m_cmdline;
+
     /** Session.Detach() */
     void detach(const Caller_t &caller);
-
-    /** Session.SetConfig() */
-    void setConfig(bool update, bool temporary,
-                   const ReadOperations::Config_t &config);
 
     /** Session.GetStatus() */
     void getStatus(std::string &status,
@@ -1471,6 +1783,9 @@ class Session : public DBusObjectHelper,
 
     /** Session.checkPresence() */
     void checkPresence (string &status);
+
+    /** Session.Execute() */
+    void execute(const vector<string> &args, const map<string, string> &vars);
 
     /**
      * Must be called each time that properties changing the
@@ -1505,8 +1820,10 @@ public:
     ~Session();
 
     enum {
+        PRI_CMDLINE = -10,
         PRI_DEFAULT = 0,
-        PRI_CONNECTION = 10
+        PRI_CONNECTION = 10,
+        PRI_AUTOSYNC = 20
     };
 
     /**
@@ -1544,7 +1861,7 @@ public:
     /**
      * TRUE if the session is ready to take over control
      */
-    bool readyToRun() { return (m_syncStatus != SYNC_DONE) && m_sync; }
+    bool readyToRun() { return (m_syncStatus != SYNC_DONE) && (m_runOperation != OP_NULL); }
 
     /**
      * transfer control to the session for the duration of the sync,
@@ -1558,6 +1875,8 @@ public:
      */
     void setActive(bool active);
 
+    bool getActive() { return m_active; }
+
     void syncProgress(sysync::TProgressEventEnum type,
                       int32_t extra1, int32_t extra2, int32_t extra3);
     void sourceProgress(sysync::TProgressEventEnum type,
@@ -1566,6 +1885,10 @@ public:
     string askPassword(const string &passwordName, 
                        const string &descr, 
                        const ConfigPasswordKey &key);
+
+    /** Session.SetConfig() */
+    void setConfig(bool update, bool temporary,
+                   const ReadOperations::Config_t &config);
 
     typedef StringMap SourceModes_t;
     /** Session.Sync() */
@@ -1585,11 +1908,131 @@ public:
      */
     void setStepInfo(bool isWaiting); 
 
+    /** sync is successfully started */
+    void syncSuccessStart();
+
+    /**
+     * add a listener of the session. Old set listener is returned
+     */
+    SessionListener* addListener(SessionListener *listener);
+
+    void setRemoteInitiated (bool remote) { m_remoteInitiated = remote;}
 private:
     /** set m_syncFilter and m_sourceFilters to config */
     virtual bool setFilters(SyncConfig &config);
 };
 
+/**
+ * a wrapper to maintain the execution of command line 
+ * arguments from dbus clients. It is in charge of
+ * redirecting output of cmd line to logging system.
+ */
+class CmdlineWrapper
+{
+    /**
+     * inherit from stream buf to redirect the output.
+     * Set a log until we gets a '\n' separator since we know
+     * the command line message often ends with '\n'. The reason
+     * is to avoid setting less characters in one log and thus
+     * sending many signals to dbus clients.
+     */
+    class CmdlineStreamBuf : public std::streambuf
+    {
+    public:
+        virtual ~CmdlineStreamBuf()
+        {
+            //flush cached characters
+            if(!m_str.empty()) {
+                SE_LOG(LoggerBase::SHOW, NULL, NULL, "%s", m_str.c_str());
+            }
+        }
+    protected:
+        /**
+         * inherit from std::streambuf, all characters are cached in m_str
+         * until a character '\n' is reached.
+         */
+        virtual int_type overflow (int_type ch) {
+            if(ch == '\n') {
+                //don't append this character for logging system will append it
+                SE_LOG(LoggerBase::SHOW, NULL, NULL, "%s", m_str.c_str());
+                m_str.clear();
+            } else if (ch != EOF) {
+                m_str += ch;
+            }
+            return ch;
+        }
+
+        /** the cached output characters */
+        string m_str;
+    };
+
+    /** streambuf used for m_cmdlineOutStream */
+    CmdlineStreamBuf m_outStreamBuf;
+
+    /** stream for command line out and err arguments */
+    std::ostream m_cmdlineOutStream;
+
+    /**
+     * implement factory method to create DBusSync instances
+     * This can check 'abort' and 'suspend' command from clients.
+     */
+    class DBusCmdline : public Cmdline {
+        Session &m_session;
+    public:
+        DBusCmdline(Session &session,
+                    const vector<string> &args,
+                    ostream &out,
+                    ostream &err)
+            :Cmdline(args, out, err), m_session(session)
+        {}
+
+        SyncContext* createSyncClient() {
+            return new DBusSync(m_server, m_session);
+        }
+    };
+
+    /** instance to run command line arguments */
+    DBusCmdline m_cmdline;
+
+    /** environment variables passed from client */
+    map<string, string> m_envVars;
+
+public:
+    /**
+     * constructor to create cmdline instance.
+     * Here just one stream is used and error message in
+     * command line is output to this stream for it is
+     * different from Logger::ERROR.
+     */
+    CmdlineWrapper(Session &session,
+                   const vector<string> &args,
+                   const map<string, string> &vars)
+        : m_cmdlineOutStream(&m_outStreamBuf),
+        m_cmdline(session, args, m_cmdlineOutStream, m_cmdlineOutStream),
+        m_envVars(vars)
+    {}
+
+    bool parse() { return m_cmdline.parse(); }
+    void run()
+    {
+        //temporarily set environment variables and restore them after running
+        list<boost::shared_ptr<ScopedEnvChange> > changes;
+        BOOST_FOREACH(const StringPair &var, m_envVars) {
+            changes.push_back(boost::shared_ptr<ScopedEnvChange>(new ScopedEnvChange(var.first, var.second)));
+        }
+        // exceptions must be handled (= printed) before returning,
+        // so that our client gets the output
+        try {
+            m_cmdline.run();
+        } catch (...) {
+            redirectPtr->flush();
+            throw;
+        }
+        // always forward all currently pending redirected output
+        // before closing the session
+        redirectPtr->flush();
+    }
+};
 
 /**
  * Represents and implements the Connection interface.
@@ -1644,6 +2087,19 @@ class Connection : public DBusObjectHelper, public Resource
      */
     SharedBuffer m_incomingMsg;
     std::string m_incomingMsgType;
+
+    struct SANContent {
+        std::vector <string> m_syncType;
+        std::vector <uint32_t> m_contentType;
+        std::vector <string> m_serverURI;
+    };
+
+    /**
+     * The content of a parsed SAN package to be processed via
+     * connection.ready
+     */
+    boost::shared_ptr <SANContent> m_SANContent;
+    std::string m_peerBtAddr;
 
     /**
      * records the reason for the failure, sends Abort signal and puts
@@ -1900,14 +2356,14 @@ void ReadOperations::getConfigs(bool getTemplates, std::vector<std::string> &con
         BOOST_FOREACH(const boost::shared_ptr<SyncConfig::TemplateDescription> peer, list) {
             //if it is not a template for device
             if(peer->m_fingerprint.empty()) {
-                configNames.push_back(peer->m_name);
+                configNames.push_back(peer->m_templateId);
             } else {
                 string templName = "Bluetooth_";
-                templName += peer->m_id;
+                templName += peer->m_deviceId;
                 templName += "_";
-                std::map<std::string, int>::iterator it = numbers.find(peer->m_id);
+                std::map<std::string, int>::iterator it = numbers.find(peer->m_deviceId);
                 if(it == numbers.end()) {
-                    numbers.insert(std::make_pair(peer->m_id, 1));
+                    numbers.insert(std::make_pair(peer->m_deviceId, 1));
                     templName += "1";
                 } else {
                     it->second++;
@@ -1927,7 +2383,7 @@ void ReadOperations::getConfigs(bool getTemplates, std::vector<std::string> &con
     }
 }
 
-boost::shared_ptr<DBusUserInterface> ReadOperations::getLocalConfig(const string &configName)
+boost::shared_ptr<DBusUserInterface> ReadOperations::getLocalConfig(const string &configName, bool mustExist)
 {
     string peer, context;
     SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configName),
@@ -1940,7 +2396,8 @@ boost::shared_ptr<DBusUserInterface> ReadOperations::getLocalConfig(const string
         // the default configuration can always be opened for reading,
         // everything else must exist
         if ((context != "default" || peer != "") &&
-                !syncConfig->exists()) {
+            mustExist &&
+            !syncConfig->exists()) {
             SE_THROW_EXCEPTION(NoSuchConfig, "No configuration '" + configName + "' found");
         }
     }
@@ -1962,7 +2419,7 @@ void ReadOperations::getConfig(bool getTemplate,
         boost::shared_ptr<SyncConfig::TemplateDescription> peerTemplate =
             m_server.getPeerTempl(m_configName);
         if(peerTemplate) {
-            SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(peerTemplate->m_name),
+            SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(peerTemplate->m_templateId),
                     peer, context);
             dbusConfig = SyncConfig::createPeerTemplate(peerTemplate->m_path);
             // if we have cached template information, add match information for it
@@ -1975,11 +2432,15 @@ void ReadOperations::getConfig(bool getTemplate,
             localConfigs.insert(pair<string, string>("deviceName", peerTemplate->m_fingerprint));
             // This is the fingerprint of the template
             localConfigs.insert(pair<string, string>("fingerPrint", peerTemplate->m_matchedModel));
+            // This is the template name presented to UI (or device class)
+            if (!peerTemplate->m_templateName.empty()) {
+                localConfigs.insert(pair<string,string>("templateName", peerTemplate->m_templateName));
+            }
 
             // if the peer is client, then replace syncURL with bluetooth
             // MAC address
             syncURL = "obex-bt://";
-            syncURL += peerTemplate->m_id;
+            syncURL += peerTemplate->m_deviceId;
         } else {
             SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_configName),
                     peer, context);
@@ -1992,7 +2453,7 @@ void ReadOperations::getConfig(bool getTemplate,
 
         // use the shared properties from the right context as filter
         // so that the returned template preserves existing properties
-        boost::shared_ptr<DBusUserInterface> shared = getLocalConfig(string("@") + context);
+        boost::shared_ptr<DBusUserInterface> shared = getLocalConfig(string("@") + context, false);
 
         ConfigProps props;
         shared->getProperties()->readProperties(props);
@@ -2001,6 +2462,11 @@ void ReadOperations::getConfig(bool getTemplate,
             SyncSourceNodes nodes = shared->getSyncSourceNodes(source, "");
             props.clear();
             nodes.getProperties()->readProperties(props);
+            // Special case "type" property: the value in the context
+            // is not preserved. Every new peer must ensure that
+            // its own value is compatible (= same backend) with
+            // the other peers.
+            props.erase("type");
             dbusConfig->setConfigFilter(false, source, props);
         }
         syncConfig = dbusConfig.get();
@@ -2035,6 +2501,9 @@ void ReadOperations::getConfig(bool getTemplate,
             localConfigs.insert(pair<string, string>(prop->getName(), value));
         }
     }
+
+    // insert 'configName' of the chosen config (m_configName is not normalized)
+    localConfigs.insert(pair<string, string>("configName", syncConfig->getConfigName()));
 
     config.insert(pair<string,map<string, string> >("", localConfigs));
 
@@ -2253,9 +2722,20 @@ boost::shared_ptr<TransportAgent> DBusSync::createTransportAgent()
 {
     if (m_session.useConnection()) {
         // use the D-Bus Connection to send and receive messages
-        return boost::shared_ptr<TransportAgent>(new DBusTransportAgent(m_session.getServer().getLoop(),
-                                                                        m_session,
-                                                                        m_session.getConnection()));
+        boost::shared_ptr<TransportAgent> agent(new DBusTransportAgent(m_session.getServer().getLoop(),
+                                                                       m_session,
+                                                                       m_session.getConnection()));
+        // We don't know whether we'll run as client or server.
+        // But we as we cannot resend messages via D-Bus even if running as
+        // client (API not designed for it), let's use the hard timeout
+        // from RetryDuration here.
+        int timeout = getRetryDuration();
+        if (timeout) {
+            agent->setCallback(transport_cb,
+                               reinterpret_cast<void *>(static_cast<uintptr_t>(timeout)),
+                               timeout);
+        }
+        return agent;
     } else {
         // no connection, use HTTP via libsoup/GMainLoop
         GMainLoop *loop = m_session.getServer().getLoop();
@@ -2293,6 +2773,11 @@ void DBusSync::reportStepCmd(sysync::uInt16 stepCmd)
             m_session.setStepInfo(false);
             break;
     }
+}
+
+void DBusSync::syncSuccessStart()
+{
+    m_session.syncSuccessStart();
 }
 
 bool DBusSync::checkForSuspend()
@@ -2370,8 +2855,9 @@ void Session::setConfig(bool update, bool temporary,
     if (!m_active) {
         SE_THROW_EXCEPTION(InvalidCall, "session is not active, call not allowed at this time");
     }
-    if (m_sync) {
-        SE_THROW_EXCEPTION(InvalidCall, "sync started, cannot change configuration at this time");
+    if (m_runOperation != OP_NULL) {
+        string msg = StringPrintf("%s started, cannot change configuration at this time", runOpToString(m_runOperation).c_str());
+        SE_THROW_EXCEPTION(InvalidCall, msg);
     }
     if (!update && temporary) {
         throw std::runtime_error("Clearing existing configuration and temporary configuration changes which only affects the duration of the session are mutually exclusive");
@@ -2436,6 +2922,7 @@ void Session::setConfig(bool update, bool temporary,
 
         syncConfig->preFlush(*syncConfig);
         syncConfig->flush();
+        m_setConfig = true;
     }
 }
 
@@ -2451,8 +2938,11 @@ void Session::sync(const std::string &mode, const SourceModes_t &source_modes)
     if (!m_active) {
         SE_THROW_EXCEPTION(InvalidCall, "session is not active, call not allowed at this time");
     }
-    if (m_sync) {
-        string msg = StringPrintf("%s started, cannot start(again)", runOpToString(m_runOperation).c_str());
+    if (m_runOperation == OP_SYNC) {
+        string msg = StringPrintf("%s started, cannot start again", runOpToString(m_runOperation).c_str());
+        SE_THROW_EXCEPTION(InvalidCall, msg);
+    } else if (m_runOperation != OP_NULL) {
+        string msg = StringPrintf("%s started, cannot start sync", runOpToString(m_runOperation).c_str());
         SE_THROW_EXCEPTION(InvalidCall, msg);
     }
 
@@ -2467,6 +2957,10 @@ void Session::sync(const std::string &mode, const SourceModes_t &source_modes)
             m_syncFilter["password"] = "";
             m_syncFilter["username"] = "";
         }
+    }
+
+    if (m_remoteInitiated) {
+        m_sync->setRemoteInitiated (true);
     }
 
     // Apply temporary config filters. The parameters of this function
@@ -2507,7 +3001,7 @@ void Session::sync(const std::string &mode, const SourceModes_t &source_modes)
 
 void Session::abort()
 {
-    if (!m_sync) {
+    if (m_runOperation != OP_SYNC && m_runOperation != OP_CMDLINE) {
         SE_THROW_EXCEPTION(InvalidCall, "sync not started, cannot abort at this time");
     }
     m_syncStatus = SYNC_ABORT;
@@ -2519,7 +3013,7 @@ void Session::abort()
 
 void Session::suspend()
 {
-    if (!m_sync) {
+    if (m_runOperation != OP_SYNC && m_runOperation != OP_CMDLINE) {
         SE_THROW_EXCEPTION(InvalidCall, "sync not started, cannot suspend at this time");
     }
     m_syncStatus = SYNC_SUSPEND;
@@ -2612,7 +3106,9 @@ Session::Session(DBusServer &server,
     m_serverMode(false),
     m_useConnection(false),
     m_tempConfig(false),
+    m_setConfig(false),
     m_active(false),
+    m_remoteInitiated(false),
     m_syncStatus(SYNC_QUEUEING),
     m_stepIsWaiting(false),
     m_priority(PRI_DEFAULT),
@@ -2624,7 +3120,8 @@ Session::Session(DBusServer &server,
     m_restoreBefore(true),
     m_restoreSrcTotal(0),
     m_restoreSrcEnd(0),
-    m_runOperation(OP_SYNC),
+    m_runOperation(OP_NULL),
+    m_listener(NULL),
     emitStatus(*this, "StatusChanged"),
     emitProgress(*this, "ProgressChanged")
 {
@@ -2642,12 +3139,17 @@ Session::Session(DBusServer &server,
     add(this, &Session::getProgress, "GetProgress");
     add(this, &Session::restore, "Restore");
     add(this, &Session::checkPresence, "checkPresence");
+    add(this, &Session::execute, "Execute");
     add(emitStatus);
     add(emitProgress);
 }
 
 Session::~Session()
 {
+    /* update auto sync manager when a config is changed */
+    if(m_setConfig) {
+        m_server.getAutoSyncManager().update(m_configName);
+    }
     m_server.dequeue(this);
 }
     
@@ -2805,7 +3307,7 @@ void Session::sourceProgress(sysync::TProgressEventEnum type,
 
 void Session::run()
 {
-    if (m_sync) {
+    if (m_runOperation != OP_NULL) {
         try {
             m_syncStatus = SYNC_RUNNING;
             fireStatus(true);
@@ -2826,12 +3328,25 @@ void Session::run()
                 if (c) {
                     c->shutdown();
                 }
+                // report 'sync done' event to listener
+                if(m_listener) {
+                    m_listener->syncDone(status);
+                }
                 break;
             }
             case OP_RESTORE:
                 m_sync->restore(m_restoreDir, 
                                 m_restoreBefore ? SyncContext::DATABASE_BEFORE_SYNC : SyncContext::DATABASE_AFTER_SYNC);
                 break;
+            case OP_CMDLINE:
+                try {
+                    m_cmdline->run();
+                } catch (...) {
+                    SyncMLStatus status = Exception::handle();
+                    if (!m_error) {
+                        m_error = status;
+                    }
+                }
             default:
                 break;
             };
@@ -2846,7 +3361,7 @@ void Session::run()
         m_syncStatus = SYNC_DONE;
         m_stepIsWaiting = false;
         fireStatus(true);
-    }
+    } 
 }
 
 bool Session::setFilters(SyncConfig &config)
@@ -2874,10 +3389,13 @@ void Session::restore(const string &dir, bool before, const std::vector<std::str
     if (!m_active) {
         SE_THROW_EXCEPTION(InvalidCall, "session is not active, call not allowed at this time");
     }
-    if (m_sync) {
+    if (m_runOperation == OP_RESTORE) {
+        string msg = StringPrintf("restore started, cannot restore again");
+        SE_THROW_EXCEPTION(InvalidCall, msg);
+    } else if (m_runOperation != OP_NULL) {
         // actually this never happen currently, for during the real restore process, 
         // it never poll the sources in default main context 
-        string msg = StringPrintf("%s started, cannot restore(again)", runOpToString(m_runOperation).c_str());
+        string msg = StringPrintf("%s started, cannot restore", runOpToString(m_runOperation).c_str());
         SE_THROW_EXCEPTION(InvalidCall, msg);
     }
 
@@ -2916,9 +3434,34 @@ string Session::runOpToString(RunOperation op)
         return "sync";
     case OP_RESTORE:
         return "restore";
+    case OP_CMDLINE:
+        return "cmdline";
     default:
         return "";
     };
+}
+
+void Session::execute(const vector<string> &args, const map<string, string> &vars)
+{
+    if (!m_active) {
+        SE_THROW_EXCEPTION(InvalidCall, "session is not active, call not allowed at this time");
+    }
+    if (m_runOperation == OP_CMDLINE) {
+        SE_THROW_EXCEPTION(InvalidCall, "cmdline started, cannot start again");
+    } else if (m_runOperation != OP_NULL) {
+        string msg = StringPrintf("%s started, cannot start cmdline", runOpToString(m_runOperation).c_str());
+        SE_THROW_EXCEPTION(InvalidCall, msg);
+    }
+    //create ostream with a specified streambuf
+    m_cmdline.reset(new CmdlineWrapper(*this, args, vars));
+
+    if(!m_cmdline->parse()) {
+        m_cmdline.reset();
+        SE_THROW_EXCEPTION(DBusSyncException, "arguments parsing error");
+    }
+
+    m_runOperation = OP_CMDLINE;
+    g_main_loop_quit(loop);
 }
 
 inline void insertPair(std::map<string, string> &params,
@@ -2946,10 +3489,15 @@ string Session::askPassword(const string &passwordName,
     boost::shared_ptr<InfoReq> req = m_server.createInfoReq("password", params, this);
     std::map<string, string> response;
     if(req->wait(response) == InfoReq::ST_OK) {
-        return response["password"];
+        std::map<string, string>::iterator it = response.find("password");
+        if (it == response.end()) {
+            SE_THROW_EXCEPTION_STATUS(StatusException, "user didn't provide password, abort", SyncMLStatus(sysync::LOCERR_USERABORT));
+        } else {
+            return it->second;
+        }
     } 
 
-    SyncContext::throwError("can't get the password from clients. The password request is '" + req->getStatusStr() + "'");
+    SE_THROW_EXCEPTION_STATUS(StatusException, "can't get the password from clients. The password request is '" + req->getStatusStr() + "'", STATUS_PASSWORD_TIMEOUT);
     return "";
 }
 
@@ -2958,6 +3506,21 @@ void Session::checkPresence (string &status)
 {
     vector<string> transport;
     m_server.m_presence.checkPresence (m_configName, status, transport);
+}
+
+void Session::syncSuccessStart()
+{
+    // if listener, report 'sync started' to it
+    if(m_listener) {
+        m_listener->syncSuccessStart();
+    }
+}
+
+SessionListener* Session::addListener(SessionListener *listener)
+{
+    SessionListener *old = m_listener;
+    m_listener = listener;
+    return old;
 }
 
 /************************ ProgressData implementation *****************/
@@ -3248,12 +3811,16 @@ void Connection::process(const Caller_t &caller,
                               message.first);
             } else if (message_type == TransportAgent::m_contentTypeServerAlertedNotificationDS) {
             	sysync::SanPackage san;
-            	if (san.PassSan(const_cast<uint8_t *>(message.second), message.first) || san.GetHeader()) {
+            	if (san.PassSan(const_cast<uint8_t *>(message.second), message.first, 2) || san.GetHeader()) {
                     // We are very tolerant regarding the content of the message.
                     // If it doesn't parse, try to do something useful anyway.
-                    config = "default";
-                    SE_LOG_DEBUG(NULL, NULL, "SAN parsing failed, falling back to 'default' config");
-            	} else {
+                    // only for SAN 1.2, for SAN 1.0/1.1 we can not be sure
+                    // whether it is a SAN package or a normal sync pacakge
+                    if (message_type == TransportAgent::m_contentTypeServerAlertedNotificationDS) {
+                        config = "default";
+                        SE_LOG_DEBUG(NULL, NULL, "SAN parsing failed, falling back to 'default' config");
+                    }  
+            	} else { //Server alerted notification case
                     // Extract server ID and match it against a server
                     // configuration.  Multiple different peers might use the
                     // same serverID ("PC Suite"), so check properties of the
@@ -3280,7 +3847,7 @@ void Connection::process(const Caller_t &caller,
                         trans = m_peer.find("transport");
                     if (trans != m_peer.end() && id != m_peer.end()) {
                         if (trans->second == "org.openobex.obexd") {
-                            string btAddr = id->second.substr(0, id->second.find("+"));
+                            m_peerBtAddr = id->second.substr(0, id->second.find("+"));
                             BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server,
                                     servers) {
                                 SyncConfig conf(server.first);
@@ -3288,7 +3855,7 @@ void Connection::process(const Caller_t &caller,
                                 BOOST_FOREACH (string &url, urls){
                                     url = url.substr (0, url.find("+"));
                                     SE_LOG_DEBUG (NULL, NULL, "matching against %s",url.c_str());
-                                    if (url.find ("obex-bt://") ==0 && url.substr(strlen("obex-bt://"), url.npos) == btAddr) {
+                                    if (url.find ("obex-bt://") ==0 && url.substr(strlen("obex-bt://"), url.npos) == m_peerBtAddr) {
                                         config = server.first;
                                         break;
                                     } 
@@ -3310,24 +3877,27 @@ void Connection::process(const Caller_t &caller,
                         }
                     }
 
-                    // pick "default" as configuration name if none matched
+                    // create a default configuration name if none matched
                     if (config.empty()) {
-                        config = "default";
-                        SE_LOG_DEBUG(NULL, NULL, "SAN Server ID '%s' unknown, falling back to 'default' config", serverID.c_str());
+                        config = serverID+"_"+getCurrentTime();
+                        SE_LOG_DEBUG(NULL,
+                                     NULL,
+                                     "SAN Server ID '%s' unknown, falling back to automatically created '%s' config",
+                                     serverID.c_str(), config.c_str());
                     }
 
-                    // TODO: create a suitable configuration automatically?!
 
                     SE_LOG_DEBUG(NULL, NULL, "SAN sync with config %s", config.c_str());
 
+                    m_SANContent.reset (new SANContent ());
                     // extract number of sources
                     int numSources = san.fNSync;
                     int syncType;
                     uint32_t contentType;
                     std::string serverURI;
                     if (!numSources) {
-                        SE_LOG_DEBUG(NULL, NULL, "SAN message with no sources");
-                        // Synchronize all known sources with the selected mode.
+                        SE_LOG_DEBUG(NULL, NULL, "SAN message with no sources, using selected modes");
+                        // Synchronize all known sources with the default mode.
                         if (san.GetNthSync(0, syncType, contentType, serverURI)) {
                             SE_LOG_DEBUG(NULL, NULL, "SAN invalid header, using default modes");
                         } else if (syncType < SYNC_FIRST || syncType > SYNC_LAST) {
@@ -3337,12 +3907,6 @@ void Connection::process(const Caller_t &caller,
                             SE_LOG_DEBUG(NULL, NULL, "SAN sync mode for all configured sources: %s", m_syncMode.c_str());
                         }
                     } else {
-                        const SyncContext context(config);
-                        std::list<std::string> sources = context.getSyncSources();
-
-                        // check what the server wants us to synchronize
-                        // and only synchronize that
-                        m_syncMode = "disabled";
                         for (int sync = 1; sync <= numSources; sync++) {
                             if (san.GetNthSync(sync, syncType, contentType, serverURI)) {
                                 SE_LOG_DEBUG(NULL, NULL, "SAN invalid sync entry #%d", sync);
@@ -3350,38 +3914,13 @@ void Connection::process(const Caller_t &caller,
                                 SE_LOG_DEBUG(NULL, NULL, "SAN invalid sync type %d for entry #%d, ignoring entry", syncType, sync);
                             } else {
                                 std::string syncMode = PrettyPrintSyncMode(SyncMode(syncType), true);
-                                bool found = false;
-                                BOOST_FOREACH(const std::string &source, sources) {
-                                    boost::shared_ptr<const PersistentSyncSourceConfig> sourceConfig(context.getSyncSourceConfig(source));
-                                    // prefix match because the local
-                                    // configuration might contain
-                                    // additional parameters (like date
-                                    // range selection for events)
-                                    if (boost::starts_with(sourceConfig->getURI(), serverURI)) {
-                                        SE_LOG_DEBUG(NULL, NULL,
-                                                     "SAN entry #%d = source %s with mode %s",
-                                                     sync, source.c_str(), syncMode.c_str());
-                                        m_sourceModes[source] = syncMode;
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (!found) {
-                                    SE_LOG_DEBUG(NULL, NULL,
-                                                 "SAN entry #%d with mode %s ignored because Server URI %s is unknown",
-                                                 sync, syncMode.c_str(), serverURI.c_str());
-                                }
+                                m_SANContent->m_syncType.push_back (syncMode);
+                                m_SANContent->m_serverURI.push_back (serverURI);
+                                m_SANContent->m_contentType.push_back (contentType);
                             }
-                        }
-
-                        if (m_sourceModes.empty()) {
-                            SE_LOG_DEBUG(NULL, NULL,
-                                         "SAN message with no known entries, falling back to default");
-                            m_syncMode = "";
                         }
                     }
                 }
-
                 // TODO: use the session ID set by the server if non-null
             } else if (message_type == TransportAgent::m_contentTypeSyncML ||
                        message_type == TransportAgent::m_contentTypeSyncWBXML) {
@@ -3408,10 +3947,10 @@ void Connection::process(const Caller_t &caller,
                     SyncConfig peer(entry.first);
                     if (info.m_deviceID == peer.getRemoteDevID()) {
                         config = entry.first;
-                        SE_LOG_DEBUG(NULL, NULL, "matched %s against config %s (%s)",
-                                     info.toString().c_str(),
-                                     entry.first.c_str(),
-                                     entry.second.c_str());
+                        SE_LOG_INFO(NULL, NULL, "matched %s against config %s (%s)",
+                                    info.toString().c_str(),
+                                    entry.first.c_str(),
+                                    entry.second.c_str());
                         break;
                     }
                 }
@@ -3586,6 +4125,64 @@ Connection::~Connection()
 
 void Connection::ready()
 {
+    //if configuration not yet created
+    std::string configName = m_session->getConfigName();
+    SyncConfig config (configName);
+    if (!config.exists() && m_SANContent) {
+        SE_LOG_DEBUG (NULL, NULL, "Configuration %s not exists for a runnable session in a SAN context, create it automatically", configName.c_str());
+        ReadOperations::Config_t from;
+        const std::string templateName = "SyncEvolution";
+        // TODO: support SAN from other well known servers
+        ReadOperations ops(templateName, m_server);
+        ops.getConfig(true , from);
+        if (!m_peerBtAddr.empty()){
+            from[""]["SyncURL"] = string ("obex-bt://") + m_peerBtAddr;
+        }
+        m_session->setConfig (false, false, from);
+    }
+    const SyncContext context (configName);
+    std::list<std::string> sources = context.getSyncSources();
+
+    if (m_SANContent && !m_SANContent->m_syncType.empty()) {
+        // check what the server wants us to synchronize
+        // and only synchronize that
+        m_syncMode = "disabled";
+        for (size_t sync=0; sync<m_SANContent->m_syncType.size(); sync++) {
+            std::string syncMode = m_SANContent->m_syncType[sync];
+            std::string serverURI = m_SANContent->m_serverURI[sync];
+            //uint32_t contentType = m_SANContent->m_contentType[sync];
+            bool found = false;
+            BOOST_FOREACH(const std::string &source, sources) {
+                boost::shared_ptr<const PersistentSyncSourceConfig> sourceConfig(context.getSyncSourceConfig(source));
+                // prefix match because the local
+                // configuration might contain
+                // additional parameters (like date
+                // range selection for events)
+                if (boost::starts_with(sourceConfig->getURI(), serverURI)) {
+                    SE_LOG_DEBUG(NULL, NULL,
+                                 "SAN entry #%d = source %s with mode %s",
+                                 (int)sync, source.c_str(), syncMode.c_str());
+                    m_sourceModes[source] = syncMode;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                SE_LOG_DEBUG(NULL, NULL,
+                             "SAN entry #%d with mode %s ignored because Server URI %s is unknown",
+                             (int)sync, syncMode.c_str(), serverURI.c_str());
+            }
+        }
+        if (m_sourceModes.empty()) {
+            SE_LOG_DEBUG(NULL, NULL,
+                    "SAN message with no known entries, falling back to default");
+            m_syncMode = "";
+        }
+    }
+
+    if (m_SANContent) {
+        m_session->setRemoteInitiated(true);
+    }
     // proceed with sync now that our session is ready
     m_session->sync(m_syncMode, m_sourceModes);
 }
@@ -3759,6 +4356,214 @@ void DBusTransportAgent::getReply(const char *&data, size_t &len, std::string &c
     contentType = m_incomingMsgType;
 }
 
+/********************* PresenceStatus implementation ****************/
+void PresenceStatus::init(){
+    //initialize the configured peer list
+    if (!m_initiated) {
+        SyncConfig::ConfigList list = SyncConfig::getConfigs();
+        BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server, list) {
+            SyncConfig config (server.first);
+            vector<string> urls = config.getSyncURL();
+            m_peers[server.first].clear();
+            BOOST_FOREACH (const string &url, urls) {
+                m_peers[server.first].push_back(make_pair(url,MIGHTWORK));
+            }
+        }
+        m_initiated = true;
+    }
+}
+
+/* Implement DBusServer::checkPresence*/
+void PresenceStatus::checkPresence (const string &peer, string& status, std::vector<std::string> &transport) {
+
+    if (!m_initiated) {
+        //might triggered by updateConfigPeers
+        init();
+    }
+
+    string peerName = SyncConfig::normalizeConfigString (peer);
+    vector< pair<string, PeerStatus> > mytransports = m_peers[peerName];
+    if (mytransports.empty()) {
+        //wrong config name?
+        status = status2string(NOTRANSPORT);
+        transport.clear();
+        return;
+    }
+    PeerStatus mystatus = MIGHTWORK;
+    transport.clear();
+    //only if all transports are unavailable can we declare the peer
+    //status as unavailable
+    BOOST_FOREACH (PeerStatusPair &mytransport, mytransports) {
+        if (mytransport.second == MIGHTWORK) {
+            transport.push_back (mytransport.first);
+        }
+    }
+    if (transport.empty()) {
+        mystatus = NOTRANSPORT;
+    }
+    status = status2string(mystatus);
+}
+
+void PresenceStatus::updateConfigPeers (const std::string &peer, const ReadOperations::Config_t &config) {
+    ReadOperations::Config_t::const_iterator iter = config.find ("");
+    if (iter != config.end()) {
+        //As a simple approach, just reinitialize the whole STATUSMAP
+        //it will cause later updatePresenceStatus resend all signals
+        //and a reload in checkPresence
+        m_initiated = false;
+    }
+}
+
+void PresenceStatus::updatePresenceStatus (bool newStatus, PresenceStatus::TransportType type) {
+    if (type == PresenceStatus::HTTP_TRANSPORT) {
+        updatePresenceStatus (newStatus, m_btPresence);
+    } else if (type == PresenceStatus::BT_TRANSPORT) {
+        updatePresenceStatus (m_httpPresence, newStatus);
+    }else {
+    }
+}
+
+void PresenceStatus::updatePresenceStatus (bool httpPresence, bool btPresence) {
+    bool httpChanged = (m_httpPresence != httpPresence);
+    bool btChanged = (m_btPresence != btPresence);
+    m_httpPresence = httpPresence;
+    m_btPresence = btPresence;
+    if(httpChanged) {
+        m_httpTimer.reset();
+    }
+    if(btChanged) {
+        m_btTimer.reset();
+    }
+
+    if (m_initiated && !httpChanged && !btChanged) {
+        //nothing changed
+        return;
+    }
+
+    //initialize the configured peer list
+    bool initiated = m_initiated;
+    if (!m_initiated) {
+        init();
+    }
+
+    //iterate all configured peers and fire singals
+    BOOST_FOREACH (StatusPair &peer, m_peers) {
+        //iterate all possible transports
+        //TODO One peer might got more than one signals, avoid this
+        std::vector<pair<string, PeerStatus> > &transports = peer.second;
+        BOOST_FOREACH (PeerStatusPair &entry, transports) {
+            string url = entry.first;
+            if (boost::starts_with (url, "http") && (httpChanged || !initiated)) {
+                entry.second = m_httpPresence ? MIGHTWORK: NOTRANSPORT;
+                m_server.emitPresence (peer.first, status2string (entry.second), entry.first);
+                SE_LOG_DEBUG(NULL, NULL,
+                        "http presence signal %s,%s,%s",
+                        peer.first.c_str(),
+                        status2string (entry.second).c_str(), entry.first.c_str());
+            } else if (boost::starts_with (url, "obex-bt") && (btChanged || !initiated)) {
+                entry.second = m_btPresence ? MIGHTWORK: NOTRANSPORT;
+                m_server.emitPresence (peer.first, status2string (entry.second), entry.first);
+                SE_LOG_DEBUG(NULL, NULL,
+                        "bluetooth presence signal %s,%s,%s",
+                        peer.first.c_str(),
+                        status2string (entry.second).c_str(), entry.first.c_str());
+            }
+        }
+    }
+}
+
+/********************** Connman Client implementation **************/
+ConnmanClient::ConnmanClient(DBusServer &server):
+    m_server(server),
+    m_propertyChanged(*this, "PropertyChanged")
+{
+    const char *connmanTest = getenv ("DBUS_TEST_CONNMAN");
+    m_connmanConn = g_dbus_setup_bus (connmanTest ? DBUS_BUS_SESSION: DBUS_BUS_SYSTEM, NULL, true, NULL);
+    if (m_connmanConn){
+        typedef std::map <std::string, boost::variant <std::vector <std::string> > > PropDict;
+        DBusClientCall1<PropDict>  getProp(*this,"GetProperties");
+        getProp (boost::bind(&ConnmanClient::getPropCb, this, _1, _2));
+        m_propertyChanged.activate(boost::bind(&ConnmanClient::propertyChanged, this, _1, _2));
+    }else{
+        SE_LOG_ERROR (NULL, NULL, "DBus connection setup for connman failed");
+    }
+}
+
+void ConnmanClient::getPropCb (const std::map <std::string,
+                               boost::variant <std::vector <std::string> > >& props, const string &error){
+    if (!error.empty()) {
+        if (error == "org.freedesktop.DBus.Error.ServiceUnknown") {
+            // ensure there is still first set of singal set in case of no
+            // connman available
+            m_server.getPresenceStatus().updatePresenceStatus (true, true);
+            SE_LOG_DEBUG (NULL, NULL, "No connman service available %s", error.c_str());
+            return;
+        }
+        SE_LOG_DEBUG (NULL, NULL, "error in connmanCallback %s", error.c_str());
+        return;
+    }
+
+    typedef std::pair <std::string, boost::variant <std::vector <std::string> > > element;
+    bool httpPresence = false, btPresence = false;
+    BOOST_FOREACH (element entry, props) {
+        //match connected for HTTP based peers (wifi/wimax/ethernet)
+        if (entry.first == "ConnectedTechnologies") {
+            std::vector <std::string> connected = boost::get <std::vector <std::string> > (entry.second);
+            BOOST_FOREACH (std::string tech, connected) {
+                if (boost::iequals (tech, "wifi") || boost::iequals (tech, "ethernet") 
+                || boost::iequals (tech, "wimax")) {
+                    httpPresence = true;
+                    break;
+                }
+            }
+        } else if (entry.first == "AvailableTechnologies") {
+            std::vector <std::string> enabled = boost::get <std::vector <std::string> > (entry.second);
+            BOOST_FOREACH (std::string tech, enabled){
+                if (boost::iequals (tech, "bluetooth")) {
+                    btPresence = true;
+                    break;
+                }
+            }
+        } else {
+            continue;
+        }
+    }
+    //now delivering the signals
+    m_server.getPresenceStatus().updatePresenceStatus (httpPresence, btPresence);
+}
+
+void ConnmanClient::propertyChanged(const string &name,
+                                    const boost::variant<vector<string>, string> &prop)
+{
+    bool httpPresence=false, btPresence=false;
+    bool httpChanged=false, btChanged=false;
+    if (boost::iequals(name, "ConnectedTechnologies")) {
+        httpChanged=true;
+        vector<string> connected = boost::get<vector<string> >(prop);
+        BOOST_FOREACH (std::string tech, connected) {
+            if (boost::iequals (tech, "wifi") || boost::iequals (tech, "ethernet") 
+                    || boost::iequals (tech, "wimax")) {
+                httpPresence=true;
+                break;
+            }
+        }
+    } else if (boost::iequals (name, "AvailableTechnologies")){
+        btChanged=true;
+        vector<string> enabled = boost::get<vector<string> >(prop);
+        BOOST_FOREACH (std::string tech, enabled){
+            if (boost::iequals (tech, "bluetooth")) {
+                btPresence = true;
+                break;
+            }
+        }
+    }
+    if(httpChanged) {
+        m_server.getPresenceStatus().updatePresenceStatus (httpPresence, PresenceStatus::HTTP_TRANSPORT);
+    } else if (btChanged) {
+        m_server.getPresenceStatus().updatePresenceStatus (btPresence, PresenceStatus::BT_TRANSPORT);
+    } else {
+    }
+}
 
 /********************** DBusServer implementation ******************/
 
@@ -3895,7 +4700,7 @@ void DBusServer::checkPresence(const std::string &server,
     return m_presence.checkPresence(server, status, transports);
 }
 
-void DBusServer::getSessions(std::vector<std::string> &sessions)
+void DBusServer::getSessions(std::vector<DBusObject_t> &sessions)
 {
     sessions.reserve(m_workQueue.size() + 1);
     if (m_activeSession) {
@@ -3918,13 +4723,17 @@ DBusServer::DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn, int durat
     m_lastSession(time(NULL)),
     m_activeSession(NULL),
     m_lastInfoReq(0),
-    m_autoTerm(duration),
     m_bluezManager(*this),
     sessionChanged(*this, "SessionChanged"),
     presence(*this, "Presence"),
     templatesChanged(*this, "TemplatesChanged"),
     infoRequest(*this, "InfoRequest"),
-    m_presence(*this)
+    logOutput(*this, "LogOutput"),
+    m_presence(*this),
+    m_connman(*this),
+    m_autoSync(*this),
+    m_autoTerm(m_autoSync.preventTerm() ? -1 : duration), //if there is any task in auto sync, prevent auto termination
+    m_parentLogger(LoggerBase::instance())
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -3945,13 +4754,10 @@ DBusServer::DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn, int durat
     add(templatesChanged);
     add(presence);
     add(infoRequest);
+    add(logOutput);
 
-    const char *connmanTest = getenv ("DBUS_TEST_CONNMAN");
-    m_connmanConn = g_dbus_setup_bus (connmanTest ? DBUS_BUS_SESSION: DBUS_BUS_SYSTEM, NULL, true, NULL);
-    if (m_connmanConn) {
-        m_pollConnman =  g_timeout_add_seconds (10, connmanPoll, static_cast <gpointer> (this));
-    }
-
+    LoggerBase::pushLogger(this);
+    setLevel(LoggerBase::DEBUG);
 }
 
 DBusServer::~DBusServer()
@@ -3961,6 +4767,7 @@ DBusServer::~DBusServer()
     m_workQueue.clear();
     m_clients.clear();
     m_attachedClients.clear();
+    LoggerBase::popLogger();
 }
 
 void DBusServer::run()
@@ -3989,6 +4796,22 @@ void DBusServer::run()
             }
             session.swap(m_syncSession);
             dequeue(session.get());
+        } 
+
+        if (m_autoSync.hasTask()) {
+            // if there is at least one pending task and no session is created for auto sync,
+            // pick one task and create a session
+            m_autoSync.startTask();
+        }
+        // Make sure check whether m_activeSession is owned by autosync 
+        // Otherwise activeSession is owned by AutoSyncManager but it never
+        // be ready to run. Because methods of Session, like 'sync', are able to be
+        // called when it is active.  
+        if (m_autoSync.hasActiveSession())
+        {
+            // if the autosync is the active session, then invoke 'sync'
+            // to make it ready to run
+            m_autoSync.prepare();
         }
     }
 }
@@ -4139,6 +4962,10 @@ void DBusServer::checkQueue()
             m_activeSessionRef = session;
             session->setActive(true);
             sessionChanged(session->getPath(), true);
+            //if the active session is changed, give a chance to quit the main loop
+            //and make it ready to run if it is owned by AutoSyncManager.
+            //Otherwise, server might be blocked.
+            g_main_loop_quit(m_loop);
             return;
         }
     }
@@ -4189,73 +5016,6 @@ void DBusServer::removeInfoReq(const InfoReq &req)
     if(it != m_infoReqMap.end()) {
         m_infoReqMap.erase(it);
     }
-}
-
-gboolean DBusServer::connmanPoll (gpointer dbusserver)
-{
-    DBusServer *me = static_cast<DBusServer *>(dbusserver);
-    DBusConnectionPtr conn = me->getConnmanConnection();
-    struct ConnmanClient : public DBusCallObject
-    {
-        DBusConnectionPtr m_connection;
-        ConnmanClient (DBusConnectionPtr conn ) : m_connection (conn) {}
-        virtual const char *getDestination() const {return "org.moblin.connman";}
-        virtual const char *getPath() const {return "/";}
-        virtual const char *getInterface() const {return "org.moblin.connman.Manager";}
-        virtual const char *getMethod() const {return "GetProperties"; }
-        virtual DBusConnection *getConnection() const {return m_connection.get();}
-    }connman (conn);
-
-    typedef std::map <std::string, boost::variant <std::vector <std::string> > > PropDict;
-    DBusClientCall0<PropDict>  getProp(connman);
-    getProp (boost::bind(&DBusServer::connmanCallback, me, _1, _2));
-    return TRUE;
-}
-
-
-void DBusServer::connmanCallback (const std::map <std::string, boost::variant <std::vector <std::string> > >& props, const string &error)
-{
-    if (!error.empty()) {
-        if (error == "org.freedesktop.DBus.Error.ServiceUnknown") {
-            // no connman available, remove connmanPoll.
-            m_pollConnman.set(0);
-            // ensure there is still first set of singal set in case of no
-            // connman available
-            m_presence.updatePresenceStatus (true, true);
-            SE_LOG_DEBUG (NULL, NULL, "No connman service available %s", error.c_str());
-            return;
-        }
-        SE_LOG_DEBUG (NULL, NULL, "error in connmanCallback %s", error.c_str());
-        return;
-    }
-
-    typedef std::pair <std::string, boost::variant <std::vector <std::string> > > element;
-    bool httpPresence = false, btPresence = false;
-    BOOST_FOREACH (element entry, props) {
-        //match connected for HTTP based peers (wifi/wimax/ethernet)
-        if (entry.first == "ConnectedTechnologies") {
-            std::vector <std::string> connected = boost::get <std::vector <std::string> > (entry.second);
-            BOOST_FOREACH (std::string tech, connected) {
-                if (boost::iequals (tech, "wifi") || boost::iequals (tech, "ethernet") 
-                || boost::iequals (tech, "wimax")) {
-                    httpPresence = true;
-                    break;
-                }
-            }
-        } else if (entry.first == "EnabledTechnologies") {
-            std::vector <std::string> enabled = boost::get <std::vector <std::string> > (entry.second);
-            BOOST_FOREACH (std::string tech, enabled){
-                if (boost::iequals (tech, "bluetooth")) {
-                    btPresence = true;
-                    break;
-                }
-            }
-        } else {
-            continue;
-        }
-    }
-    //now delivering the signals
-    m_presence.updatePresenceStatus (httpPresence, btPresence);
 }
 
 void DBusServer::getDeviceList(SyncConfig::DeviceList &devices)
@@ -4337,6 +5097,32 @@ void DBusServer::updateDevice(const string &deviceId,
             templatesChanged();
             break;
         }
+    }
+}
+
+void DBusServer::messagev(Level level,
+                          const char *prefix,
+                          const char *file,
+                          int line,
+                          const char *function,
+                          const char *format,
+                          va_list args)
+{
+    // iterating over args in messagev() is destructive, must make a copy first
+    va_list argsCopy;
+    va_copy(argsCopy, args);
+    m_parentLogger.messagev(level, prefix, file, line, function, format, args);
+    string log = StringPrintfV(format, argsCopy);
+    va_end(argsCopy);
+
+    // prefix is used to set session path
+    // for general server output, the object path field is dbus server 
+    // the object path can't be empty for object paths prevent using empty string.
+    string strLevel = Logger::levelToStr(level);
+    if(m_activeSession) {
+        logOutput(m_activeSession->getPath(), strLevel, log);
+    } else {
+        logOutput(getPath(), strLevel, log);
     }
 }
 
@@ -4458,8 +5244,8 @@ gboolean InfoReq::checkCallback(gpointer data)
 
 bool InfoReq::checkTimeout()
 {
-    // if waiting for 'working' response, check time out
-    if(m_status == ST_RUN && m_infoState == IN_REQ) {
+    // if waiting for client response, check time out
+    if(m_status == ST_RUN) {
         if (m_timer.timeout()) {
             m_status = ST_TIMEOUT;
             return true;
@@ -4476,6 +5262,8 @@ void InfoReq::setResponse(const Caller_t &caller, const string &state, const Inf
         m_handler = caller;
         m_infoState = IN_WAIT;
         m_server.emitInfoReq(*this);
+        //reset the timer, used to check timeout
+        m_timer.reset();
     } else if(m_infoState == IN_WAIT && state == "response") {
         m_response = response;
         m_handler = caller;
@@ -4494,15 +5282,15 @@ void InfoReq::done()
 
 /********************** BluezManager implementation ******************/
 BluezManager::BluezManager(DBusServer &server) :
-    m_server(server)
+    m_server(server),
+    m_adapterChanged(*this, "DefaultAdapterChanged")
 {
     m_bluezConn = g_dbus_setup_bus(DBUS_BUS_SYSTEM, NULL, true, NULL);
     if(m_bluezConn) {
         m_done = false;
-        DBusClientCall0<DBusObject_t> getAdapter(*this, "DefaultAdapter");
+        DBusClientCall1<DBusObject_t> getAdapter(*this, "DefaultAdapter");
         getAdapter(boost::bind(&BluezManager::defaultAdapterCb, this, _1, _2 ));
-        m_adapterChanged.reset(new SignalWatch1<DBusObject_t>(*this, "DefaultAdapterChanged"));
-        (*m_adapterChanged)(boost::bind(&BluezManager::defaultAdapterChanged, this, _1));
+        m_adapterChanged.activate(boost::bind(&BluezManager::defaultAdapterChanged, this, _1));
     } else {
         m_done = true;
     }
@@ -4535,13 +5323,10 @@ BluezManager::BluezAdapter::BluezAdapter(BluezManager &manager, const string &pa
     : m_manager(manager), m_path(path), m_devNo(0), m_devReplies(0),
       m_deviceRemoved(*this,  "DeviceRemoved"), m_deviceAdded(*this, "DeviceCreated")
 {
-    DBusClientCall0<std::vector<DBusObject_t> > listDevices(*this, "ListDevices");
+    DBusClientCall1<std::vector<DBusObject_t> > listDevices(*this, "ListDevices");
     listDevices(boost::bind(&BluezAdapter::listDevicesCb, this, _1, _2));
-    //m_deviceRemoved.reset(new SignalWatch1<DBusObject_t>(*this, "DeviceRemoved"));
-    m_deviceRemoved(boost::bind(&BluezAdapter::deviceRemoved, this, _1));
-
-    //m_deviceAdded.reset(new SignalWatch1<DBusObject_t>(*this, "DeviceCreated"));
-    m_deviceAdded(boost::bind(&BluezAdapter::deviceCreated, this, _1));
+    m_deviceRemoved.activate(boost::bind(&BluezAdapter::deviceRemoved, this, _1));
+    m_deviceAdded.activate(boost::bind(&BluezAdapter::deviceCreated, this, _1));
 }
 
 void BluezManager::BluezAdapter::listDevicesCb(const std::vector<DBusObject_t> &devices, const string &error)
@@ -4587,10 +5372,10 @@ void BluezManager::BluezAdapter::deviceCreated(const DBusObject_t &object)
 BluezManager::BluezDevice::BluezDevice (BluezAdapter &adapter, const string &path)
     : m_adapter(adapter), m_path(path), m_reply(false), m_propertyChanged(*this, "PropertyChanged")
 {
-    DBusClientCall0<PropDict> getProperties(*this, "GetProperties");
+    DBusClientCall1<PropDict> getProperties(*this, "GetProperties");
     getProperties(boost::bind(&BluezDevice::getPropertiesCb, this, _1, _2));
 
-    m_propertyChanged(boost::bind(&BluezDevice::propertyChanged, this, _1, _2));
+    m_propertyChanged.activate(boost::bind(&BluezDevice::propertyChanged, this, _1, _2));
 }
 
 void BluezManager::BluezDevice::checkSyncService(const std::vector<std::string> &uuids)
@@ -4664,6 +5449,346 @@ void BluezManager::BluezDevice::propertyChanged(const string &name,
     }
 }
 
+/************************ AutoSyncManager ******************/
+void AutoSyncManager::init()
+{
+    m_peerMap.clear();
+    SyncConfig::ConfigList list = SyncConfig::getConfigs();
+    BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server, list) {
+        initConfig(server.first);
+    }
+}
+
+void AutoSyncManager::initConfig(const string &configName)
+{
+    SyncConfig config (configName);
+    if(!config.exists()) {
+        return;
+    }
+    vector<string> urls = config.getSyncURL();
+    string autoSync = config.getAutoSync();
+
+    //enable http and bt?
+    bool http = false, bt = false;
+    if(autoSync.empty() || boost::iequals(autoSync, "0")
+            || boost::iequals(autoSync, "f")) {
+        http = false;
+        bt = false;
+    } else if(boost::iequals(autoSync, "1") || boost::iequals(autoSync, "t")) {
+        http = true;
+        bt = true;
+    } else {
+        vector<string> options;
+        boost::split(options, autoSync, boost::is_any_of(",")); 
+        BOOST_FOREACH(string op, options) {
+            if(boost::iequals(op, "http")) {
+                http = true;
+            } else if(boost::iequals(op, "obex-bt")) {
+                bt = true;
+            }
+        }
+    }
+
+    unsigned int interval = config.getAutoSyncInterval();
+    unsigned int duration = config.getAutoSyncDelay();
+
+    BOOST_FOREACH(string url, urls) {
+        if((boost::istarts_with(url, "http") && http)
+                || (boost::istarts_with(url, "obex-bt") && bt)) {
+            AutoSyncTask syncTask(configName, duration, url);
+            PeerMap::iterator it = m_peerMap.find(interval);
+            if(it != m_peerMap.end()) {
+                it->second->push_back(syncTask);
+            } else {
+                boost::shared_ptr<AutoSyncTaskList> list(new AutoSyncTaskList(*this, interval));
+                list->push_back(syncTask);
+                list->createTimeoutSource();
+                m_peerMap.insert(std::make_pair(interval, list));
+            }
+        }
+    }
+}
+
+void AutoSyncManager::remove(const string &configName)
+{
+    //wipe out tasks in the m_peerMap
+    PeerMap::iterator it = m_peerMap.begin();
+    while(it != m_peerMap.end()) {
+        boost::shared_ptr<AutoSyncTaskList> &list = it->second;
+        AutoSyncTaskList::iterator taskIt = list->begin();
+        while(taskIt != list->end()) {
+            if(boost::iequals(taskIt->m_peer, configName)) {
+                taskIt = list->erase(taskIt);
+            } else {
+                ++taskIt;
+            }
+        }
+        //if list is empty, remove the list from map
+        if(list->empty()) {
+            PeerMap::iterator erased = it++;
+            m_peerMap.erase(erased);
+        } else {
+            ++it;
+        }
+    }
+
+    //wipe out scheduled tasks in the working queue based on configName
+    list<AutoSyncTask>::iterator qit = m_workQueue.begin();
+    while(qit != m_workQueue.end()) {
+        if(boost::iequals(qit->m_peer, configName)) {
+            qit = m_workQueue.erase(qit);
+        } else {
+            ++qit;
+        }
+    }
+}
+
+void AutoSyncManager::update(const string &configName)
+{
+    // remove task from m_peerMap and tasks in the working queue for this config
+    remove(configName);
+    // re-load the config and re-init peer map
+    initConfig(configName);
+
+    //don't clear if the task is running
+    if(m_session && !hasActiveSession()
+            && boost::iequals(m_session->getConfigName(), configName)) {
+        m_server.dequeue(m_session.get());
+        m_session.reset();
+        m_activeTask.reset();
+        startTask();
+    }
+}
+
+void AutoSyncManager::scheduleAll()
+{
+    BOOST_FOREACH(PeerMap::value_type &elem, m_peerMap) {
+        elem.second->scheduleTaskList();
+    }
+}
+
+bool AutoSyncManager::addTask(const AutoSyncTask &syncTask)
+{
+    if(taskLikelyToRun(syncTask)) {
+        m_workQueue.push_back(syncTask);
+        return true;
+    }
+    return false;
+}
+
+bool AutoSyncManager::findTask(const AutoSyncTask &syncTask)
+{
+    if(m_activeTask && *m_activeTask == syncTask) {
+        return true;
+    }
+    BOOST_FOREACH(const AutoSyncTask &task, m_workQueue) {
+        if(task == syncTask) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AutoSyncManager::taskLikelyToRun(const AutoSyncTask &syncTask)
+{
+    PresenceStatus &status = m_server.getPresenceStatus(); 
+    // avoid doing any checking of task list if http and bt presence are false
+    if(!status.getHttpPresence() && !status.getBtPresence()) {
+        return false;
+    }
+
+    if(boost::istarts_with(syncTask.m_url, "http") && status.getHttpPresence()) {
+        // don't add duplicate tasks
+        if(!findTask(syncTask)) {
+            Timer& timer = status.getHttpTimer();
+            // if the time peer have been around is longer than 'autoSyncDelay',
+            // then return true
+            if (timer.timeout(syncTask.m_delay * 1000 /* seconds to milliseconds */)) {
+                return true;
+            }
+        } 
+    } else if (boost::istarts_with(syncTask.m_url, "obex-bt") && status.getBtPresence()) {
+        // don't add duplicate tasks
+        if(!findTask(syncTask)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void AutoSyncManager::startTask()
+{
+    // get the front task and run a sync
+    // if there has been a session for the front task, do nothing
+    if(hasTask() && !m_session) {
+        m_activeTask.reset(new AutoSyncTask(m_workQueue.front()));
+        m_workQueue.pop_front();
+        string newSession = m_server.getNextSession();   
+        m_session.reset(new Session(m_server,
+                                    "",
+                                    m_activeTask->m_peer,
+                                    newSession));
+        m_session->setPriority(Session::PRI_AUTOSYNC);
+        m_session->addListener(this);
+        m_server.enqueue(m_session);
+    }
+}
+
+bool AutoSyncManager::hasActiveSession()
+{
+    return m_session && m_session->getActive();
+}
+
+void AutoSyncManager::prepare()
+{
+    if(m_session && m_session->getActive()) {
+        // now a config may contain many urls, so replace it with our own temporarily
+        // otherwise it only picks the first one
+        ReadOperations::Config_t config;
+        StringMap stringMap;
+        stringMap["syncURL"] = m_activeTask->m_url;
+        config[""] = stringMap;
+        m_session->setConfig(true, true, config);
+
+        string mode;
+        Session::SourceModes_t sourceModes;
+        m_session->sync(mode, sourceModes);
+    }
+}
+
+void AutoSyncManager::syncSuccessStart()
+{
+    m_syncSuccessStart = true;
+    SE_LOG_INFO(NULL, NULL,"Automatic sync for '%s' has been successfully started.\n", m_activeTask->m_peer.c_str());
+#ifdef HAS_NOTIFY
+    string summary = StringPrintf(_("%s is syncing"), m_activeTask->m_peer.c_str());
+    string body = StringPrintf(_("We have just started to sync your computer with the %s sync service."), m_activeTask->m_peer.c_str());
+    //TODO: set config information for 'sync-ui'
+    m_notify.send(summary.c_str(), body.c_str());
+#endif
+}
+
+void AutoSyncManager::syncDone(SyncMLStatus status)
+{
+    SE_LOG_INFO(NULL, NULL,"Automatic sync for '%s' has been done.\n", m_activeTask->m_peer.c_str());
+#ifdef HAS_NOTIFY
+    // send a notification to notification server
+    string summary, body;
+    if(m_syncSuccessStart && status == STATUS_OK) {
+        // if sync is successfully started and done
+        summary = StringPrintf(_("%s sync complete"), m_activeTask->m_peer.c_str());
+        body = StringPrintf(_("We have just finished syncing your computer with the %s sync service."), m_activeTask->m_peer.c_str());
+        //TODO: set config information for 'sync-ui'
+        m_notify.send(summary.c_str(), body.c_str());
+    } else if(m_syncSuccessStart || (!m_syncSuccessStart && status == STATUS_FATAL)) {
+        //if sync is successfully started and has errors, or not started successful with a fatal problem
+        summary = StringPrintf(_("Sync problem."));
+        body = StringPrintf(_("Sorry, there's a problem with your sync that you need to attend to."));
+        //TODO: set config information for 'sync-ui'
+        m_notify.send(summary.c_str(), body.c_str());
+    } 
+#endif
+    m_session.reset();
+    m_activeTask.reset();
+    m_syncSuccessStart = false;
+}
+
+#ifdef HAS_NOTIFY
+AutoSyncManager::Notification::Notification()
+{
+    bindtextdomain (GETTEXT_PACKAGE, SYNCEVOLUTION_LOCALEDIR);
+    bind_textdomain_codeset (GETTEXT_PACKAGE, "UTF-8");
+    textdomain (GETTEXT_PACKAGE);
+    m_init = notify_init("SyncEvolution");
+    m_actions = false;
+    m_notification = NULL;
+    // check whether 'actions' are supported by notification server 
+    if(m_init) {
+        GList *list = notify_get_server_caps();
+        if(list) {
+            for(; list != NULL; list = list->next) {
+                if(boost::iequals((char *)list->data, "actions")) {
+                    m_actions = true;
+                }
+            }
+        }
+    }
+}
+
+AutoSyncManager::Notification::~Notification()
+{
+    if(m_init) {
+        notify_uninit();
+    }
+}
+
+void AutoSyncManager::Notification::notifyAction(NotifyNotification *notify,
+                                                 gchar *action,
+                                                 gpointer userData)
+{
+    if(boost::iequals("view", action)) {
+        pid_t pid;
+        if((pid = fork()) == 0) {
+            //search sync-ui from $PATH
+            if(execlp("sync-ui", "sync-ui", (const char*)0) < 0) {
+                exit(0);
+            }
+        }
+    } 
+    //if dismiss, ignore
+}
+
+void AutoSyncManager::Notification::send(const char *summary,
+                                         const char *body,
+                                         const char *viewParams)
+{
+    if(!m_init)
+        return;
+
+    if(m_notification) {
+        notify_notification_clear_actions(m_notification);
+        notify_notification_close(m_notification, NULL);
+    }
+    m_notification = notify_notification_new(summary, body, NULL, NULL);
+    //if actions are not supported, don't add actions
+    //An example is Ubuntu Notify OSD. It uses an alert box
+    //instead of a bubble when a notification is appended with actions.
+    //the alert box won't be closed until user inputs.
+    //so disable it in case of no support of actions
+    if(m_actions) {
+        notify_notification_add_action(m_notification, "view", _("View"), notifyAction, (gpointer)viewParams, NULL);
+        // Use "default" as ID because that is what mutter-moblin
+        // recognizes: it then skips the action instead of adding it
+        // in addition to its own "Dismiss" button (always added).
+        notify_notification_add_action(m_notification, "default", _("Dismiss"), notifyAction, (gpointer)viewParams, NULL);
+    }
+    notify_notification_show(m_notification, NULL);
+}
+#endif
+
+void AutoSyncManager::AutoSyncTaskList::createTimeoutSource()
+{
+    //if interval is 0, only run auto sync when changes are detected.
+    if(m_interval) {
+        m_source = g_timeout_add_seconds(m_interval, taskListTimeoutCb, static_cast<gpointer>(this));
+    }
+}
+
+gboolean AutoSyncManager::AutoSyncTaskList::taskListTimeoutCb(gpointer data)
+{
+    AutoSyncTaskList *list = static_cast<AutoSyncTaskList*>(data);
+    list->scheduleTaskList();
+    return TRUE;
+}
+
+void AutoSyncManager::AutoSyncTaskList::scheduleTaskList()
+{
+    BOOST_FOREACH(AutoSyncTask &syncTask, *this) {
+        m_manager.addTask(syncTask);
+    }
+    g_main_loop_quit(m_manager.m_server.getLoop());
+}
+
 /**************************** main *************************/
 
 void niam(int sig)
@@ -4720,7 +5845,11 @@ int main(int argc, char **argv)
         signal(SIGTERM, niam);
         signal(SIGINT, niam);
 
-        LoggerBase::instance().setLevel(LoggerBase::DEBUG);
+        LogRedirect redirect(true);
+        redirectPtr = &redirect;
+
+        // make daemon less chatty - long term this should be a command line option
+        LoggerBase::instance().setLevel(LoggerBase::INFO);
 
         DBusErrorCXX err;
         DBusConnectionPtr conn = g_dbus_setup_bus(DBUS_BUS_SESSION,
@@ -4728,13 +5857,13 @@ int main(int argc, char **argv)
                                                   true,
                                                   &err);
         if (!conn) {
-            err.throwFailure("g_dbus_setup_bus()");
+            err.throwFailure("g_dbus_setup_bus()", " failed - server already running?");
         }
 
         DBusServer server(loop, conn, duration);
         server.activate();
 
-        std::cout << argv[0] << " ready to run\n" << std::flush;
+        SE_LOG_INFO(NULL, NULL, "%s: ready to run",  argv[0]);
         server.run();
 	return 0;
     } catch ( const std::exception &ex ) {

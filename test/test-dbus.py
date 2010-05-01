@@ -547,6 +547,7 @@ class TestDBusServer(unittest.TestCase, DBusUtil):
                                        "Memotoo",
                                        "Mobical",
                                        "Oracle",
+                                       "Ovi",
                                        "ScheduleWorld",
                                        "SyncEvolution",
                                        "Synthesis",
@@ -665,27 +666,53 @@ class Connman (dbus.service.Object):
         if (self.count == 1):
             loop.quit()
             return {"ConnectedTechnologies":["ethernet", "some other stuff"],
-                    "EnabledTechnologies": ["bluetooth"]}
+                    "AvailableTechnologies": ["bluetooth"]}
         elif (self.count == 2):
             """ unplug the ethernet cable """
             loop.quit()
             return {"ConnectedTechnologies":["some other stuff"],
-                    "EnabledTechnologies": ["bluetooth"]}
+                    "AvailableTechnologies": ["bluetooth"]}
         elif (self.count == 3):
             """ replug the ethernet cable """
             loop.quit()
             return {"ConnectedTechnologies":["ethernet", "some other stuff"],
-                    "EnabledTechnologies": ["bluetooth"]}
+                    "AvailableTechnologies": ["bluetooth"]}
         elif (self.count == 4):
             """ nothing presence """
             loop.quit()
             return {"ConnectedTechnologies":[""],
-                    "EnabledTechnologies": [""]}
+                    "AvailableTechnologies": [""]}
         elif (self.count == 5):
             """ come back the same time """
             loop.quit()
             return {"ConnectedTechnologies":["ethernet", "some other stuff"],
-                    "EnabledTechnologies": ["bluetooth"]}
+                    "AvailableTechnologies": ["bluetooth"]}
+
+    @dbus.service.signal(dbus_interface='org.moblin.connman.Manager', signature='sv')
+    def PropertyChanged(self, key, value):
+        pass
+
+    def emitSignal(self):
+        self.count = self.count+1
+        if (self.count == 2):
+            """ unplug the ethernet cable """
+            self.PropertyChanged("ConnectedTechnologies",["some other stuff"])
+            return
+        elif (self.count == 3):
+            """ replug the ethernet cable """
+            self.PropertyChanged("ConnectedTechnologies", ["ethernet", "some other stuff"])
+            return
+        elif (self.count == 4):
+            """ nothing presence """
+            self.PropertyChanged("ConnectedTechnologies", [""])
+            self.PropertyChanged("AvailableTechnologies", [""])
+            return
+        elif (self.count == 5):
+            """ come back the same time """
+            self.PropertyChanged("ConnectedTechnologies", ["ethernet", "some other stuff"])
+            self.PropertyChanged("AvailableTechnologies", ["bluetooth"])
+            return
+
     def reset(self):
         self.count = 0
 
@@ -708,6 +735,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
             self.failUnlessEqual (status, "")
             self.failUnlessEqual (server, "foo")
             self.failUnlessEqual (transport, "http://http-only-1")
+            loop.quit()
 
         match = bus.add_signal_receiver(cb_http_presence,
                                 'Presence',
@@ -719,13 +747,14 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         loop.run()
         time.sleep(1)
         self.setUpSession("foo")
-        self.session.SetConfig(True, True, {"" : {"syncURL":
+        self.session.SetConfig(True, False, {"" : {"syncURL":
         "obex-bt://temp-bluetooth-peer-changed-from-http"}})
         def cb_bt_presence(server, status, transport):
             self.failUnlessEqual (status, "")
             self.failUnlessEqual (server, "foo")
             self.failUnlessEqual (transport,
                     "obex-bt://temp-bluetooth-peer-changed-from-http")
+            loop.quit()
         match.remove()
         match = bus.add_signal_receiver(cb_bt_presence,
                                 'Presence',
@@ -734,6 +763,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
                                 None,
                                 byte_arrays=True,
                                 utf8_strings=True)
+        self.conn.emitSignal()
         loop.run()
         time.sleep(1)
         self.session.Detach()
@@ -743,6 +773,9 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         self.session.Detach()
         self.foo = "random string"
         self.bar = "random string"
+        match.remove()
+        self.conn.emitSignal()
+        self.conn.emitSignal()
         def cb_bt_http_presence(server, status, transport):
             if (server == "foo"):
                 self.foo = status
@@ -750,8 +783,8 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
                 self.bar = status
             else:
                 self.fail("wrong server config")
+            loop.quit()
 
-        match.remove()
         match = bus.add_signal_receiver(cb_bt_http_presence,
                                 'Presence',
                                 'org.syncevolution.Server',
@@ -759,6 +792,8 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
                                 None,
                                 byte_arrays=True,
                                 utf8_strings=True)
+        #count=5, 2 signals recevied
+        self.conn.emitSignal()
         loop.run()
         loop.run()
         time.sleep(1)
@@ -797,7 +832,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         "http://http-client-mixed"])
 
         #count = 2
-        loop.run()
+        self.conn.emitSignal()
         time.sleep(1)
         (status, transports) = self.server.CheckPresence ("foo")
         self.failUnlessEqual (status, "no transport")
@@ -818,9 +853,9 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         time.sleep(1)
         status = self.session.checkPresence()
         self.failUnlessEqual (status, "")
-        loop.run()
-        loop.run()
-        loop.run()
+        self.conn.emitSignal()
+        self.conn.emitSignal()
+        self.conn.emitSignal()
         #count = 4
         time.sleep(1)
         status = self.session.checkPresence()
@@ -991,7 +1026,8 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
                                 "password" : "-",
                                 "deviceId" : "foo",
                                 "RetryInterval" : "10",
-                                "RetryDuration" : "20"
+                                "RetryDuration" : "20",
+                                "configName" : "dummy-test"
                               },
                          "source/addressbook" : { "sync" : "slow",
                                                   "type" : "addressbook",
@@ -1542,7 +1578,7 @@ class TestSessionAPIsReal(unittest.TestCase, DBusUtil):
     def doSync(self):
         self.setupConfig()
         self.setUpListeners(self.sessionpath)
-        self.session.Sync("", {})
+        self.session.Sync("slow", {})
         loop.run()
         self.failUnlessEqual(DBusUtil.quit_events, ["session " + self.sessionpath + " done"])
 
@@ -2035,6 +2071,62 @@ class TestMultipleConfigs(unittest.TestCase, DBusUtil):
         self.failUnlessEqual(config[""]["defaultPeer"], "foobar_peer")
         self.failUnlessEqual(config[""]["deviceId"], "shared-device-identifier")
         self.failUnlessEqual(config["source/addressbook"]["evolutionsource"], "Work")
+
+    def testSharedType(self):
+        """'type' must be set per-peer and shared"""
+        self.setupConfigs()
+
+        # writing for peer modifies "type" in "foo" and context
+        self.setUpSession("Foo@deFAULT")
+        config = self.session.GetConfig(False, utf8_strings=True)
+        config["source/addressbook"]["type"] = "file:text/vcard:3.0"
+        self.session.SetConfig(True, False,
+                               config,
+                               utf8_strings=True)
+        config = self.server.GetConfig("Foo", False, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "file:text/vcard:3.0")
+        config = self.server.GetConfig("@default", False, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "file:text/vcard:3.0")
+        self.session.Detach()
+
+        # writing in context only changes the context
+        self.setUpSession("@deFAULT")
+        config = self.session.GetConfig(False, utf8_strings=True)
+        config["source/addressbook"]["type"] = "file:text/x-vcard:2.1"
+        self.session.SetConfig(True, False,
+                               config,
+                               utf8_strings=True)
+        config = self.server.GetConfig("Foo", False, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "file:text/vcard:3.0")
+        config = self.server.GetConfig("@default", False, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "file:text/x-vcard:2.1")
+
+    def testSharedTypeOther(self):
+        """'type' must not be overwritten when set in the context"""
+        # writing for peer modifies "type" in "foo" and context "@other"
+        self.setUpSession("Foo@other")
+        config = self.server.GetConfig("ScheduleWorld@other", True, utf8_strings=True)
+        config["source/addressbook"]["type"] = "file:text/vcard:3.0"
+        self.session.SetConfig(False, False,
+                               config,
+                               utf8_strings=True)
+        config = self.server.GetConfig("Foo", False, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "file:text/vcard:3.0")
+        config = self.server.GetConfig("@other", False, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "file:text/vcard:3.0")
+        self.session.Detach()
+
+        # adding second client must preserve type
+        self.setUpSession("bar@other")
+        config = self.server.GetConfig("Funambol@other", True, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "addressbook")
+        self.session.SetConfig(False, False,
+                               config,
+                               utf8_strings=True)
+        config = self.server.GetConfig("bar", False, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "addressbook")
+        config = self.server.GetConfig("@other", False, utf8_strings=True)
+        self.failUnlessEqual(config["source/addressbook"]["type"], "file:text/vcard:3.0")
 
     def testOtherContext(self):
         """write into independent context"""

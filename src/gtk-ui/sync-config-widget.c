@@ -1,11 +1,16 @@
 #include "config.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <glib/gi18n.h>
 #include <dbus/dbus-glib.h>
 
 #ifdef USE_MOBLIN_UX
+#ifdef MX_GTK_0_99_1
+#include <mx-gtk/mx-gtk.h>
+#else
 #include <mx/mx-gtk.h>
+#endif
 #endif
 
 #include "sync-ui.h"
@@ -22,6 +27,8 @@ G_DEFINE_TYPE (SyncConfigWidget, sync_config_widget, GTK_TYPE_CONTAINER)
 
 
 typedef struct source_widgets {
+    char *name;
+
     GtkWidget *label;
     GtkWidget *entry;
     GtkWidget *check;
@@ -110,46 +117,111 @@ update_source_uri (char *name,
     g_hash_table_insert (source_configuration, g_strdup ("uri"), g_strdup (uri));
 }
 
+typedef struct save_config_data {
+    SyncConfigWidget *widget;
+    gboolean delete;
+    gboolean temporary;
+    source_widgets *widgets;
+} save_config_data;
+
+static source_widgets *
+source_widgets_ref (source_widgets *widgets)
+{
+    if (widgets) {
+        widgets->count++;
+    }
+    return widgets;
+}
+
+static void
+source_widgets_unref (source_widgets *widgets)
+{
+    if (widgets) {
+        widgets->count--;
+        if (widgets->count == 0)
+            g_slice_free (source_widgets, widgets);
+    }
+}
+
+static void
+check_source_cb (SyncevoSession *session,
+                 GError *error,
+                 source_widgets *widgets)
+{
+    gboolean show = TRUE;
+
+    if (error) {
+        if(error->code == DBUS_GERROR_REMOTE_EXCEPTION &&
+           dbus_g_error_has_name (error, SYNCEVO_DBUS_ERROR_SOURCE_UNUSABLE)) {
+            show = FALSE;
+        } else {
+            g_warning ("CheckSource failed: %s", error->message);
+            /* non-fatal, ignore in UI */
+        }
+        g_error_free (error);
+    }
+
+    if (widgets->count > 1) {
+        if (show) {
+            /* NOTE: with the new two sources per row layout not showing things
+             * may look weird in some cases... the layout should really only be
+             * done at this point  */
+            gtk_widget_show (widgets->source_toggle_label);
+            gtk_widget_show (widgets->label);
+            gtk_widget_show (widgets->entry);
+            gtk_widget_show (widgets->check);
+        } else {
+            /* next save should disable this source */
+            toggle_set_active (widgets->check, FALSE);
+        }
+    }
+    source_widgets_unref (widgets);
+    g_object_unref (session);
+}
+
 static void
 set_config_cb (SyncevoSession *session,
                GError *error,
-               SyncConfigWidget *self)
+               save_config_data *data)
 {
     if (error) {
         g_warning ("Error in Session.SetConfig: %s", error->message);
         g_error_free (error);
         g_object_unref (session);
-        /* TODO show in UI: save failed in service list */
+        show_error_dialog (GTK_WIDGET (data->widget),
+                           _("Sorry, failed to save the configuration"));
         return;
     }
 
-    self->configured = TRUE;
+    if (data->temporary) {
+        syncevo_session_check_source (session,
+                                      data->widgets->name,
+                                      (SyncevoSessionGenericCb)check_source_cb,
+                                      data->widgets);
+    } else {
+        data->widget->configured = TRUE;
+        g_signal_emit (data->widget, signals[SIGNAL_CHANGED], 0);
+        g_object_unref (session);
+    }
 
-    g_object_unref (session);
-    g_signal_emit (self, signals[SIGNAL_CHANGED], 0);
 }
 
 static void
-sync_config_widget_save_config (SyncConfigWidget *self,
-                                SyncevoSession *session,
-                                gboolean delete)
+save_config (save_config_data *data,
+             SyncevoSession *session)
 {
-    if (delete) {
-        syncevo_config_free (self->config);
-        self->config = g_hash_table_new (g_str_hash, g_str_equal);
+    if (data->delete) {
+        syncevo_config_free (data->widget->config);
+        data->widget->config = g_hash_table_new (g_str_hash, g_str_equal);
     }
-    syncevo_session_set_config (session,
-                                FALSE,
-                                FALSE,
-                                self->config,
-                                (SyncevoSessionGenericCb)set_config_cb,
-                                self);
-}
 
-typedef struct save_config_data {
-    SyncConfigWidget *widget;
-    gboolean delete;
-} save_config_data;
+    syncevo_session_set_config (session,
+                                data->temporary,
+                                data->temporary,
+                                data->widget->config,
+                                (SyncevoSessionGenericCb)set_config_cb,
+                                data);
+}
 
 static void
 status_changed_for_config_write_cb (SyncevoSession *session,
@@ -159,7 +231,7 @@ status_changed_for_config_write_cb (SyncevoSession *session,
                                     save_config_data *data)
 {
     if (status == SYNCEVO_STATUS_IDLE) {
-        sync_config_widget_save_config (data->widget, session, data->delete);
+        save_config (data, session);
     }
 }
 
@@ -182,7 +254,7 @@ get_status_for_config_write_cb (SyncevoSession *session,
     syncevo_source_statuses_free (source_statuses);
 
     if (status == SYNCEVO_STATUS_IDLE) {
-        sync_config_widget_save_config (data->widget, session, data->delete);
+        save_config (data, session);
     }
 }
 
@@ -227,6 +299,7 @@ stop_clicked_cb (GtkButton *btn, SyncConfigWidget *self)
     data = g_slice_new (save_config_data);
     data->widget = self;
     data->delete = FALSE;
+    data->temporary = FALSE;
     syncevo_server_start_session (self->server,
                                   self->config_name,
                                   (SyncevoServerStartSessionCb)start_session_for_config_write_cb,
@@ -244,40 +317,6 @@ use_clicked_cb (GtkButton *btn, SyncConfigWidget *self)
 
     if (!self->config) {
         return;
-    }
-
-    if (self->current_service_name && !self->current) {
-        gboolean ret;
-        char *msg, *yes, *no, *new_name, *old_name;
-
-        /*TRANSLATORS: warning dialog text for changing current service */
-        msg = g_strdup_printf
-            (_("Do you want to replace %s with %s? This "
-               "will not remove any synced information on either "
-               "end but you will no longer be able to sync with %s."),
-             self->current_service_name,
-             gtk_entry_get_text (GTK_ENTRY (self->entry)),
-             self->current_service_name);
-
-        new_name = g_strndup (gtk_entry_get_text (GTK_ENTRY (self->entry)), 40);
-        old_name = g_strndup (self->current_service_name, 40);
-
-        /* TRANSLATORS: decline/accept buttons in warning dialog.
-           Placeholder is service name */
-        yes = g_strdup_printf (_("Yes, use %s"), new_name);
-        no = g_strdup_printf (_("No, use %s"), old_name);
-
-        ret = show_confirmation (GTK_WIDGET (self), msg, yes, no);
-
-        g_free (msg);
-        g_free (yes);
-        g_free (no);
-        g_free (new_name);
-        g_free (old_name);
-
-        if (!ret) {
-            return;
-        }
     }
 
     if (strlen (self->config_name) == 0) {
@@ -308,7 +347,8 @@ use_clicked_cb (GtkButton *btn, SyncConfigWidget *self)
             const char *mode_str;
             gboolean active;
 
-            active = toggle_get_active (widgets->check);
+            active = toggle_get_active (widgets->check) &&
+                     GTK_WIDGET_SENSITIVE (widgets->check);
             if (active) {
                 mode_str = syncevo_sync_mode_to_string (mode);
             } else {
@@ -356,6 +396,7 @@ use_clicked_cb (GtkButton *btn, SyncConfigWidget *self)
     data = g_slice_new (save_config_data);
     data->widget = self;
     data->delete = FALSE;
+    data->temporary = FALSE;
     syncevo_server_start_session (self->server,
                                   self->config_name,
                                   (SyncevoServerStartSessionCb)start_session_for_config_write_cb,
@@ -390,7 +431,7 @@ reset_delete_clicked_cb (GtkButton *btn, SyncConfigWidget *self)
         msg = g_strdup_printf
             (_("Do you want to delete the settings for %s? "
                "This will not remove any synced information on either "
-               "end but it will remove this service configuration."),
+               "end but it will remove these settings."),
              self->pretty_name);
         /*TRANSLATORS: buttons in delete-service warning dialog */
         yes = _("Yes, delete");
@@ -411,6 +452,7 @@ reset_delete_clicked_cb (GtkButton *btn, SyncConfigWidget *self)
     data = g_slice_new (save_config_data);
     data->widget = self;
     data->delete = TRUE;
+    data->temporary = FALSE;
     syncevo_server_start_session (self->server,
                                   self->config_name,
                                   (SyncevoServerStartSessionCb)start_session_for_config_write_cb,
@@ -422,10 +464,10 @@ static void update_buttons (SyncConfigWidget *self)
     if (self->has_template) {
         /* TRANSLATORS: button labels in service configuration form */
         gtk_button_set_label (GTK_BUTTON (self->reset_delete_button),
-                              _("Reset service"));
+                              _("Reset settings"));
     } else {
         gtk_button_set_label (GTK_BUTTON (self->reset_delete_button),
-                              _("Delete service"));
+                              _("Delete settings"));
     }
     if (self->configured) {
         gtk_widget_show (GTK_WIDGET (self->reset_delete_button));
@@ -433,71 +475,30 @@ static void update_buttons (SyncConfigWidget *self)
         gtk_widget_hide (GTK_WIDGET (self->reset_delete_button));
     }
 
-    if (self->current_service_name || self->current) {
+    if (self->current || !self->current_service_name) {
         gtk_button_set_label (GTK_BUTTON (self->use_button),
                               _("Save and use"));
-    } else { 
+    } else {
         gtk_button_set_label (GTK_BUTTON (self->use_button),
                               _("Save and replace\ncurrent service"));
     }
 
-    if (self->current) {
+
+
+    if (self->current && self->config) {
+        char *client;
+        syncevo_config_get_value (self->config, NULL, "PeerIsClient", &client);
+        if (client && g_strcmp0 (client, "1") == 0) {
+            gtk_button_set_label (GTK_BUTTON (self->stop_button),
+                                              _("Stop using device"));
+        } else {
+            gtk_button_set_label (GTK_BUTTON (self->stop_button),
+                                              _("Stop using service"));
+        }
         gtk_widget_show (self->stop_button);
     } else { 
         gtk_widget_hide (self->stop_button);
     }
-}
-
-static void
-source_widgets_ref (source_widgets *widgets)
-{
-    if (widgets) {
-        widgets->count++;
-    }
-}
-
-static void
-source_widgets_unref (source_widgets *widgets)
-{
-    if (widgets) {
-        widgets->count--;
-        if (widgets->count == 0)
-            g_slice_free (source_widgets, widgets);
-    }
-}
-
-static void
-check_source_cb (SyncevoServer *server,
-                 GError *error,
-                 source_widgets *widgets)
-{
-    gboolean show = TRUE;
-
-    if (error) {
-        if(error->code == DBUS_GERROR_REMOTE_EXCEPTION &&
-           dbus_g_error_has_name (error, SYNCEVO_DBUS_ERROR_SOURCE_UNUSABLE)) {
-            show = FALSE;
-        } else if (error->code == DBUS_GERROR_REMOTE_EXCEPTION &&
-                   dbus_g_error_has_name (error,
-                                          SYNCEVO_DBUS_ERROR_NO_SUCH_CONFIG)){
-            /* apparently templates can't be checked... */
-            /* TODO: could use a temporary config to do it... */
-        } else {
-            g_warning ("CheckSource failed: %s", error->message);
-            /* non-fatal, ignore in UI */
-        }
-        g_error_free (error);
-    }
-
-    if (show && widgets->count > 1) {
-        /* TODO: with the new two sources per row layout not showing things
-         * probably won't look good... */
-        gtk_widget_show (widgets->source_toggle_label);
-        gtk_widget_show (widgets->label);
-        gtk_widget_show (widgets->entry);
-        gtk_widget_show (widgets->check);
-    }
-    source_widgets_unref (widgets);
 }
 
 static void
@@ -532,6 +533,9 @@ add_toggle_widget (SyncConfigWidget *self,
                    guint row, guint col)
 {
     GtkWidget *toggle;
+    int padding;
+
+    padding = (col == 1) ? 0 : 32;
 
 #ifdef USE_MOBLIN_UX
     GtkWidget *label;
@@ -559,9 +563,10 @@ add_toggle_widget (SyncConfigWidget *self,
     g_signal_connect (toggle, "notify::active",
                       G_CALLBACK (mode_widget_notify_active_cb), self);
 #endif
+
     gtk_table_attach (GTK_TABLE (self->mode_table), toggle,
                       col + 1, col + 2, row, row + 1,
-                      GTK_FILL, GTK_FILL, 32, 0);
+                      GTK_FILL, GTK_FILL, padding, 0);
 
     return toggle;
 }
@@ -622,6 +627,7 @@ init_source (char *name,
     static guint col = 0;
     source_widgets *widgets;
     SyncevoSyncMode mode;
+    save_config_data *data;
 
     type = g_hash_table_lookup (source_configuration, "type");
     uri = g_hash_table_lookup (source_configuration, "uri");
@@ -652,6 +658,7 @@ init_source (char *name,
     self->no_source_toggles = FALSE;
 
     widgets = g_slice_new0 (source_widgets);
+    widgets->name = name;
     widgets->count = 1;
     g_hash_table_insert (self->sources, name, widgets);
 
@@ -697,21 +704,18 @@ init_source (char *name,
     gtk_widget_set_sensitive (widgets->check,
                               uri && strlen (uri) > 0);
 
-    /* TODO: template sources cannot be checked. Should set a temporary config
-     * to check sources */
-    if (self->configured) {
-        source_widgets_ref (widgets);
-        syncevo_server_check_source (self->server,
-                                     self->config_name,
-                                     name,
-                                     (SyncevoServerGenericCb)check_source_cb,
-                                     widgets);
-    } else {
-        gtk_widget_show (widgets->source_toggle_label);
-        gtk_widget_show (widgets->label);
-        gtk_widget_show (widgets->entry);
-        gtk_widget_show (widgets->check);
-    }
+    /* start a session so we save a temporary config so we can do
+     * CheckSource, and show the source-related widgets if the 
+     * source is available */
+    data = g_slice_new (save_config_data);
+    data->widget = self;
+    data->delete = FALSE;
+    data->temporary = TRUE;
+    data->widgets = source_widgets_ref (widgets);
+    syncevo_server_start_session (self->server,
+                                  self->config_name,
+                                  (SyncevoServerStartSessionCb)start_session_for_config_write_cb,
+                                  data);
 }
 
 static void
@@ -849,10 +853,12 @@ sync_config_widget_update_expander (SyncConfigWidget *self)
      * or device name */
     str = g_strdup_printf (_("Send changes to %s"), self->pretty_name);
     self->send_check = add_toggle_widget (self, str, send, 0, 0);
+    gtk_widget_show (self->send_check);
     g_free (str);
 
     str = g_strdup_printf (_("Receive changes from %s"), self->pretty_name);
     self->receive_check = add_toggle_widget (self, str, receive, 0, 1);
+    gtk_widget_show (self->receive_check);
     g_free (str);
 
     align = gtk_alignment_new (0.0, 1.0, 0.0, 0.0);
@@ -920,8 +926,57 @@ sync_config_widget_add_config (SyncConfigWidget *self,
                                const char *name,
                                SyncevoConfig *config)
 {
-    g_hash_table_insert (self->configs, g_strdup (name), config);
-    gtk_combo_box_prepend_text (GTK_COMBO_BOX (self->combo), name);
+    GtkListStore *store;
+    GtkTreeIter iter;
+    const char *guess_name;
+    SyncevoConfig *guess_config;
+    int score = 1;
+    int guess_score, second_guess_score = -1;
+    char *str;
+
+    store = GTK_LIST_STORE (gtk_combo_box_get_model (GTK_COMBO_BOX (self->combo)));
+    if (syncevo_config_get_value (config, NULL, "score", &str)) {
+        score = (int)strtol (str, NULL, 10);
+    }
+    gtk_list_store_append (store, &iter);
+    gtk_list_store_set (store, &iter,
+                        0, name,
+                        1, config,
+                        2, score,
+                        -1);
+
+    /* make an educated guess if possible */
+    gtk_tree_model_get_iter_first (GTK_TREE_MODEL (store), &iter);
+    gtk_tree_model_get (GTK_TREE_MODEL (store), &iter,
+                        0, &guess_name,
+                        1, &guess_config,
+                        2, &guess_score,
+                        -1);
+
+    if (gtk_tree_model_iter_next (GTK_TREE_MODEL (store), &iter)) {
+        gtk_tree_model_get (GTK_TREE_MODEL (store), &iter,
+                            2, &second_guess_score,
+                            -1);
+    }
+
+    if (guess_score > 1 && guess_score > second_guess_score) {
+        gtk_combo_box_set_active (GTK_COMBO_BOX (self->combo), 0);
+        /* TRANSLATORS: explanation before a device template combobox.
+         * Placeholder is a device name like 'Nokia N85' or 'Syncevolution
+         * Client' */
+        str = g_strdup_printf (_("This device looks like it might be a '%s'. "
+                                 "If this is not correct, please take a look at "
+                                 "the list of supported devices and pick yours "
+                                 "if it is listed"), guess_name);
+    } else {
+        gtk_combo_box_set_active (GTK_COMBO_BOX (self->combo), -1);
+        str = g_strdup (_("We don't know what this device is exactly. "
+                          "Please take a look at the list of "
+                          "supported devices and pick yours if it "
+                          "is listed"));
+    }
+    gtk_label_set_text (GTK_LABEL (self->device_text), str);
+    g_free (str);
 }
 
 static void
@@ -971,20 +1026,24 @@ sync_config_widget_set_name (SyncConfigWidget *self,
 static void
 device_selection_btn_clicked_cb (GtkButton *btn, SyncConfigWidget *self)
 {
-    const char *name;
-    SyncevoConfig *config;
+    GtkTreeIter iter;
 
-    self->device_template_selected = TRUE;
+    if (gtk_combo_box_get_active_iter (GTK_COMBO_BOX (self->combo), &iter)) {
+        const char *name;
+        SyncevoConfig *config;
+        GtkTreeModel *model;
 
-    name = gtk_combo_box_get_active_text (GTK_COMBO_BOX (self->combo));
-    config = g_hash_table_lookup (self->configs, name);
+        self->device_template_selected = TRUE;
 
-    g_return_if_fail (config);
+        model = gtk_combo_box_get_model(GTK_COMBO_BOX (self->combo));
+        gtk_tree_model_get (model, &iter, 0, &name, -1 );
+        gtk_tree_model_get (model, &iter, 1, &config, -1 );
 
-    sync_config_widget_set_config (self, config);
-    sync_config_widget_set_name (self, name);
+        sync_config_widget_set_config (self, config);
+        sync_config_widget_set_name (self, name);
 
-    sync_config_widget_update_expander (self);
+        sync_config_widget_update_expander (self);
+    }
 }
 
 static void
@@ -1125,7 +1184,6 @@ session_changed_cb (SyncevoServer *server,
                     gboolean started,
                     SyncConfigWidget *self)
 {
-
     if (started) {
         set_session (self, path);
     } else if (g_strcmp0 (self->running_session, path) == 0 ) {
@@ -1143,11 +1201,14 @@ get_sessions_cb (SyncevoServer *server,
         g_warning ("Server.GetSessions failed: %s", error->message);
         g_error_free (error);
         /* non-fatal, ignore in UI */
+
+        g_object_unref (self);
         return;
     }
 
     set_session (self, syncevo_sessions_index (sessions, 0));
     syncevo_sessions_free (sessions);
+    g_object_unref (self);
 }
 
 void
@@ -1171,7 +1232,8 @@ sync_config_widget_set_server (SyncConfigWidget *self,
     g_signal_connect (self->server, "session-changed",
                       G_CALLBACK (session_changed_cb), self);
 
-    /* TODO: this is stupid, every widget running the same dbus call*/
+    /* reference is released in callback */
+    g_object_ref (self);
     syncevo_server_get_sessions (self->server,
                                  (SyncevoServerGetSessionsCb)get_sessions_cb,
                                  self);
@@ -1256,10 +1318,6 @@ sync_config_widget_dispose (GObject *object)
     }
     self->config = NULL;
 
-    if (self->configs) {
-        g_hash_table_destroy (self->configs);
-        self->configs = NULL;
-    }
     g_free (self->config_name);
     self->config_name = NULL;
     g_free (self->current_service_name);
@@ -1655,6 +1713,16 @@ label_leave_notify_cb (GtkWidget *widget,
 }
 
 static void
+device_combo_changed (GtkComboBox *combo,
+                      SyncConfigWidget *self)
+{
+    char *selected;
+
+    selected = gtk_combo_box_get_active_text (GTK_COMBO_BOX (combo));
+    gtk_widget_set_sensitive (self->device_select_btn, selected != NULL);
+}
+
+static void
 label_button_release_cb (GtkWidget *widget,
                          GdkEventButton *event,
                          SyncConfigWidget *self)
@@ -1666,16 +1734,28 @@ label_button_release_cb (GtkWidget *widget,
     }
 }
 
+static gint
+compare_list_items (GtkTreeModel *model,
+                    GtkTreeIter  *a,
+                    GtkTreeIter  *b,
+                    SyncConfigWidget *self)
+{
+    int score_a, score_b;
+
+    gtk_tree_model_get(model, a, 2, &score_a, -1);
+    gtk_tree_model_get(model, b, 2, &score_b, -1);
+
+    return score_a - score_b;
+}
+
 static void
 sync_config_widget_init (SyncConfigWidget *self)
 {
-    GtkWidget *tmp_box, *hbox, *cont, *vbox, *label, *btn;
+    GtkWidget *tmp_box, *hbox, *cont, *vbox, *label;
+    GtkListStore *store;
+    GtkCellRenderer *renderer;
 
     GTK_WIDGET_SET_FLAGS (GTK_WIDGET (self), GTK_NO_WINDOW);
-
-    /* should free the config? */
-    self->configs = g_hash_table_new_full (g_str_hash, g_str_equal,
-                                           g_free, NULL);
 
     self->label_box = gtk_event_box_new ();
     gtk_widget_set_app_paintable (self->label_box, TRUE);
@@ -1745,7 +1825,6 @@ sync_config_widget_init (SyncConfigWidget *self)
     gtk_widget_set_no_show_all (self->expando_box, TRUE);
     gtk_widget_set_parent (self->expando_box, GTK_WIDGET (self));
 
-    /* device_selector_box does device template selection */
     self->device_selector_box = gtk_vbox_new (FALSE, 0);
     gtk_box_pack_start (GTK_BOX (self->expando_box), self->device_selector_box,
                         TRUE, TRUE, 16);
@@ -1753,17 +1832,51 @@ sync_config_widget_init (SyncConfigWidget *self)
     hbox = gtk_hbox_new (FALSE, 8);
     gtk_widget_show (hbox);
     gtk_box_pack_start (GTK_BOX (self->device_selector_box), hbox,
+                        FALSE, TRUE, 8);
+    self->device_text = gtk_label_new (("We don't know what this device is exactly. "
+                                        "Please take a look at the list of "
+                                        "supported devices and pick yours if it "
+                                        "is listed"));
+    gtk_widget_show (self->device_text);
+    gtk_label_set_line_wrap (GTK_LABEL (self->device_text), TRUE);
+    gtk_widget_set_size_request (self->device_text, 600, -1);
+    gtk_box_pack_start (GTK_BOX (hbox), self->device_text,
+                        FALSE, TRUE, 0);
+
+
+    hbox = gtk_hbox_new (FALSE, 16);
+    gtk_widget_show (hbox);
+    gtk_box_pack_start (GTK_BOX (self->device_selector_box), hbox,
                         FALSE, TRUE, 16);
-    self->combo = gtk_combo_box_new_text ();
+
+    store = gtk_list_store_new (3, G_TYPE_STRING, G_TYPE_POINTER, G_TYPE_INT);
+    gtk_tree_sortable_set_sort_column_id (GTK_TREE_SORTABLE (store),
+                                          2, GTK_SORT_DESCENDING);
+    gtk_tree_sortable_set_sort_func (GTK_TREE_SORTABLE (store), 2,
+                                     (GtkTreeIterCompareFunc)compare_list_items,
+                                     NULL, NULL);
+
+    self->combo = gtk_combo_box_new_with_model (GTK_TREE_MODEL (store));
+    g_object_unref (G_OBJECT (store)); 
     gtk_widget_set_size_request (self->combo, 200, -1);
     gtk_widget_show (self->combo);
-    gtk_box_pack_start (GTK_BOX (hbox), self->combo,
+    gtk_box_pack_start (GTK_BOX (hbox), self->combo, FALSE, TRUE, 0);
+
+    renderer = gtk_cell_renderer_text_new ();
+    gtk_cell_layout_pack_start (GTK_CELL_LAYOUT(self->combo), renderer, TRUE);
+    gtk_cell_layout_set_attributes (GTK_CELL_LAYOUT(self->combo), renderer,
+                                    "text", 0, NULL);
+
+    g_signal_connect (self->combo, "changed",
+                      G_CALLBACK (device_combo_changed), self);
+
+
+    self->device_select_btn = gtk_button_new_with_label ("Use these settings");
+    gtk_widget_set_sensitive (self->device_select_btn, FALSE);
+    gtk_widget_show (self->device_select_btn);
+    gtk_box_pack_start (GTK_BOX (hbox), self->device_select_btn,
                         FALSE, TRUE, 0);
-    btn = gtk_button_new_with_label ("Use these settings");
-    gtk_widget_show (btn);
-    gtk_box_pack_start (GTK_BOX (hbox), btn,
-                        FALSE, TRUE, 0);
-    g_signal_connect (btn, "clicked",
+    g_signal_connect (self->device_select_btn, "clicked",
                       G_CALLBACK (device_selection_btn_clicked_cb), self);
 
     /* settings_box has normal expander contents */
@@ -1834,7 +1947,7 @@ sync_config_widget_init (SyncConfigWidget *self)
                         FALSE, FALSE, 0);
     /* TRANSLATORS: warning in service configuration form for people
        who have modified the configuration via other means. */
-    label = gtk_label_new (_("Current service configuration is more complex "
+    label = gtk_label_new (_("Current configuration is more complex "
                              "than what can be shown here. Changes to sync "
                              "mode or synced data types will overwrite that "
                              "configuration."));
@@ -1885,8 +1998,7 @@ sync_config_widget_init (SyncConfigWidget *self)
     g_signal_connect (self->use_button, "clicked",
                       G_CALLBACK (use_clicked_cb), self);
 
-    /* TRANSLATORS: button in service configuration form */
-    self->stop_button = gtk_button_new_with_label (_("Stop using service"));
+    self->stop_button = gtk_button_new ();
     gtk_box_pack_end (GTK_BOX (tmp_box), self->stop_button, FALSE, FALSE, 8);
     g_signal_connect (self->stop_button, "clicked",
                       G_CALLBACK (stop_clicked_cb), self);

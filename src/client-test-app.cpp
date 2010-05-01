@@ -35,7 +35,7 @@
 # include <execinfo.h>
 #endif
 
-#include <syncevo/SyncContext.h>
+#include "CmdlineSyncClient.h"
 #include "EvolutionSyncSource.h"
 #include <syncevo/util.h>
 #include <syncevo/VolatileConfigNode.h>
@@ -243,9 +243,7 @@ public:
 
             // always set these properties: they might have changed since the last run
             string database = getDatabaseName(test->m_configName);
-            if (test->m_configName!="super"){
-                sc->setDatabaseID(database);
-            }
+            sc->setDatabaseID(database);
             sc->setUser(m_evoUser);
             sc->setPassword(m_evoPassword);
         }
@@ -312,12 +310,12 @@ public:
         server += "_";
         server += m_clientID;
         
-        class ClientTest : public SyncContext {
+        class ClientTest : public CmdlineSyncClient {
         public:
             ClientTest(const string &server,
                        const string &logbase,
                        const SyncOptions &options) :
-                SyncContext(server, false),
+                CmdlineSyncClient(server, false, true),
                 m_logbase(logbase),
                 m_options(options),
                 m_started(false)
@@ -330,6 +328,8 @@ public:
                 setMaxObjSize(m_options.m_maxObjSize, true);
                 setMaxMsgSize(m_options.m_maxMsgSize, true);
                 setWBXML(m_options.m_isWBXML, true);
+                setRetryDuration(m_options.m_retryDuration, true);
+                setRetryInterval(m_options.m_retryInterval, true);
                 SyncContext::prepare();
             }
 
@@ -399,6 +399,11 @@ private:
 
     /** returns the name of the Evolution database */
     string getDatabaseName(const string &configName) {
+        if (configName == "calendar+todo") {
+            return "ical20,itodo20";
+        } else if (configName == "file_calendar+todo") {
+            return "file_ical20,file_itodo20";
+        }
         return m_evoPrefix + configName + "_" + m_clientID;
     }
     
@@ -413,9 +418,7 @@ private:
                                                           "_" + (isSourceA ? "A" : "B"));
 
         // always set this property: the name might have changes since last test run
-        if (name != "super") {
-            nodes.getProperties()->setProperty("evolutionsource", database.c_str());
-        }
+        nodes.getProperties()->setProperty("evolutionsource", database.c_str());
         nodes.getProperties()->setProperty("evolutionuser", evClient.m_evoUser.c_str());
         nodes.getProperties()->setProperty("evolutionpassword", evClient.m_evoPassword.c_str());
 
@@ -474,6 +477,7 @@ public:
         // this is required when using glib directly or indirectly
         g_type_init();
         g_thread_init(NULL);
+        g_set_prgname("client-test");
 #endif
         EDSAbiWrapperInit();
         testClient.registerTests();

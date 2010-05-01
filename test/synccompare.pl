@@ -61,6 +61,7 @@ my $zyb = $server =~ /zyb/;
 my $mobical = $server =~ /mobical/;
 my $memotoo = $server =~ /memotoo/;
 my $nokia_7210c = $server =~ /nokia_7210c/;
+my $ovi = $server =~ /Ovi/;
 
 # TODO: this hack ensures that any synchronization is limited to
 # properties supported by Synthesis. Remove this again.
@@ -394,6 +395,39 @@ sub Normalize {
         s/^(UID|CLASS|SEQUENCE|TRANSP)(;[^:;\n]*)*:.*\r?\n?//gm;
     }
 
+    if ($ovi) {
+        if (/^BEGIN:VCARD/m) {
+            #lost properties
+            s/^(X-AIM|CALURI|URL|FBURL|PHOTO|EMAIL)(;[^:;\n]*)*:.*\r?\n?//gm;
+            #FN value mismatch (reordring and adding , by the server)
+            s/^FN:.*\r?\n?/FN:[...]\n/gm;
+            #X-EVOLUTION-FILE-AS adding '\' by the server
+            while (s/^X-EVOLUTION-FILE-AS:(.*)\\(.*)/X-EVOLUTION-FILE-AS:$1$2/gm) {}
+
+            # does not preserve X-EVOLUTION-UI-SLOT=
+            s/^(\w+)([^:\n]*);X-EVOLUTION-UI-SLOT=\d+/$1$2/mg;
+
+            # does not preserve third ADR
+            s/^ADR:Test Box #3.*\n\r?//mg;
+        }
+
+        if (/^BEGIN:VEVENT/m) {
+            #Testing with vcalendar, do not support UID
+            s/^(UID|SEQUENCE|TRANSP)(;[^:;\n]*)*:.*\r?\n?//gm;
+            #Add PRORITY by default
+            s/^(PRIORITY)(;[^:;\n]*)*:.*\r?\n?//gm;
+            # VALARM not supported
+            s/^BEGIN:VALARM.*?END:VALARM\r?\n?//msg;
+        }
+
+        if (/^BEGIN:VTODO/m) {
+            #Testing with vcalendar, do not support UID
+            s/^(UID|SEQUENCE|PERCENT-COMPLETE)(;[^:;\n]*)*:.*\r?\n?//gm;
+            #Mismatch DTSTART, COMPLETED
+            s/^(DTSTART|COMPLETED)(;[^:;\n]*)*:.*\r?\n?/$1:[...]\n/gm;
+        }
+    }
+
     if ($funambol || $egroupware || $nokia_7210c) {
       # NOTE may be truncated due to length resistrictions
       s/^(NOTE(;[^:;\n]*)*:.{0,160}).*(\r?\n?)/$1$3/gm;
@@ -568,8 +602,10 @@ if($#ARGV > 1) {
           open(IN, "<:utf8", "$fullname") || die "$fullname: $!";
           push @content1, <IN>;
       }
-      @normal1 = Normalize(join("", @content1), $singlewidth);
-      @normal2 = Normalize(join("", @content2), $singlewidth);
+      my $content1 = join("", @content1);
+      my $content2 = join("", @content2); 
+      @normal1 = Normalize($content1, $singlewidth);
+      @normal2 = Normalize($content2, $singlewidth);
   } else {
       if (-d $file1) {
           open(IN1, "-|:utf8", "find $file1 -type f -print0 | xargs -0 cat") || die "$file1: $!";

@@ -2,7 +2,13 @@
 
 ACLOCAL_AMFLAGS = -I m4 -I m4-repo
 
-SUBDIRS = src po test
+dist_doc_DATA =
+SUBDIRS = src
+if COND_CORE
+SUBDIRS += po test
+dist_doc_DATA += README NEWS COPYING $(TEST_README_FILES)
+endif
+DIST_SUBDIRS = src po test
 
 EXTRA_DIST = \
 	HACKING \
@@ -137,9 +143,6 @@ clean-local: clean_dist
 clean_dist:
 	rm -rf dist description-pak
 
-# install doc files via normal autotools
-dist_doc_DATA = README NEWS COPYING $(TEST_README_FILES)
-
 # required by dpkg-shlibdeps
 dist/debian/control:
 	mkdir -p ${@D}
@@ -202,8 +205,8 @@ dist-hook:
 if ENABLE_EVOLUTION_COMPATIBILITY
 installcheck-local:
 	for i in `find . -name *.so`; do \
-		if ldd $$i | grep -e libecal -e libebook -e libedata -e libical; then \
-			echo "$$i should not depend on EDS or libical"; \
+		if ldd $$i | grep -e libecal -e libebook -e libedata -e libical -e libbluetooth; then \
+			echo "$$i should not depend on EDS, libical or libbluetooth"; \
 			objdump -T -C $$i | grep -v :: | grep -e ical -e " e_"; \
 			exit 1; \
 		fi \

@@ -115,15 +115,17 @@ string SyncConfig::normalizeConfigString(const string &config)
     return normal;
 }
 
-void SyncConfig::splitConfigString(const string &config, string &peer, string &context)
+bool SyncConfig::splitConfigString(const string &config, string &peer, string &context)
 {
     string::size_type at = config.rfind('@');
     if (at != config.npos) {
         peer = config.substr(0, at);
         context = config.substr(at + 1);
+        return true;
     } else {
         peer = config;
         context = "default";
+        return false;
     }    
 }
 
@@ -284,6 +286,7 @@ SyncConfig::SyncConfig(const string &peer,
         mnode.reset(new MultiplexConfigNode(m_peerNode->getName(),
                                             getRegistry(),
                                             false));
+        mnode->setHavePeerNodes(!m_peerPath.empty());
         m_props[false] = mnode;
         mnode->setNode(false, ConfigProperty::GLOBAL_SHARING,
                        m_globalNode);
@@ -295,6 +298,7 @@ SyncConfig::SyncConfig(const string &peer,
         mnode.reset(new MultiplexConfigNode(m_hiddenPeerNode->getName(),
                                             getRegistry(),
                                             true));
+        mnode->setHavePeerNodes(!m_peerPath.empty());
         m_props[true] = mnode;
         mnode->setNode(true, ConfigProperty::SOURCE_SET_SHARING,
                        m_contextHiddenNode);
@@ -369,7 +373,7 @@ SyncConfig::TemplateList SyncConfig::getBuiltInTemplates()
         public:
             void addDefaultTemplate(const string &server, const string &url) {
                 BOOST_FOREACH(const boost::shared_ptr<TemplateDescription> entry, static_cast<TemplateList &>(*this)) {
-                    if (boost::iequals(entry->m_name, server)) {
+                    if (boost::iequals(entry->m_templateId, server)) {
                         //already present 
                         return;
                     }
@@ -389,6 +393,7 @@ SyncConfig::TemplateList SyncConfig::getBuiltInTemplates()
     result.addDefaultTemplate("Oracle", "http://www.oracle.com/technology/products/beehive/index.html");
     result.addDefaultTemplate("Goosync", "http://www.goosync.com/");
     result.addDefaultTemplate("SyncEvolution", "http://www.syncevolution.org");
+    result.addDefaultTemplate("Ovi", "http://www.ovi.com");
 
     result.sort (TemplateDescription::compare_op);
     return result;
@@ -432,13 +437,28 @@ SyncConfig::TemplateList SyncConfig::matchPeerTemplates(const DeviceList &peers,
                 if (fuzzyMatch){
                     if (rank > TemplateConfig::NO_MATCH) {
                         result.push_back (boost::shared_ptr<TemplateDescription>(
-                                    new TemplateDescription(templateConf.getName(),
-                                        templateConf.getDescription(), rank, entry.m_deviceId, entry.m_fingerprint, sDir, templateConf.getFingerprint())));
+                                    new TemplateDescription(templateConf.getTemplateId(),
+                                                            templateConf.getDescription(),
+                                                            rank,
+                                                            entry.m_deviceId,
+                                                            entry.m_fingerprint,
+                                                            sDir,
+                                                            templateConf.getFingerprint(),
+                                                            templateConf.getTemplateName()
+                                                            )
+                                    ));
                     }
                 } else if (rank == TemplateConfig::BEST_MATCH){
                     result.push_back (boost::shared_ptr<TemplateDescription>(
-                                new TemplateDescription(templateConf.getName(),
-                                    templateConf.getDescription(), rank, entry.m_deviceId, entry.m_fingerprint, sDir, templateConf.getFingerprint())));
+                                new TemplateDescription(templateConf.getTemplateId(),
+                                                        templateConf.getDescription(),
+                                                        rank,
+                                                        entry.m_deviceId,
+                                                        entry.m_fingerprint,
+                                                        sDir, 
+                                                        templateConf.getFingerprint(),
+                                                        templateConf.getTemplateName())
+                                ));
                     break;
                 }
             }
@@ -576,6 +596,7 @@ boost::shared_ptr<SyncConfig> SyncConfig::createPeerTemplate(const string &serve
         config->setSyncURL("http://my.funambol.com/sync");
         config->setWebURL("http://my.funambol.com");
         config->setWBXML(false);
+        config->setRetryInterval(0);
         config->setConsumerReady(true);
         source = config->getSyncSourceConfig("calendar");
         source->setSync("two-way");
@@ -674,6 +695,40 @@ boost::shared_ptr<SyncConfig> SyncConfig::createPeerTemplate(const string &serve
         source->setURI("./calendar/tasks");
         source = config->getSyncSourceConfig("memo");
         source->setURI("./notes");
+    } else if (boost::iequals(server, "Ovi")) {
+        config->setSyncURL("https://sync.ovi.com/services/syncml");
+        config->setWebURL("http://www.ovi.com");
+#ifndef ENABLE_SSL_CERTIFICATE_CHECK
+        // temporarily (?) disabled certificate checking because
+        // libsoup/gnutls do not accept the Verisign certificate
+        // (GNOME Bugzilla #589323)
+        config->setSSLVerifyServer(false);
+        config->setSSLVerifyHost(false);
+#endif
+        //prefer vcard 3.0
+        source = config->getSyncSourceConfig("addressbook");
+        source->setSourceType("addressbook:text/vcard");
+        source->setURI("./Contact/Unfiled");
+        source = config->getSyncSourceConfig("calendar");
+        source->setSync("none");
+        source->setURI("");
+        //prefer vcalendar 1.0
+        source->setSourceType("calendar:text/x-vcalendar");
+        source = config->getSyncSourceConfig("todo");
+        source->setSync("none");
+        source->setURI("");
+        //prefer vcalendar 1.0
+        source->setSourceType("todo:text/x-vcalendar");
+        //A virtual datastore combining calendar and todo
+        source = config->getSyncSourceConfig("calendar+todo");
+        source->setURI("./EventTask/Tasks");
+        source->setSourceType("virtual:text/x-vcalendar");
+        source->setDatabaseID("calendar,todo");
+        source->setSync("two-way");
+        //Memo is disabled
+        source = config->getSyncSourceConfig("memo");
+        source->setSync("none");
+        source->setURI("");
     } else if (boost::iequals(server, "goosync")) {
         config->setSyncURL("http://sync2.goosync.com/");
         config->setWebURL("http://www.goosync.com/");
@@ -816,6 +871,7 @@ SyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
     boost::shared_ptr<ConfigNode> hiddenPeerNode,
         serverNode,
         trackingNode;
+    string cacheDir;
 
     // store configs lower case even if the UI uses mixed case
     string lower = name;
@@ -845,6 +901,10 @@ SyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
             trackingNode =
             serverNode = node;
     } else {
+        // Here we assume that m_tree is a FileConfigTree. Otherwise getRootPath()
+        // will not point into a normal file system.
+        cacheDir = m_tree->getRootPath() + "/" + peerPath + "/.cache";
+
         node = m_tree->open(peerPath, ConfigTree::visible);
         peerNode.reset(new FilterConfigNode(node, m_sourceFilter));
         SourceFilters_t::const_iterator filter = m_sourceFilters.find(name);
@@ -869,7 +929,7 @@ SyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
         }
     }
 
-    return SyncSourceNodes(sharedNode, peerNode, hiddenPeerNode, trackingNode, serverNode);
+    return SyncSourceNodes(!peerPath.empty(), sharedNode, peerNode, hiddenPeerNode, trackingNode, serverNode, cacheDir);
 }
 
 ConstSyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
@@ -994,14 +1054,14 @@ static ConfigProperty syncPropLogDir("logdir",
                                      "usually expands to ${HOME}/.cache/...) will be used;\n"
                                      "if \"none\", then no backups of the databases are made and any\n"
                                      "output is printed directly to the screen");
-static IntConfigProperty syncPropMaxLogDirs("maxlogdirs",
+static UIntConfigProperty syncPropMaxLogDirs("maxlogdirs",
                                             "Unless this option is set, SyncEvolution will never delete\n"
                                             "anything in the \"logdir\". If set, the oldest directories and\n"
                                             "all their content will be removed after a successful sync\n"
                                             "to prevent the number of log directories from growing beyond\n"
                                             "the given limit.",
                                             "10");
-static IntConfigProperty syncPropLogLevel("loglevel",
+static UIntConfigProperty syncPropLogLevel("loglevel",
                                           "level of detail for log messages:\n"
                                           "- 0 (or unset) = INFO messages without log file, DEBUG with log file\n"
                                           "- 1 = only ERROR messages\n"
@@ -1012,7 +1072,7 @@ static BoolConfigProperty syncPropPrintChanges("printChanges",
                                                "enables or disables the detailed (and sometimes slow) comparison\n"
                                                "of database content before and after a sync session",
                                                "1");
-static UIntConfigProperty syncPropRetryDuration("RetryDuration",
+static SecondsConfigProperty syncPropRetryDuration("RetryDuration",
                                           "The total amount of time in seconds in which the client\n"
                                           "tries to get a response from the server.\n"
                                           "During this time, the client will resend messages\n"
@@ -1025,8 +1085,8 @@ static UIntConfigProperty syncPropRetryDuration("RetryDuration",
                                           "When acting as server, this setting controls how long\n"
                                           "a client is allowed to not send a message before the\n"
                                           "synchronization is aborted."
-                                          ,"300");
-static UIntConfigProperty syncPropRetryInterval("RetryInterval",
+                                          ,"5M");
+static SecondsConfigProperty syncPropRetryInterval("RetryInterval",
                                           "The number of seconds between the start of message sending\n"
                                           "and the start of the retransmission. If the interval has\n"
                                           "already passed when a message send returns, the\n"
@@ -1036,7 +1096,7 @@ static UIntConfigProperty syncPropRetryInterval("RetryInterval",
                                           "\n"
                                           "Servers cannot resend messages, so this setting has no\n"
                                           "effect in that case."
-                                          ,"60");
+                                          ,"2M");
 static BoolConfigProperty syncPropPeerIsClient("PeerIsClient",
                                           "Indicates whether this configuration is about a\n"
                                           "client peer or server peer.\n",
@@ -1045,6 +1105,22 @@ static SafeConfigProperty syncPropPeerName("PeerName",
                                            "An arbitrary name for the peer referenced by this config.\n"
                                            "Might be used by a GUI. The command line tool always uses the\n"
                                            "the configuration name.");
+static StringConfigProperty syncPropSyncMLVersion("SyncMLVersion",
+                                           "On a client, the latest commonly supported SyncML version \n"
+                                           "is used when contacting a server. one of '1.0/1.1/1.2' can\n"
+                                           "be used to pick a specific version explicitly.\n"
+                                           "\n"
+                                           "On a server, this option controls what kind of Server Alerted \n"
+                                           "Notification is sent to the client to start a synchronization.\n"
+                                           "By default, first the format from 1.2 is tried, then in case \n"
+                                           "of failure, the older one from 1.1. 1.2/1.1 can be choosen \n"
+                                           "explictely which disables the automatism\n",
+                                           "",
+                                           "",
+                                           Values() +
+                                           Aliases("") + Aliases("1.0") + Aliases ("1.1") + Aliases ("1.2")
+                                           );
+
 static ConfigProperty syncPropRemoteIdentifier("remoteIdentifier",
                                       "the identifier sent to the remote peer for a server initiated sync.\n"
                                       "if not set, deviceId will be used instead\n",
@@ -1117,6 +1193,53 @@ static SafeConfigProperty syncPropDeviceData("deviceData",
 static SafeConfigProperty syncPropDefaultPeer("defaultPeer",
                                               "the peer which is used by default in some frontends, like the sync-UI");
 
+static StringConfigProperty syncPropAutoSync("autoSync",
+                                             "Controls automatic synchronization. Currently,\n"
+                                             "automatic synchronization is done by running\n"
+                                             "a synchronization at regular intervals. This\n"
+                                             "may drain the battery, in particular when\n"
+                                             "using Bluetooth!\n"
+                                             "Because a peer might be reachable via different\n"
+                                             "transports at some point, this option provides\n"
+                                             "detailed control over which transports may\n"
+                                             "be used for automatic synchronization:\n"
+                                             "0 - don't do auto sync\n"
+                                             "1 - do automatic sync, using whatever transport\n"
+                                             "    is available\n"
+                                             "http - only via HTTP transport\n"
+                                             "obex-bt - only via Bluetooth transport\n"
+                                             "http,obex-bt - pick one of these\n",
+                                             "0");
+
+static SecondsConfigProperty syncPropAutoSyncInterval("autoSyncInterval",
+                                                      "This is the minimum number of seconds between two\n"
+                                                      "synchronizations that has to pass before starting\n"
+                                                      "an automatic synchronization. Can be specified using\n"
+                                                      "a 1h30m5s format.\n"
+                                                      "\n"
+                                                      "Before reducing this interval, consider that it will\n"
+                                                      "increase resource consumption on the local and remote\n"
+                                                      "side. Some SyncML server operators only allow a\n"
+                                                      "certain number of sessions per day.\n"
+                                                      "The value 0 has the effect of only running automatic\n"
+                                                      "synchronization when changes are detected (not\n"
+                                                      "implemented yet, therefore it basically disables\n"
+                                                      "automatic synchronization).\n",
+                                                      "30M");
+
+static SecondsConfigProperty syncPropAutoSyncDelay("autoSyncDelay",
+                                                   "An automatic sync will not be started unless the peer\n"
+                                                   "has been available for this duration, specified in seconds\n"
+                                                   "or 1h30m5s format.\n"
+                                                   "\n"
+                                                   "This prevents running a sync when network connectivity\n"
+                                                   "is unreliable or was recently established for some\n"
+                                                   "other purpose. It is also a heuristic that attempts\n"
+                                                   "to predict how long connectivity be available in the\n"
+                                                   "future, because it should better be available long\n"
+                                                   "enough to complete the synchronization.\n",
+                                                   "5M");
+
 ConfigPropertyRegistry &SyncConfig::getRegistry()
 {
     static ConfigPropertyRegistry registry;
@@ -1130,6 +1253,9 @@ ConfigPropertyRegistry &SyncConfig::getRegistry()
         registry.push_back(&syncPropLogLevel);
         registry.push_back(&syncPropPrintChanges);
         registry.push_back(&syncPropMaxLogDirs);
+        registry.push_back(&syncPropAutoSync);
+        registry.push_back(&syncPropAutoSyncInterval);
+        registry.push_back(&syncPropAutoSyncDelay);
         registry.push_back(&syncPropPreventSlowSync);
         registry.push_back(&syncPropUseProxy);
         registry.push_back(&syncPropProxyHost);
@@ -1140,6 +1266,7 @@ ConfigPropertyRegistry &SyncConfig::getRegistry()
         registry.push_back(&syncPropRetryInterval);
         registry.push_back(&syncPropRemoteIdentifier);
         registry.push_back(&syncPropPeerIsClient);
+        registry.push_back(&syncPropSyncMLVersion);
         registry.push_back(&syncPropPeerName);
         registry.push_back(&syncPropDevID);
         registry.push_back(&syncPropRemoteDevID);
@@ -1388,10 +1515,12 @@ void SyncConfig::setProxyPassword(const string &value, bool temporarily) { m_cac
 vector<string> SyncConfig::getSyncURL() const { 
     string s = m_stringCache.getProperty(*getNode(syncPropSyncURL), syncPropSyncURL);
     vector<string> urls;
-    // workaround for g++ 4.3/4.4:
-    // http://stackoverflow.com/questions/1168525/c-gcc4-4-warning-array-subscript-is-above-array-bounds
-    static const string sep(" \t");
-    boost::split(urls, s, boost::is_any_of(sep));
+    if (!s.empty()) {
+        // workaround for g++ 4.3/4.4:
+        // http://stackoverflow.com/questions/1168525/c-gcc4-4-warning-array-subscript-is-above-array-bounds
+        static const string sep(" \t");
+        boost::split(urls, s, boost::is_any_of(sep));
+    }
     return urls;
 }
 void SyncConfig::setSyncURL(const string &value, bool temporarily) { syncPropSyncURL.setProperty(*getNode(syncPropSyncURL), value, temporarily); }
@@ -1432,6 +1561,9 @@ void SyncConfig::setRemoteIdentifier (const string &value, bool temporarily) { r
 bool SyncConfig::getPeerIsClient() const { return syncPropPeerIsClient.getPropertyValue(*getNode(syncPropPeerIsClient)); }
 void SyncConfig::setPeerIsClient(bool value, bool temporarily) { syncPropPeerIsClient.setProperty(*getNode(syncPropPeerIsClient), value, temporarily); }
 
+const char* SyncConfig::getSyncMLVersion() const { return m_stringCache.getProperty(*getNode(syncPropSyncMLVersion), syncPropSyncMLVersion); }
+void SyncConfig::setSyncMLVersion(const string &value, bool temporarily) { syncPropSyncMLVersion.setProperty(*getNode(syncPropSyncMLVersion), value, temporarily); }
+
 string SyncConfig::getPeerName() const { return syncPropPeerName.getProperty(*getNode(syncPropPeerName)); }
 void SyncConfig::setPeerName(const string &name) { syncPropPeerName.setProperty(*getNode(syncPropPeerName), name); }
 
@@ -1469,6 +1601,13 @@ string SyncConfig::getDeviceData() const { return syncPropDeviceData.getProperty
 void SyncConfig::setDeviceData(const string &value) { syncPropDeviceData.setProperty(*getNode(syncPropDeviceData), value); }
 string SyncConfig::getDefaultPeer() const { return syncPropDefaultPeer.getProperty(*getNode(syncPropDefaultPeer)); }
 void SyncConfig::setDefaultPeer(const string &value) { syncPropDefaultPeer.setProperty(*getNode(syncPropDefaultPeer), value); }
+
+string SyncConfig::getAutoSync() const { return syncPropAutoSync.getProperty(*getNode(syncPropAutoSync)); }
+void SyncConfig::setAutoSync(const string &value, bool temporarily) { syncPropAutoSync.setProperty(*getNode(syncPropAutoSync), value, temporarily); }
+unsigned int SyncConfig::getAutoSyncInterval() const { return syncPropAutoSyncInterval.getPropertyValue(*getNode(syncPropAutoSyncInterval)); }
+void SyncConfig::setAutoSyncInterval(unsigned int value, bool temporarily) { syncPropAutoSyncInterval.setProperty(*getNode(syncPropAutoSyncInterval), value, temporarily); }
+unsigned int SyncConfig::getAutoSyncDelay() const { return syncPropAutoSyncDelay.getPropertyValue(*getNode(syncPropAutoSyncDelay)); }
+void SyncConfig::setAutoSyncDelay(unsigned int value, bool temporarily) { syncPropAutoSyncDelay.setProperty(*getNode(syncPropAutoSyncDelay), value, temporarily); }
 
 std::string SyncConfig::findSSLServerCertificate()
 {
@@ -1626,7 +1765,9 @@ static void copyProperties(const ConfigNode &fromProps,
 {
     BOOST_FOREACH(const ConfigProperty *prop, allProps) {
         if (prop->isHidden() == hidden &&
-            (unshared || prop->getSharing() != ConfigProperty::NO_SHARING)) {
+            (unshared ||
+             prop->getSharing() != ConfigProperty::NO_SHARING ||
+             (prop->getFlags() & ConfigProperty::SHARED_AND_UNSHARED))) {
             string name = prop->getName();
             bool isDefault;
             string value = prop->getProperty(fromProps, &isDefault);
@@ -1933,21 +2074,25 @@ ConfigPropertyRegistry &SyncSourceConfig::getRegistry()
     return registry;
 }
 
-SyncSourceNodes::SyncSourceNodes(const boost::shared_ptr<FilterConfigNode> &sharedNode,
+SyncSourceNodes::SyncSourceNodes(bool havePeerNode,
+                                 const boost::shared_ptr<FilterConfigNode> &sharedNode,
                                  const boost::shared_ptr<FilterConfigNode> &peerNode,
                                  const boost::shared_ptr<ConfigNode> &hiddenPeerNode,
                                  const boost::shared_ptr<ConfigNode> &trackingNode,
-                                 const boost::shared_ptr<ConfigNode> &serverNode) :
+                                 const boost::shared_ptr<ConfigNode> &serverNode,
+                                 const string &cacheDir) :
     m_sharedNode(sharedNode),
     m_peerNode(peerNode),
     m_hiddenPeerNode(hiddenPeerNode),
     m_trackingNode(trackingNode),
-    m_serverNode(serverNode)
+    m_serverNode(serverNode),
+    m_cacheDir(cacheDir)
 {
     boost::shared_ptr<MultiplexConfigNode> mnode;
     mnode.reset(new MultiplexConfigNode(m_peerNode->getName(),
                                         SyncSourceConfig::getRegistry(),
                                         false));
+    mnode->setHavePeerNodes(havePeerNode);
     m_props[false] = mnode;
     mnode->setNode(false, ConfigProperty::SOURCE_SET_SHARING,
                    m_sharedNode);
@@ -2050,7 +2195,7 @@ ConfigPasswordKey EvolutionPasswordConfigProperty::getPasswordKey(const string &
 
 // Used for built-in templates
 SyncConfig::TemplateDescription::TemplateDescription (const std::string &name, const std::string &description)
-:   m_name (name), m_description (description)
+:   m_templateId (name), m_description (description)
 {
     m_rank = TemplateConfig::LEVEL3_MATCH;
     m_fingerprint = "";
@@ -2071,13 +2216,14 @@ bool SyncConfig::TemplateDescription::compare_op (boost::shared_ptr<SyncConfig::
     if (right->m_rank != left->m_rank) {
         return (right->m_rank < left->m_rank);
     }
-    // sort against the config name
-    return (left->m_name < right->m_name);
+    // sort against the template id
+    return (left->m_templateId < right->m_templateId);
 }
 
 TemplateConfig::TemplateConfig (const string &path)
     : m_metaNode (new FileConfigNode (path, "template.ini", true)),
-    m_name("")
+    m_id(""),
+    m_path(path)
 {
     m_metaNode->readProperties(m_metaProps);
 }
@@ -2089,8 +2235,10 @@ bool TemplateConfig::isTemplateConfig (const string &dir)
 
 int TemplateConfig::serverModeMatch (SyncConfig::MatchMode mode)
 {
-    std::string peerIsClient = m_metaProps["peerIsClient"];
 
+    FileConfigNode configNode (m_path, "config.ini", true);
+    std::string peerIsClient = configNode.readProperty ("peerIsClient");
+    
     //not a match if serverMode does not match
     if ((peerIsClient.empty() || peerIsClient == "0") && mode == SyncConfig::MATCH_FOR_SERVER_MODE) {
         return NO_MATCH;
@@ -2155,22 +2303,110 @@ string TemplateConfig::getFingerprint(){
     return m_metaProps["fingerprint"];
 }
 
-string TemplateConfig::getName(){
-    if (m_name.empty()){
+string TemplateConfig::getTemplateName() {
+    return m_metaProps["templateName"];
+}
+
+/*
+ * A unique identifier for this template, it must be unique and retrieveable.
+ * We use the first entry in the "fingerprint" property for cmdline.
+ **/
+string TemplateConfig::getTemplateId(){
+    if (m_id.empty()){
         std::string fingerprintProp = m_metaProps["fingerprint"];
         if (!fingerprintProp.empty()){
             std::vector<std::string> subfingerprints = unescapeJoinedString (fingerprintProp, ',');
-            m_name = subfingerprints[0];
+            m_id = subfingerprints[0];
         }
     }
-    return m_name;
+    return m_id;
 }
+
+bool SecondsConfigProperty::checkValue(const string &value, string &error) const
+{
+    unsigned int seconds;
+    return parseDuration(value, error, seconds);
+}
+
+unsigned int SecondsConfigProperty::getPropertyValue(const ConfigNode &node, bool *isDefault) const
+{
+    string name = getName();
+    string value = node.readProperty(name);
+    if (value.empty()) {
+        if (isDefault) {
+            *isDefault = true;
+        }
+        value = getDefValue();
+    }
+    string error;
+    unsigned int seconds;
+    if (!parseDuration(value, error, seconds)) {
+        throwValueError(node, name, value, error);
+    }
+    return seconds;
+}
+
+bool SecondsConfigProperty::parseDuration(const string &value, string &error, unsigned int &seconds)
+{
+    seconds = 0;
+    if (value.empty()) {
+        // ambiguous - zero seconds?!
+        error = "duration expected, empty string not valid";
+        return false;
+    }
+
+    unsigned int current = 0;
+    bool haveDigit = false;
+    BOOST_FOREACH(char c, value) {
+        if (isdigit(c)) {
+            current = current * 10 + (c - '0');
+            haveDigit = true;
+        } else {
+            unsigned int multiplier = 1;
+            switch (toupper(c)) {
+            case 'Y':
+                multiplier = 365 * 24 * 60 * 60;
+                break;
+            case 'D':
+                multiplier = 24 * 60 * 60;
+                break;
+            case 'H':
+                multiplier = 60 * 60;
+                break;
+            case 'M':
+                multiplier = 60;
+                break;
+            case 'S':
+                break;
+            case ' ':
+            case '\t':
+                continue;
+            case '+':
+                break;
+            default:
+                error = StringPrintf("invalid character '%c'", c);
+                return false;
+            }
+            if (!haveDigit && c != '+') {
+                error = StringPrintf("unit character without preceeding number: %c", c);
+                return false;
+            }
+            seconds += current * multiplier;
+            current = 0;
+            haveDigit = false;
+        }
+    }
+    seconds += current;
+    return true;
+}
+
 
 #ifdef ENABLE_UNIT_TESTS
 
 class SyncConfigTest : public CppUnit::TestFixture {
     CPPUNIT_TEST_SUITE(SyncConfigTest);
     CPPUNIT_TEST(normalize);
+    CPPUNIT_TEST(parseDuration);
     CPPUNIT_TEST_SUITE_END();
 
 private:
@@ -2191,6 +2427,38 @@ private:
                              SyncConfig::normalizeConfigString("FooBar@Something"));
         CPPUNIT_ASSERT_EQUAL(std::string("foo_bar_x_y_z"),
                              SyncConfig::normalizeConfigString("Foo/bar\\x:y:z"));
+    }
+
+    void parseDuration()
+    {
+        string error;
+        unsigned int seconds;
+        unsigned int expected;
+
+        CPPUNIT_ASSERT(!SecondsConfigProperty::parseDuration("foo", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(error, string("invalid character 'f'"));
+        CPPUNIT_ASSERT(!SecondsConfigProperty::parseDuration("1g", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(error, string("invalid character 'g'"));
+        CPPUNIT_ASSERT(!SecondsConfigProperty::parseDuration("", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(error, string("duration expected, empty string not valid"));
+
+        expected = 5;
+        CPPUNIT_ASSERT(SecondsConfigProperty::parseDuration("5", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(expected, seconds);
+        CPPUNIT_ASSERT(SecondsConfigProperty::parseDuration("05", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(expected, seconds);
+        CPPUNIT_ASSERT(SecondsConfigProperty::parseDuration("05s", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(expected, seconds);
+        CPPUNIT_ASSERT(SecondsConfigProperty::parseDuration("5s", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(expected, seconds);
+
+        expected = (((1 * 365 + 2) * 24 + 3) * 60 + 4) * 60 + 5;
+        CPPUNIT_ASSERT(SecondsConfigProperty::parseDuration("1y2d3H4M5s", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(expected, seconds);
+        CPPUNIT_ASSERT(SecondsConfigProperty::parseDuration("5 + 1y+2d + 3 H4M", error, seconds));
+        CPPUNIT_ASSERT_EQUAL(expected, seconds);
+
+        CPPUNIT_ASSERT(!SecondsConfigProperty::parseDuration("m", error, seconds));
     }
 };
 

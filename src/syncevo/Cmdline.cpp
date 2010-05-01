@@ -34,6 +34,7 @@
 #include <sstream>
 #include <memory>
 #include <set>
+#include <list>
 #include <algorithm>
 using namespace std;
 
@@ -54,10 +55,38 @@ Cmdline::Cmdline(int argc, const char * const * argv, ostream &out, ostream &err
     m_validSourceProps(SyncSourceConfig::getRegistry())
 {}
 
+Cmdline::Cmdline(const vector<string> &args, ostream &out, ostream &err) :
+    m_args(args),
+    m_out(out),
+    m_err(err),
+    m_validSyncProps(SyncConfig::getRegistry()),
+    m_validSourceProps(SyncSourceConfig::getRegistry())
+{
+    m_argc = args.size();
+    m_argvArray.reset(new const char *[args.size()]);
+    for(int i = 0; i < m_argc; i++) {
+        m_argvArray[i] = m_args[i].c_str();
+    }
+    m_argv = m_argvArray.get();
+}
+
 bool Cmdline::parse()
 {
+    vector<string> parsed;
+    return parse(parsed);
+}
+
+bool Cmdline::parse(vector<string> &parsed)
+{
+    parsed.clear();
+    if (m_argc) {
+        parsed.push_back(m_argv[0]);
+    }
+
     int opt = 1;
+    bool ok;
     while (opt < m_argc) {
+        parsed.push_back(m_argv[opt]);
         if (m_argv[opt][0] != '-') {
             break;
         }
@@ -71,6 +100,7 @@ bool Cmdline::parse()
                            SyncSourceConfig::m_sourcePropSync.getName().c_str())) {
                 return false;
             }
+            parsed.push_back(m_argv[opt]);
 
             // disable requirement to add --run explicitly in order to
             // be compatible with traditional command lines
@@ -82,6 +112,7 @@ bool Cmdline::parse()
                                m_argv[opt - 1], opt == m_argc ? NULL : m_argv[opt])) {
                     return false;
                 }
+                parsed.push_back(m_argv[opt]);
         } else if(boost::iequals(m_argv[opt], "--source-property") ||
                   boost::iequals(m_argv[opt], "-z")) {
             opt++;
@@ -89,6 +120,7 @@ bool Cmdline::parse()
                            m_argv[opt - 1], opt == m_argc ? NULL : m_argv[opt])) {
                 return false;
             }
+            parsed.push_back(m_argv[opt]);
         }else if(boost::iequals(m_argv[opt], "--template") ||
                   boost::iequals(m_argv[opt], "-l")) {
             opt++;
@@ -96,6 +128,7 @@ bool Cmdline::parse()
                 usage(true, string("missing parameter for ") + cmdOpt(m_argv[opt - 1]));
                 return false;
             }
+            parsed.push_back(m_argv[opt]);
             m_template = m_argv[opt];
             m_configure = true;
             string temp = boost::trim_copy (m_template);
@@ -132,10 +165,12 @@ bool Cmdline::parse()
                 usage(true, string("missing parameter for ") + cmdOpt(m_argv[opt - 1]));
                 return false;
             }
-            if (!isDir(m_restore)) {
+            //if can't convert it successfully, it's an invalid path
+            if (!relToAbs(m_restore)) {
                 usage(true, string("parameter '") + m_restore + "' for " + cmdOpt(m_argv[opt - 1]) + " must be log directory");
                 return false;
             }
+            parsed.push_back(m_restore);
         } else if(boost::iequals(m_argv[opt], "--before")) {
             m_before = true;
         } else if(boost::iequals(m_argv[opt], "--after")) {
@@ -155,9 +190,17 @@ bool Cmdline::parse()
             m_usage = true;
         } else if(boost::iequals(m_argv[opt], "--version")) {
             m_version = true;
-        } else if(boost::iequals(m_argv[opt], "--keyring")||
-                boost::iequals(m_argv[opt], "-k")) {
-            m_keyring = true;
+        } else if (parseBool(opt, "--keyring", "-k", true, m_keyring, ok)) {
+            if (!ok) {
+                return false;
+            }
+        } else if (parseBool(opt, "--daemon", NULL, true, m_useDaemon, ok)) {
+            if (!ok) {
+                return false;
+            }
+        } else if(boost::iequals(m_argv[opt], "--monitor")||
+                boost::iequals(m_argv[opt], "-m")) {
+            m_monitor = true;
         } else {
             usage(false, string(m_argv[opt]) + ": unknown parameter");
             return false;
@@ -168,11 +211,91 @@ bool Cmdline::parse()
     if (opt < m_argc) {
         m_server = m_argv[opt++];
         while (opt < m_argc) {
+            parsed.push_back(m_argv[opt]);
             m_sources.insert(m_argv[opt++]);
         }
     }
 
     return true;
+}
+
+bool Cmdline::parseBool(int opt, const char *longName, const char *shortName,
+                        bool def, Bool &value,
+                        bool &ok)
+{
+    string option = m_argv[opt];
+    string param;
+    size_t pos = option.find('=');
+    if (pos != option.npos) {
+        param = option.substr(pos + 1);
+        option.resize(pos);
+    }
+    if ((longName && boost::iequals(option, longName)) ||
+        (shortName && boost::iequals(option, shortName))) {
+        ok = true;
+        if (param.empty()) {
+            value = def;
+        } else if (boost::iequals(param, "t") ||
+                   boost::iequals(param, "1") ||
+                   boost::iequals(param, "true") ||
+                   boost::iequals(param, "yes")) {
+            value = true;
+        } else if (boost::iequals(param, "f") ||
+              boost::iequals(param, "0") ||
+              boost::iequals(param, "false") ||
+              boost::iequals(param, "no")) {
+            value = false;
+        } else {
+            usage(true, string("parameter in '") + m_argv[opt] + "' must be 1/t/true/yes or 0/f/false/no");
+            ok = false;
+        }
+        // was our option
+        return true;
+    } else {
+        // keep searching for match
+        return false;
+    }
+}
+
+bool Cmdline::isSync()
+{
+    //make sure command line arguments really try to run sync
+    if(m_usage || m_version) {
+        return false;
+    } else if(m_printServers || boost::trim_copy(m_server) == "?")  {
+        return false;
+    } else if(m_printTemplates || m_dontrun) {
+        return false;
+    } else if(m_argc == 1 || (m_useDaemon.wasSet() && m_argc == 2)) {
+        return false;
+    } else if(m_printConfig || m_remove) {
+        return false;
+    } else if (m_server == "" && m_argc > 1) {
+        return false;
+    } else if(m_configure || m_migrate) {
+        return false;
+    } else if(m_status || m_printSessions) {
+        return false;
+    } else if(!m_restore.empty()) {
+        return false;
+    } else if(m_dryrun) {
+        return false;
+    } else if(!m_run && (m_syncProps.size() || m_sourceProps.size())) {
+        return false;
+    }
+    return true;
+}
+
+bool Cmdline::dontRun() const
+{
+    // this mimics the if() checks in run()
+    if (m_usage || m_version ||
+        m_printServers || boost::trim_copy(m_server) == "?" ||
+        m_printTemplates) {
+        return false;
+    } else {
+        return m_dontrun;
+    }
 }
 
 bool Cmdline::run() {
@@ -203,7 +326,7 @@ bool Cmdline::run() {
         }
     } else if (m_dontrun) {
         // user asked for information
-    } else if (m_argc == 1) {
+    } else if (m_argc == 1 || (m_useDaemon.wasSet() && m_argc == 2)) {
         // no parameters: list databases and short usage
         const SourceRegistry &registry(SyncSource::getSourceRegistry());
         boost::shared_ptr<FilterConfigNode> sharedNode(new VolatileConfigNode());
@@ -211,7 +334,7 @@ bool Cmdline::run() {
         boost::shared_ptr<FilterConfigNode> hiddenNode(new VolatileConfigNode());
         boost::shared_ptr<FilterConfigNode> trackingNode(new VolatileConfigNode());
         boost::shared_ptr<FilterConfigNode> serverNode(new VolatileConfigNode());
-        SyncSourceNodes nodes(sharedNode, configNode, hiddenNode, trackingNode, serverNode);
+        SyncSourceNodes nodes(true, sharedNode, configNode, hiddenNode, trackingNode, serverNode, "");
         SyncSourceParams params("list", nodes);
         
         BOOST_FOREACH(const RegisterSyncSource *source, registry) {
@@ -259,11 +382,20 @@ bool Cmdline::run() {
             getFilters(context, syncFilter, sourceFilters);
         }
 
+        // determine whether we dump a peer or a context
+        int flags = DUMP_PROPS_NORMAL;
+        string peer, context;
+        SyncConfig::splitConfigString(config->getConfigName(), peer, context);
+        if (peer.empty()) {
+            flags |= HIDE_PER_PEER;
+            checkForPeerProps();
+        } 
+
         if (m_sources.empty() ||
             m_sources.find("main") != m_sources.end()) {
             boost::shared_ptr<FilterConfigNode> syncProps(config->getProperties());
             syncProps->setFilter(syncFilter);
-            dumpProperties(*syncProps, config->getRegistry(), false);
+            dumpProperties(*syncProps, config->getRegistry(), flags);
         }
 
         list<string> sources = config->getSyncSources();
@@ -281,7 +413,7 @@ bool Cmdline::run() {
                     sourceProps->setFilter(sourceFilters[""]);
                 }
                 dumpProperties(*sourceProps, SyncSourceConfig::getRegistry(),
-                               name != *(--sources.end()));
+                               flags | ((name != *(--sources.end())) ? HIDE_LEGEND : DUMP_PROPS_NORMAL));
             }
         }
     } else if (m_server == "" && m_argc > 1) {
@@ -304,6 +436,9 @@ bool Cmdline::run() {
         bool fromScratch = false;
         string peer, context;
         SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_server), peer, context);
+        if (peer.empty()) {
+            checkForPeerProps();
+        }
 
         // Both config changes and migration are implemented as copying from
         // another config (template resp. old one). Migration also moves
@@ -353,8 +488,22 @@ bool Cmdline::run() {
             if (!from->exists()) {
                 // creating from scratch, look for template
                 fromScratch = true;
-                string configTemplate = m_template.empty() ? m_server : m_template;
-                SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configTemplate), peer, context);
+                string configTemplate;
+                if (m_template.empty()) {
+                    // template is the peer name
+                    configTemplate = m_server;
+                    SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configTemplate), peer, context);
+                } else {
+                    // Template is specified explicitly. It must not contain a context,
+                    // because the context comes from the config name.
+                    configTemplate = m_template;
+                    if (SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configTemplate), peer, context)) {
+                        m_err << "ERROR: template " << configTemplate << " must not specify a context." << endl;
+                        return false;
+                    }
+                    string tmp;
+                    SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_server), tmp, context);
+                }
                 from = SyncConfig::createPeerTemplate(peer);
                 if (!from.get()) {
                     m_err << "ERROR: no configuration template for '" << configTemplate << "' available." << endl;
@@ -363,18 +512,26 @@ bool Cmdline::run() {
                     return false;
                 }
 
-                // Templates no longer contain these strings, because
-                // GUIs would have to localize them. For configs created
-                // via the command line, the extra hint that these
-                // properties need to be set is useful, so set these
-                // strings here. They'll get copied into the new
-                // config only if no other value was given on the
-                // command line.
-                if (!from->getUsername()[0]) {
-                    from->setUsername("your SyncML server account name");
-                }
-                if (!from->getPassword()[0]) {
-                    from->setPassword("your SyncML server password");
+                if (!from->getPeerIsClient()) {
+                    // Templates no longer contain these strings, because
+                    // GUIs would have to localize them. For configs created
+                    // via the command line, the extra hint that these
+                    // properties need to be set is useful, so set these
+                    // strings here. They'll get copied into the new
+                    // config only if no other value was given on the
+                    // command line.
+                    if (!from->getUsername()[0]) {
+                        from->setUsername("your SyncML server account name");
+                    }
+                    if (!from->getPassword()[0]) {
+                        from->setPassword("your SyncML server password");
+                    }
+                } else {
+                    // uncomment SyncURL, so that it can be shown by
+                    // sync-ui
+                    if (from->getSyncURL().size() == 0) {
+                        from->setSyncURL ("input your peer address here");
+                    }
                 }
             }
         }
@@ -422,7 +579,7 @@ bool Cmdline::run() {
 
                     // check whether the sync source works
                     SyncSourceParams params("list", to->getSyncSourceNodes(source));
-                    auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false));
+                    auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false, to.get()));
                     if (syncSource.get() == NULL) {
                         disable = "no backend available";
                     } else {
@@ -498,6 +655,7 @@ bool Cmdline::run() {
         context->setQuiet(m_quiet);
         context->setDryRun(m_dryrun);
         context->setConfigFilter(true, "", m_syncProps);
+        context->setOutput(&m_out);
         if (m_sources.empty()) {
             if (m_sourceProps.empty()) {
                 // empty source list, empty source filter => run with
@@ -569,13 +727,13 @@ bool Cmdline::run() {
                 if (first) {
                     first = false;
                 } else if(!m_quiet) {
-                    cout << endl;
+                    m_out << endl;
                 }
-                cout << dir << endl;
+                m_out << dir << endl;
                 if (!m_quiet) {
                     SyncReport report;
                     context->readSessionInfo(dir, report);
-                    cout << report;
+                    m_out << report;
                 }
             }
         } else if (!m_restore.empty()) {
@@ -763,6 +921,32 @@ void Cmdline::getFilters(const string &context,
     sourceFilters[""] = m_sourceProps;
 }
 
+static void findPeerProps(FilterConfigNode::ConfigFilter &filter,
+                          ConfigPropertyRegistry &registry,
+                          list<string> &peerProps)
+{
+    BOOST_FOREACH(StringPair entry, filter) {
+        const ConfigProperty *prop = registry.find(entry.first);
+        if (prop &&
+            prop->getSharing() == ConfigProperty::NO_SHARING &&
+            !(prop->getFlags() & ConfigProperty::SHARED_AND_UNSHARED)) {
+            peerProps.push_back(entry.first);
+        }
+    }
+}
+
+void Cmdline::checkForPeerProps()
+{
+    list<string> peerProps;
+
+    findPeerProps(m_syncProps, SyncConfig::getRegistry(), peerProps);
+    findPeerProps(m_sourceProps, SyncSourceConfig::getRegistry(), peerProps);
+    if (!peerProps.empty()) {
+        SyncContext::throwError(string("per-peer (unshared) properties not allowed: ") +
+                                boost::join(peerProps, ", "));
+    }
+}
+
 void Cmdline::listSources(SyncSource &syncSource, const string &header)
 {
     m_out << header << ":\n";
@@ -794,10 +978,16 @@ void Cmdline::dumpConfigTemplates(const string &preamble,
                                        bool printRank)
 {
     m_out << preamble << endl;
+    m_out << "   "  << "template name" << " = " << "template description";
+    if (printRank) {
+        m_out << "    " << "matching score in percent (100% = exact match)";
+    }
+    m_out << endl;
+
     BOOST_FOREACH(const SyncConfig::TemplateList::value_type server,templates) {
-        m_out << "   "  << server->m_name << " = " << server->m_description;
+        m_out << "   "  << server->m_templateId << " = " << server->m_description;
         if (printRank){
-            m_out << "    " << server->m_rank;
+            m_out << "    " << server->m_rank *20 << "%";
         }
         m_out << endl;
     }
@@ -808,12 +998,15 @@ void Cmdline::dumpConfigTemplates(const string &preamble,
 
 void Cmdline::dumpProperties(const ConfigNode &configuredProps,
                              const ConfigPropertyRegistry &allProps,
-                             bool hideLegend)
+                             int flags)
 {
     list<string> perPeer, perContext, global;
 
     BOOST_FOREACH(const ConfigProperty *prop, allProps) {
-        if (prop->isHidden()) {
+        if (prop->isHidden() ||
+            ((flags & HIDE_PER_PEER) &&
+             prop->getSharing() == ConfigProperty::NO_SHARING &&
+             !(prop->getFlags() & ConfigProperty::SHARED_AND_UNSHARED))) {
             continue;
         }
         if (!m_quiet) {
@@ -847,7 +1040,7 @@ void Cmdline::dumpProperties(const ConfigNode &configuredProps,
         }
     }
 
-    if (!m_quiet && !hideLegend) {
+    if (!m_quiet && !(flags & HIDE_LEGEND)) {
         if (!perPeer.empty() ||
             !perContext.empty() ||
             !global.empty()) {
@@ -1019,11 +1212,14 @@ void Cmdline::usage(bool full, const string &error, const string &param)
             "  shown without starting a new one. This can be used to see in advance" << endl <<
             "  whether the local data needs to be synchronized with the peer." << endl <<
             "" << endl <<
+            "  When used without configuration name, it shows the status of the background" << endl <<
+            "  sync daemon or an error if no such daemon exists." << endl <<
+            "" << endl <<
             "--quiet|-q" << endl <<
             "  Suppresses most of the normal output during a synchronization. The" << endl <<
             "  log file still contains all the information." << endl <<
             "" << endl <<
-            "--keyring|-k" << endl <<
+            "--keyring|-k[=yes/no/...]" << endl <<
             "  Save or retrieve passwords from the GNOME keyring when modifying the" << endl <<
             "  configuration or running a synchronization. Note that using this option" << endl <<
             "  applies to *all* passwords in a configuration, so setting a single" << endl <<
@@ -1036,6 +1232,10 @@ void Cmdline::usage(bool full, const string &error, const string &param)
             "  without the --keyring argument, the password has to be entered" << endl <<
             "  interactively. The --print-config output always shows '-' instead of" << endl <<
             "  retrieving the password from the keyring." << endl <<
+            "" << endl <<
+            "--daemon[=yes/no/...]" << endl <<
+            "  Run operations in cooperation with the background sync daemon;" << endl <<
+            "  enabled by default if it is installed." << endl <<
             "" << endl <<
             "--help|-h" << endl <<
             "  Prints usage information." << endl <<
@@ -1345,21 +1545,25 @@ public:
                               "peers/scheduleworld/config.ini:# loglevel = 0\n"
                               "peers/scheduleworld/config.ini:# printChanges = 1\n"
                               "config.ini:# maxlogdirs = 10\n"
-                              "peers/scheduleworld/config.ini:# preventSlowSync = 0\n"
+                              "peers/scheduleworld/config.ini:# autoSync = 0\n"
+                              "peers/scheduleworld/config.ini:# autoSyncInterval = 30M\n"
+                              "peers/scheduleworld/config.ini:# autoSyncDelay = 5M\n"
+                              "peers/scheduleworld/config.ini:# preventSlowSync = 1\n"
                               "peers/scheduleworld/config.ini:# useProxy = 0\n"
                               "peers/scheduleworld/config.ini:# proxyHost = \n"
                               "peers/scheduleworld/config.ini:# proxyUsername = \n"
                               "peers/scheduleworld/config.ini:# proxyPassword = \n"
                               "peers/scheduleworld/config.ini:# clientAuthType = md5\n"
-                              "peers/scheduleworld/config.ini:# RetryDuration = 300\n"
-                              "peers/scheduleworld/config.ini:# RetryInterval = 60\n"
+                              "peers/scheduleworld/config.ini:# RetryDuration = 5M\n"
+                              "peers/scheduleworld/config.ini:# RetryInterval = 2M\n"
                               "peers/scheduleworld/config.ini:# remoteIdentifier = \n"
                               "peers/scheduleworld/config.ini:# PeerIsClient = 0\n"
+                              "peers/scheduleworld/config.ini:# SyncMLVersion = \n"
                               "peers/scheduleworld/config.ini:# PeerName = \n"
                               "config.ini:deviceId = fixed-devid\n" /* this is not the default! */
                               "peers/scheduleworld/config.ini:# remoteDeviceId = \n"
                               "peers/scheduleworld/config.ini:# enableWBXML = 1\n"
-                              "peers/scheduleworld/config.ini:# maxMsgSize = 20000\n"
+                              "peers/scheduleworld/config.ini:# maxMsgSize = 150000\n"
                               "peers/scheduleworld/config.ini:# maxObjSize = 4000000\n"
                               "peers/scheduleworld/config.ini:# enableCompression = 0\n"
                               "peers/scheduleworld/config.ini:# SSLServerCertificates = \n"
@@ -1445,7 +1649,7 @@ protected:
     }
 
     void removeRandomUUID(string &buffer) {
-        string uuidstr = "deviceId = sc-pim-";
+        string uuidstr = "deviceId = syncevolution-";
         size_t uuid = buffer.find(uuidstr);
         CPPUNIT_ASSERT(uuid != buffer.npos);
         size_t end = buffer.find("\n", uuid + uuidstr.size());
@@ -1630,12 +1834,14 @@ protected:
         TestCmdline help("--template", "? ", NULL);
         help.doit();
         CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+                                  "   template name = template description\n"
                                   "   Funambol = http://my.funambol.com\n"
                                   "   Google = http://m.google.com/sync\n"
                                   "   Goosync = http://www.goosync.com/\n"
                                   "   Memotoo = http://www.memotoo.com\n"
                                   "   Mobical = http://www.mobical.net\n"
                                   "   Oracle = http://www.oracle.com/technology/products/beehive/index.html\n"
+                                  "   Ovi = http://www.ovi.com\n"
                                   "   ScheduleWorld = http://www.scheduleworld.com\n"
                                   "   SyncEvolution = http://www.syncevolution.org\n"
                                   "   Synthesis = http://www.synthesis.ch\n"
@@ -1647,36 +1853,36 @@ protected:
     void testMatchTemplate() {
         ScopedEnvChange templates("SYNCEVOLUTION_TEMPLATE_DIR", "testcases/templates");
 
-        TestCmdline help1("--template", "?nokia_7210c", NULL);
+        TestCmdline help1("--template", "?nokia 7210c", NULL);
         help1.doit();
         CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
-                "   Nokia_7210c = Template for Nokia 7210c phone and as default template for all Nokia phones    5\n"
-                "   SyncEvolutionClient = SyncEvolution server side template    2\n"
-                "   ServerDefault = server side default template    1\n",
+                "   template name = template description    matching score in percent (100% = exact match)\n"
+                "   Nokia 7210c = Template for Nokia S40 series Phone    100%\n"
+                "   SyncEvolution Client = SyncEvolution server side template    40%\n",
                 help1.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help1.m_err.str());
         TestCmdline help2("--template", "?nokia", NULL);
         help2.doit();
         CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
-                "   Nokia_7210c = Template for Nokia 7210c phone and as default template for all Nokia phones    5\n"
-                "   SyncEvolutionClient = SyncEvolution server side template    2\n"
-                "   ServerDefault = server side default template    1\n",
+                "   template name = template description    matching score in percent (100% = exact match)\n"
+                "   Nokia 7210c = Template for Nokia S40 series Phone    100%\n"
+                "   SyncEvolution Client = SyncEvolution server side template    40%\n",
                 help2.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help2.m_err.str());
         TestCmdline help3("--template", "?7210c", NULL);
         help3.doit();
         CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
-                "   Nokia_7210c = Template for Nokia 7210c phone and as default template for all Nokia phones    3\n"
-                "   ServerDefault = server side default template    1\n"
-                "   SyncEvolutionClient = SyncEvolution server side template    1\n",
+                "   template name = template description    matching score in percent (100% = exact match)\n"
+                "   Nokia 7210c = Template for Nokia S40 series Phone    60%\n"
+                "   SyncEvolution Client = SyncEvolution server side template    20%\n",
                 help3.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help3.m_err.str());
-        TestCmdline help4("--template", "?syncevolution", NULL);
+        TestCmdline help4("--template", "?syncevolution client", NULL);
         help4.doit();
         CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
-                "   SyncEvolutionClient = SyncEvolution server side template    5\n"
-                "   Nokia_7210c = Template for Nokia 7210c phone and as default template for all Nokia phones    2\n"
-                "   ServerDefault = server side default template    2\n",
+                "   template name = template description    matching score in percent (100% = exact match)\n"
+                "   SyncEvolution Client = SyncEvolution server side template    100%\n"
+                "   Nokia 7210c = Template for Nokia S40 series Phone    40%\n",
                 help4.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help4.m_err.str());
     }
@@ -1748,6 +1954,15 @@ protected:
                                       filtered);
             // there should have been comments
             CPPUNIT_ASSERT(actual.size() > filtered.size());
+        }
+
+        {
+            TestCmdline cmdline("--print-config", "--template", "scheduleworld@nosuchcontext", NULL);
+            cmdline.doit();
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
+            string actual = cmdline.m_out.str();
+            // deviceId must *not* be the one from Funambol because of the new context
+            CPPUNIT_ASSERT(!boost::contains(actual, "deviceId = fixed-devid"));
         }
 
         {
@@ -1829,6 +2044,39 @@ protected:
                                "evolutionsource = Personal");
             string actual = injectValues(filterConfig(cmdline.m_out.str()));
             CPPUNIT_ASSERT(boost::contains(actual, "deviceId = fixed-devid"));
+            CPPUNIT_ASSERT_EQUAL_DIFF(expected,
+                                      actual);
+        }
+
+        {
+            // print config => must not use settings from default context
+            TestCmdline cmdline("--print-config", "--template", "scheduleworld@nosuchcontext", NULL);
+            cmdline.doit();
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
+            // source settings *not* from modified Funambol config
+            string expected = filterConfig(internalToIni(ScheduleWorldConfig()));
+            string actual = injectValues(filterConfig(cmdline.m_out.str()));
+            CPPUNIT_ASSERT(!boost::contains(actual, "deviceId = fixed-devid"));
+            removeRandomUUID(actual);
+            CPPUNIT_ASSERT_EQUAL_DIFF(expected,
+                                      actual);
+        }
+
+        {
+            // create config => again, must not use settings from default context
+            TestCmdline cmdline("--configure", "--template", "scheduleworld", "other@other", NULL);
+            cmdline.doit();
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
+        }
+        {
+            TestCmdline cmdline("--print-config", "other@other", NULL);
+            cmdline.doit();
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
+            // source settings *not* from modified Funambol config
+            string expected = filterConfig(internalToIni(ScheduleWorldConfig()));
+            string actual = injectValues(filterConfig(cmdline.m_out.str()));
+            CPPUNIT_ASSERT(!boost::contains(actual, "deviceId = fixed-devid"));
+            removeRandomUUID(actual);
             CPPUNIT_ASSERT_EQUAL_DIFF(expected,
                                       actual);
         }
@@ -1954,7 +2202,40 @@ protected:
 
         rm_r(m_testDir);
         testSetupScheduleWorld();
-        doConfigure(ScheduleWorldConfig(), "sources/addressbook/config.ini:");
+        string expected = doConfigure(ScheduleWorldConfig(), "sources/addressbook/config.ini:");
+
+        {
+            // updating type for peer must also update type for context
+            TestCmdline cmdline("--configure",
+                                "--source-property", "type=file:text/vcard:3.0",
+                                "scheduleworld", "addressbook",
+                                NULL);
+            cmdline.doit();
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_out.str());
+            boost::replace_all(expected,
+                               "type = addressbook:text/vcard",
+                               "type = file:text/vcard:3.0");
+            CPPUNIT_ASSERT_EQUAL_DIFF(expected,
+                                      filterConfig(printConfig("scheduleworld")));
+            string shared = filterConfig(printConfig("@default"));
+            CPPUNIT_ASSERT(shared.find("type = file:text/vcard:3.0") != shared.npos);
+        }
+
+        {
+            // updating type for context must not affect peer
+            TestCmdline cmdline("--configure",
+                                "--source-property", "type=file:text/vcard:2.1",
+                                "@default", "addressbook",
+                                NULL);
+            cmdline.doit();
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_out.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF(expected,
+                                      filterConfig(printConfig("scheduleworld")));
+            string shared = filterConfig(printConfig("@default"));
+            CPPUNIT_ASSERT(shared.find("type = file:text/vcard:2.1") != shared.npos);
+        }
 
         string syncProperties("syncURL:\n"
                               "\n"
@@ -1969,6 +2250,12 @@ protected:
                               "printChanges:\n"
                               "\n"
                               "maxlogdirs:\n"
+                              "\n"
+                              "autoSync:\n"
+                              "\n"
+                              "autoSyncInterval:\n"
+                              "\n"
+                              "autoSyncDelay:\n"
                               "\n"
                               "preventSlowSync:\n"
                               "\n"
@@ -1989,6 +2276,8 @@ protected:
                               "remoteIdentifier:\n"
                               "\n"
                               "PeerIsClient:\n"
+                              "\n"
+                              "SyncMLVersion:\n"
                               "\n"
                               "PeerName:\n"
                               "\n"
@@ -2093,7 +2382,7 @@ protected:
         doConfigure(oldConfig, "spds/sources/addressbook/config.txt:");
     }
 
-    void doConfigure(const string &SWConfig, const string &addressbookPrefix) {
+    string doConfigure(const string &SWConfig, const string &addressbookPrefix) {
         string expected;
 
         {
@@ -2162,6 +2451,8 @@ protected:
             CPPUNIT_ASSERT_EQUAL_DIFF(expected,
                                       filterConfig(printConfig("scheduleworld")));
         }
+
+        return expected;
     }
 
     void testListSources() {
@@ -2355,7 +2646,7 @@ private:
             success = m_cmdline->parse() &&
                 m_cmdline->run();
             if (m_err.str().size()) {
-                cout << endl << m_err.str();
+                m_out << endl << m_err.str();
             }
             CPPUNIT_ASSERT(success);
         }
@@ -2400,21 +2691,25 @@ private:
             "spds/syncml/config.txt:# loglevel = 0\n"
             "spds/syncml/config.txt:# printChanges = 1\n"
             "spds/syncml/config.txt:# maxlogdirs = 10\n"
-            "spds/syncml/config.txt:# preventSlowSync = 0\n"
+            "spds/syncml/config.txt:# autoSync = 0\n"
+            "spds/syncml/config.txt:# autoSyncInterval = 30M\n"
+            "spds/syncml/config.txt:# autoSyncDelay = 5M\n"
+            "spds/syncml/config.txt:# preventSlowSync = 1\n"
             "spds/syncml/config.txt:# useProxy = 0\n"
             "spds/syncml/config.txt:# proxyHost = \n"
             "spds/syncml/config.txt:# proxyUsername = \n"
             "spds/syncml/config.txt:# proxyPassword = \n"
             "spds/syncml/config.txt:# clientAuthType = md5\n"
-            "spds/syncml/config.txt:# RetryDuration = 300\n"
-            "spds/syncml/config.txt:# RetryInterval = 60\n"
+            "spds/syncml/config.txt:# RetryDuration = 5M\n"
+            "spds/syncml/config.txt:# RetryInterval = 2M\n"
             "spds/syncml/config.txt:# remoteIdentifier = \n"
             "spds/syncml/config.txt:# PeerIsClient = 0\n"
+            "spds/syncml/config.txt:# SyncMLVersion = \n"
             "spds/syncml/config.txt:# PeerName = \n"
             "spds/syncml/config.txt:deviceId = fixed-devid\n" /* this is not the default! */
             "spds/syncml/config.txt:# remoteDeviceId = \n"
             "spds/syncml/config.txt:# enableWBXML = 1\n"
-            "spds/syncml/config.txt:# maxMsgSize = 20000\n"
+            "spds/syncml/config.txt:# maxMsgSize = 150000\n"
             "spds/syncml/config.txt:# maxObjSize = 4000000\n"
             "spds/syncml/config.txt:# enableCompression = 0\n"
 #ifdef ENABLE_LIBSOUP
@@ -2471,6 +2766,10 @@ private:
         boost::replace_first(config,
                              "# enableWBXML = 1",
                              "enableWBXML = 0");
+
+        boost::replace_first(config,
+                             "# RetryInterval = 2M",
+                             "RetryInterval = 0");
 
         boost::replace_first(config,
                              "addressbook/config.ini:uri = card3",

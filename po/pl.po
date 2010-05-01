@@ -3,607 +3,673 @@
 # This file is distributed under the same license as the syncevolution package.
 # Andrzej Zaborowski <andrew.zaborowski@intel.com>, 2009.
 #
-#: ../src/gtk-ui/sync-ui.c:764
 msgid ""
 msgstr ""
 "Project-Id-Version: Moblin\n"
 "Report-Msgid-Bugs-To: http://moblin.org/projects/syncevolution\n"
-"POT-Creation-Date: 2009-10-01 19:27+0000\n"
+"POT-Creation-Date: 2010-04-05 09:22+0000\n"
 "PO-Revision-Date: \n"
-"Last-Translator: Michał Sawicz <michal@sawicz.net>\n"
+"Last-Translator: Romuald Pawlikowski <r.pawlikowski@gmail.com>\n"
 "Language-Team: Moblin\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 "
-"|| n%100>=20) ? 1 : 2);\n"
+"Plural-Forms: nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
 "X-Poedit-Language: Polish\n"
 "X-Poedit-SourceCharset: utf-8\n"
 "X-Poedit-Bookmarks: -1,37,-1,-1,-1,-1,-1,-1,-1,-1\n"
 
 #. TRANSLATORS: this is the application name that may be used by e.g.
 #. the windowmanager
-#: ../src/gtk-ui/main.c:31 ../src/gtk-ui/ui.glade.h:28
+#: ../src/gtk-ui/main.c:40
+#: ../src/gtk-ui/ui.glade.h:38
 #: ../src/gtk-ui/sync.desktop.in.h:1
+#: ../src/gnome-bluetooth/syncevolution.c:112
 msgid "Sync"
 msgstr "Synchronizuj"
 
-#: ../src/gtk-ui/sync-ui.c:259
-msgid "Addressbook"
-msgstr "Książka adresowa"
+#: ../src/gtk-ui/sync-ui.c:260
+msgid "Contacts"
+msgstr "Kontakty"
 
-#: ../src/gtk-ui/sync-ui.c:261
-msgid "Calendar"
-msgstr "Kalendarz"
+#: ../src/gtk-ui/sync-ui.c:262
+msgid "Appointments"
+msgstr "Spotkania"
 
-# <to do>
-#: ../src/gtk-ui/sync-ui.c:263
-msgid "Todo"
-msgstr "Do zrobiena"
+#: ../src/gtk-ui/sync-ui.c:264
+#: ../src/gtk-ui/ui.glade.h:40
+msgid "Tasks"
+msgstr "Zadania"
 
-# Note
-#: ../src/gtk-ui/sync-ui.c:265
-msgid "Memo"
-msgstr "Notatka"
+#: ../src/gtk-ui/sync-ui.c:266
+msgid "Notes"
+msgstr "Notatki"
 
-# Error while saving the current service into the configuration system GConf
-#: ../src/gtk-ui/sync-ui.c:320
-msgid "Failed to save current service in GConf configuration system"
-msgstr "Błąd przy zapisie aktualnej usługi w systemie konfiguracji GConf"
+#. TRANSLATORS: This is a "combination source" for syncing with devices
+#. * that combine appointments and tasks. the name should match the ones
+#. * used for calendar and todo above
+#: ../src/gtk-ui/sync-ui.c:271
+msgid "Appointments & Tasks"
+msgstr "Spotkania i zadania"
 
-# Error while saving the configuration of the service in SyncEvolution
-#: ../src/gtk-ui/sync-ui.c:331
-msgid "Failed to save service configuration to SyncEvolution"
-msgstr "Błąd przy zapisie konfiguracji usługi w SyncEvolution"
-
-# Error while saving the current service into the configuration system GConf
-#: ../src/gtk-ui/sync-ui.c:416
-msgid "Failed to get service configuration from SyncEvolution"
-msgstr "Błąd przy pobieraniu konfiguracji usługi z SynEvolution"
-
-# Error while deleting the configuration of the service from SyncEvolution
-#: ../src/gtk-ui/sync-ui.c:479
-msgid "Failed to remove service configuration from SyncEvolution"
-msgstr "Błąd przy usuwaniu konfiguracji usługi z SynEvolution"
-
-#: ../src/gtk-ui/sync-ui.c:599
-msgid "Service must have a name and server URL"
-msgstr "Usługa musi mieć nazwę i URL serwera"
-
-#. sync is no longer in progress for some reason
-#: ../src/gtk-ui/sync-ui.c:675
-msgid "Failed to cancel: sync was no longer in progress"
-msgstr "Błąd przy anulowaniu: synchronizacja już się zakończyła"
-
-# Error during the cancellation of the synchronization
-#: ../src/gtk-ui/sync-ui.c:679
-msgid "Failed to cancel sync"
-msgstr "Błąd przy anulowaniu synchronizacji"
-
-# The synchronization is being cancelled
-#: ../src/gtk-ui/sync-ui.c:683
-msgid "Canceling sync"
-msgstr "Anulowanie synchronizacji"
-
-# We are trying  to cancel the synchronization
-#: ../src/gtk-ui/sync-ui.c:697
-msgid "Trying to cancel sync"
-msgstr "Trwa próba anulowania synchronizacji"
-
-#: ../src/gtk-ui/sync-ui.c:704
-#, c-format
-msgid ""
-"Do you want to delete all local data and replace it with data from %s? This "
-"is not usually advised."
-msgstr ""
-"Czy chcesz usunąć wszystkie lokalne dane i zastąpić je danymi z %s? Nie jest "
-"to zwykle zalecane."
-
-#: ../src/gtk-ui/sync-ui.c:709
-#, c-format
-msgid ""
-"Do you want to delete all data in %s and replace it with your local data? "
-"This is not usually advised."
-msgstr ""
-"Czy chcesz usunąć wszystkie dane w %s i zastąpić je danymi lokalnymi? Nie "
-"jest to zwykle zalecane."
-
-#: ../src/gtk-ui/sync-ui.c:726
-msgid "No, cancel sync"
-msgstr "Nie, anuluj synchronizację"
-
-#: ../src/gtk-ui/sync-ui.c:727
-msgid "Yes, delete and replace"
-msgstr "Tak, usuń i zastąp"
-
-# Synchronization won't take place because it has not been set with what it will be compared to
-#: ../src/gtk-ui/sync-ui.c:749
-msgid "No sources are enabled, not syncing"
-msgstr ""
-"Synchronizacja nie może zostać wykonana ponieważ nie podano źródła do "
-"porównania"
-
-# A synchronization is already being processed
-#: ../src/gtk-ui/sync-ui.c:766
-msgid "A sync is already in progress"
-msgstr "Synchronizacja jest już w trakcie"
-
-#: ../src/gtk-ui/sync-ui.c:768
-msgid "Failed to start sync"
-msgstr "Błąd przy inicjalizacji synchronizacji"
-
-#: ../src/gtk-ui/sync-ui.c:773
+#: ../src/gtk-ui/sync-ui.c:343
 msgid "Starting sync"
 msgstr "Rozpoczynanie synchronizacji"
 
+#. TRANSLATORS: slow sync confirmation dialog message. Placeholder
+#. * is service/device name
+#: ../src/gtk-ui/sync-ui.c:381
+#, c-format
+msgid "Do you want to slow sync with %s?"
+msgstr "Czy chcesz dokonać wolnej synchronizacji z %s?"
+
+#: ../src/gtk-ui/sync-ui.c:385
+msgid "Yes, do slow sync"
+msgstr "Tak, wykonaj wolną synchronizację"
+
+#: ../src/gtk-ui/sync-ui.c:385
+msgid "No, cancel sync"
+msgstr "Nie, anuluj synchronizację"
+
+#. TRANSLATORS: confirmation dialog for refresh-from-server. Placeholder
+#. * is service/device name
+#: ../src/gtk-ui/sync-ui.c:418
+#, c-format
+msgid "Do you want to delete all local data and replace it with data from %s? This is not usually advised."
+msgstr "Czy chcesz usunąć wszystkie lokalne dane i zastąpić je danymi z %s? Nie jest to zwykle zalecane."
+
+#: ../src/gtk-ui/sync-ui.c:423
+#: ../src/gtk-ui/sync-ui.c:454
+msgid "Yes, delete and replace"
+msgstr "Tak, usuń i zastąp"
+
+#: ../src/gtk-ui/sync-ui.c:423
+#: ../src/gtk-ui/sync-ui.c:454
+#: ../src/gtk-ui/sync-ui.c:1566
+msgid "No"
+msgstr "Nie"
+
+#. TRANSLATORS: confirmation dialog for refresh-from-client. Placeholder
+#. * is service/device name
+#: ../src/gtk-ui/sync-ui.c:449
+#, c-format
+msgid "Do you want to delete all data in %s and replace it with your local data? This is not usually advised."
+msgstr "Czy chcesz usunąć wszystkie dane w %s i zastąpić je danymi lokalnymi? Nie jest to zwykle zalecane."
+
+# We are trying  to cancel the synchronization
+#: ../src/gtk-ui/sync-ui.c:481
+msgid "Trying to cancel sync"
+msgstr "Trwa próba anulowania synchronizacji"
+
+# There is no space left
+#: ../src/gtk-ui/sync-ui.c:521
+msgid "No service or device selected"
+msgstr "Nie wybrano usługi lub urządzenia"
+
 # Last synchronization happened a few seconds ago
-#: ../src/gtk-ui/sync-ui.c:798
-msgid "Last synced just seconds ago"
-msgstr "Ostatnio synchronizowano przed paroma sekundami"
+#. TRANSLATORS: This is the title on main view. Placeholder is
+#. * the service name. Example: "Google - synced just now"
+#: ../src/gtk-ui/sync-ui.c:529
+#, c-format
+msgid "%s - synced just now"
+msgstr "%s - właśnie zsynchronizowano"
 
 # Last synchronization happened one minute ago
-#: ../src/gtk-ui/sync-ui.c:801
-msgid "Last synced a minute ago"
-msgstr "Ostatnio synchronizowano minutę temu"
+#: ../src/gtk-ui/sync-ui.c:533
+#, c-format
+msgid "%s - synced a minute ago"
+msgstr "%s - zsynchronizowano minutę temu"
 
 # Last synchronization happened %ld minutes ago
-#: ../src/gtk-ui/sync-ui.c:804
+#: ../src/gtk-ui/sync-ui.c:537
 #, c-format
-msgid "Last synced %ld minutes ago"
-msgstr "Ostatnio synchronizowano %ld minut temu"
+msgid "%s - synced %ld minutes ago"
+msgstr "%s - zsynchronizowano %ld minut temu"
 
 # Last synchronization happened one hour ago
-#: ../src/gtk-ui/sync-ui.c:807
-msgid "Last synced an hour ago"
-msgstr "Ostatnio synchronizowano godzinę temu"
+#: ../src/gtk-ui/sync-ui.c:542
+#, c-format
+msgid "%s - synced an hour ago"
+msgstr "%s - zsynchronizowano godzinę temu"
 
 # Last synchronization happened %ld hours ago
-#: ../src/gtk-ui/sync-ui.c:810
+#: ../src/gtk-ui/sync-ui.c:546
 #, c-format
-msgid "Last synced %ld hours ago"
-msgstr "Ostatnio synchronizowano %ld godzin temu"
+msgid "%s - synced %ld hours ago"
+msgstr "%s - zsynchronizowano %ld godzin temu"
 
 # Last synchronization happened one day ago
-#: ../src/gtk-ui/sync-ui.c:813
-msgid "Last synced a day ago"
-msgstr "Ostatnio synchronizowano wczoraj"
+#: ../src/gtk-ui/sync-ui.c:551
+#, c-format
+msgid "%s - synced a day ago"
+msgstr "%s - zsynchronizowano wczoraj"
 
 # Last synchronization happened %ld days ago
-#: ../src/gtk-ui/sync-ui.c:816
+#: ../src/gtk-ui/sync-ui.c:555
 #, c-format
-msgid "Last synced %ld days ago"
-msgstr "Ostatnio synchronizowano %ld dni temu"
+msgid "%s - synced %ld days ago"
+msgstr "%s - zsynchronizowano %ld dni temu"
 
-#: ../src/gtk-ui/sync-ui.c:901
-msgid "Sync again"
-msgstr "Synchronizuj jeszcze raz"
-
-#: ../src/gtk-ui/sync-ui.c:903 ../src/gtk-ui/ui.glade.h:29
+#. TRANSLATORS: Action button in info bar in main view. Shown with e.g.
+#. * "You've just restored a backup. The changes have not been "
+#. * "synced with %s yet"
+#: ../src/gtk-ui/sync-ui.c:604
+#: ../src/gtk-ui/sync-ui.c:719
 msgid "Sync now"
 msgstr "Synchronizuj teraz"
 
+#. TRANSLATORS: Action button in info bar in main view. Shown with e.g.
+#. * "A normal sync is not possible at this time..." message.
+#. * "Other options" will open Emergency view
+#: ../src/gtk-ui/sync-ui.c:610
+#: ../src/gtk-ui/ui.glade.h:37
+msgid "Slow sync"
+msgstr "Wolna synchronizacja"
+
+#: ../src/gtk-ui/sync-ui.c:611
+msgid "Other options..."
+msgstr "Inne opcje..."
+
+# Configuration of the synchronization service
+#. TRANSLATORS: Action button in info bar in main view. Shown e.g.
+#. * when no service is selected. Will open configuration view
+#: ../src/gtk-ui/sync-ui.c:616
+msgid "Select sync service"
+msgstr "Wybierz usługę synchronizacji"
+
+# Edit the configuration of the service
+#. TRANSLATORS: Action button in info bar in main view. Shown e.g.
+#. * login to service fails. Will open configuration view for this service
+#: ../src/gtk-ui/sync-ui.c:621
+msgid "Edit service settings"
+msgstr "Edycja ustawień usługi"
+
+# There's no sync service yet between the netbook and a web service.
+#: ../src/gtk-ui/sync-ui.c:670
+msgid "You haven't selected a sync service or device yet. Sync services let you synchronize your data between your netbook and a web service. You can also sync directly with some devices."
+msgstr "Nie wybrałeś jeszcze usługi synchronizacji lub urządzenia. Usługi synchronizacji pozwalają na synchronizowanie danych pomiędzy netbookiem a usługą internetową. Można również synchronizować bezpośrednio z niektórymi urządzeniami."
+
+#: ../src/gtk-ui/sync-ui.c:717
+msgid "Sync again"
+msgstr "Synchronizuj jeszcze raz"
+
+#: ../src/gtk-ui/sync-ui.c:730
+msgid "Restoring"
+msgstr "Przywracanie"
+
 # Synchronization is taking place
-#: ../src/gtk-ui/sync-ui.c:912
+#: ../src/gtk-ui/sync-ui.c:732
 msgid "Syncing"
 msgstr "Synchronizowanie"
 
-#: ../src/gtk-ui/sync-ui.c:918
+#. TRANSLATORS: This is for the button in main view, right side.
+#. Keep line length below ~20 characters, use two lines if needed
+#: ../src/gtk-ui/sync-ui.c:743
+#: ../src/gtk-ui/sync-ui.c:3358
 msgid "Cancel sync"
 msgstr "Anuluj synchronizację"
 
-# %s (not compatible with this service)
-#. TRANSLATORS: placeholder is a source name, shown with checkboxes in main window
-#: ../src/gtk-ui/sync-ui.c:1265
-#, c-format
-msgid "%s (not supported by this service)"
-msgstr "%s (nie kompatybilne z tą usługą)"
+#: ../src/gtk-ui/sync-ui.c:908
+msgid "Back to sync"
+msgstr "Powrót do synchronizacji"
 
-#: ../src/gtk-ui/sync-ui.c:1298
-#, c-format
-msgid "There was one remote rejection."
-msgid_plural "There were %d remote rejections."
-msgstr[0] "Druga strona odrzuciła jeden z elementów"
-msgstr[1] "Druga strona odrzuciła %d elementy"
-msgstr[2] "Druga strona odrzuciła %d elementów"
-
-#: ../src/gtk-ui/sync-ui.c:1303
-#, c-format
-msgid "There was one local rejection."
-msgid_plural "There were %d local rejections."
-msgstr[0] "Odrzucono jeden z elementów"
-msgstr[1] "Odrzucono %d elementy"
-msgstr[2] "Odrzucono %d elementów"
-
-#: ../src/gtk-ui/sync-ui.c:1308
-#, c-format
-msgid "There were %d local rejections and %d remote rejections."
+#. TRANSLATORS: label for checkbutton/toggle in main view.
+#. * Please stick to similar length strings or break the line with
+#. * "\n" if absolutely needed
+#: ../src/gtk-ui/sync-ui.c:1209
+msgid "Automatic sync"
 msgstr ""
-"Odrzucono %d elementów podczas gdy druga strona odrzuciła %d elementów."
+"Automatyczna\n"
+"synchronizacja"
 
-#: ../src/gtk-ui/sync-ui.c:1313
+#. This is the expander label in emergency view. It summarizes the
+#. * currently selected data sources. First placeholder is service/device
+#. * name, second a comma separeted list of sources.
+#. * E.g. "Affected data: Google Contacts, Appointments"
+#: ../src/gtk-ui/sync-ui.c:1480
 #, c-format
-msgid "Last time: No changes."
-msgstr "Ostatnio: brak zmian."
+msgid "Affected data: %s %s"
+msgstr "Dane, na które ma to wpływ: %s %s"
 
-#: ../src/gtk-ui/sync-ui.c:1315
+#: ../src/gtk-ui/sync-ui.c:1485
 #, c-format
-msgid "Last time: Sent one change."
-msgid_plural "Last time: Sent %d changes."
-msgstr[0] "Ostatnio: wysłano jedną zmianę."
-msgstr[1] "Ostatnio: wysłano %d zmiany."
-msgstr[2] "Ostatnio: wysłano %d zmian."
+msgid "Affected data: none"
+msgstr "Dane, na które ma to wpływ: brak"
 
-#. This is about changes made to the local data. Not all of these
-#. changes were requested by the remote server, so "applied"
-#. is a better word than "received" (bug #5185).
-#: ../src/gtk-ui/sync-ui.c:1323
+#. TRANSLATORS: confirmation for restoring a backup. placeholder is the
+#. * backup time string defined below
+#: ../src/gtk-ui/sync-ui.c:1563
 #, c-format
-msgid "Last time: Applied one change."
-msgid_plural "Last time: Applied %d changes."
-msgstr[0] "Ostatnio: pobrano jedną zmianę."
-msgstr[1] "Ostatnio: pobrano %d zmiany."
-msgstr[2] "Ostatnio: pobrano %d zmian."
+msgid "Do you want to restore the backup from %s? All changes you have made since then will be lost."
+msgstr "Czy chcesz przywrócić kopię zapasową z %s? Wszystkie wprowadzone od tamtego czasu zmiany zostaną utracone."
 
-#: ../src/gtk-ui/sync-ui.c:1328
+#: ../src/gtk-ui/sync-ui.c:1566
+msgid "Yes, restore"
+msgstr "Tak, przywróć"
+
+#. TRANSLATORS: date/time for strftime(), used in emergency view backup
+#. * label. Any time format that shows date and time is good.
+#: ../src/gtk-ui/sync-ui.c:1598
 #, c-format
-msgid "Last time: Applied %d changes and sent %d changes."
-msgstr "Ostatnio: pobrano %d zmian i wysłano %d zmian."
+msgid "%x %X"
+msgstr "%x %X"
 
-#: ../src/gtk-ui/sync-ui.c:1420
-msgid "Failed to get server configuration from SyncEvolution"
-msgstr "Błąd przy pobieraniu konfiguracji serwera z SyncEvolution"
+#. TRANSLATORS: label for a backup in emergency view. Placeholder is
+#. * service or device name
+#: ../src/gtk-ui/sync-ui.c:1617
+#, c-format
+msgid "Backed up before syncing with %s"
+msgstr "Wykonano kopie zapasową przed synchronizacją z %s"
 
-#: ../src/gtk-ui/sync-ui.c:1472
+#: ../src/gtk-ui/sync-ui.c:1634
+msgid "Restore"
+msgstr "Przywróć"
+
+#. TRANSLATORS: this is an explanation in Emergency view.
+#. * Placeholder is a service/device name
+#: ../src/gtk-ui/sync-ui.c:1741
+#, c-format
+msgid "A normal sync with %s is not possible at this time. You can do a slow two-way sync or start from scratch. You can also restore a backup, but a slow sync or starting from scratch will still be required before normal sync is possible."
+msgstr "Normalna synchronizacja z %s nie jest teraz możliwa. Można wykonać wolną, dwukierunkową synchronizację, lub zacząć od początku. Można również przywrócić kopię zapasową, ale wykonanie wolnej synchronizacji lub rozpoczęcie od początku wciąż będzie wymagane, zanim normalna synchronizacja będzie możliwa."
+
+#: ../src/gtk-ui/sync-ui.c:1751
+#, c-format
+msgid "If something has gone horribly wrong, you can try a slow sync, start from scratch or restore from backup."
+msgstr "W przypadku poważnych problemów można spróbować wykonać wolną synchronizację, zacząć od początku lub przywrócić z kopii zapasowej."
+
+#. TRANSLATORS: These are a buttons in Emergency view. Placeholder is a
+#. * service/device name. Please don't use too long lines, but feel free to
+#. * use several lines.
+#: ../src/gtk-ui/sync-ui.c:1760
+#, c-format
 msgid ""
-"ScheduleWorld enables you to keep your contacts, events, tasks, and notes in "
-"sync."
+"Delete all your local\n"
+"data and replace with\n"
+"data from %s"
 msgstr ""
-"ScheduleWorld pozwala na synchronizowanie kontaktów, spotkań, zadań i "
-"notatek."
+"Skasuj wszystkie lokalne\n"
+"dane i zastąp je\n"
+"zdalnymi z %s"
 
-#: ../src/gtk-ui/sync-ui.c:1475
-msgid ""
-"Google Sync can backup and synchronize your Address Book with your Gmail "
-"contacts."
-msgstr ""
-"Google Sync może zapisywać i synchronizować kopię twojej książki adresowej z "
-"kontaktami Gmail."
-
-#. TRANSLATORS: Please include the word "demo" (or the equivalent in
-#. your language): Funambol is going to be a 90 day demo service
-#. in the future
-#: ../src/gtk-ui/sync-ui.c:1481
-msgid ""
-"Backup your contacts and calendar. Sync with a singleclick, anytime, "
-"anywhere (DEMO)."
-msgstr ""
-"Zrób kopię zapasową swoich kontaktów i kalendarza. Synchronizuj jednym "
-"kliknięciem, kiedykolwiek i gdziekolwiek (DEMO)."
-
-# New service
-#: ../src/gtk-ui/sync-ui.c:1509
-msgid "New service"
-msgstr "Nowa usługa"
-
-# URL of the server
-#: ../src/gtk-ui/sync-ui.c:1556
-msgid "Server URL"
-msgstr "URL serwera"
-
-# URI of %s
-#. TRANSLATORS: placeholder is a source name in settings window
-#: ../src/gtk-ui/sync-ui.c:1578
+#: ../src/gtk-ui/sync-ui.c:1766
 #, c-format
-msgid "%s URI"
-msgstr "URI %s"
+msgid ""
+"Delete all data on\n"
+"%s and replace\n"
+"with your local data"
+msgstr ""
+"Skasuj wszystkie dane\n"
+"na %s i zastąp je\n"
+"lokalnymi"
 
-# Open the website
-#: ../src/gtk-ui/sync-ui.c:1715 ../src/gtk-ui/ui.glade.h:17
-msgid "Launch website"
-msgstr "Otworzyć stronę www"
-
-# Configuring and using
-#: ../src/gtk-ui/sync-ui.c:1719
-msgid "Setup and use"
-msgstr "Skonfiguruj i użyj"
-
-# Error while obtaining the list of services configured manually from SyncEvolution
-#: ../src/gtk-ui/sync-ui.c:1765
-msgid "Failed to get list of manually setup services from SyncEvolution"
-msgstr "Błąd przy pobieraniu listy ręcznie ustawionych usług z SyncEvolution"
-
-#: ../src/gtk-ui/sync-ui.c:1806
+#: ../src/gtk-ui/sync-ui.c:2226
 msgid "Failed to get list of supported services from SyncEvolution"
 msgstr "Błąd przy pobieraniu listy kompatybilnych usług z SyncEvolution"
 
-# The configuration service has not been found
-#. TODO: this is a hack... SyncEnd should be a signal of it's own,
-#. not just hacked on top of the syncevolution error codes
-#: ../src/gtk-ui/sync-ui.c:1967
-msgid "Service configuration not found"
-msgstr "Nie znaleziono konfiguracji usługi"
+#: ../src/gtk-ui/sync-ui.c:2280
+msgid "There was a problem communicating with the sync process. Please try again later."
+msgstr "Wystąpił problem podczas komunikacji z procesem synchronizacji. Spróbuj ponownie później."
 
-#: ../src/gtk-ui/sync-ui.c:1973
-msgid "Not authorized"
-msgstr "Brak autoryzacji"
+#: ../src/gtk-ui/sync-ui.c:2339
+msgid "Restore failed"
+msgstr "Przywracanie nie powiodło się"
 
-#: ../src/gtk-ui/sync-ui.c:1975
-msgid "Forbidden"
-msgstr "Nie dozwolone"
+#: ../src/gtk-ui/sync-ui.c:2342
+#: ../src/gtk-ui/sync-ui.c:3227
+msgid "Sync failed"
+msgstr "Synchronizacja nie powiodła się"
 
-# has not been found
-#: ../src/gtk-ui/sync-ui.c:1977
-msgid "Not found"
-msgstr "Nie znaleziono"
+#: ../src/gtk-ui/sync-ui.c:2348
+msgid "Restore complete"
+msgstr "Przywracanie zakończone"
 
-# Fatal error in the database
-#: ../src/gtk-ui/sync-ui.c:1979
-msgid "Fatal database error"
-msgstr "Krytyczny błąd bazy danych"
-
-#: ../src/gtk-ui/sync-ui.c:1981
-msgid "Database error"
-msgstr "Błąd bazy danych"
-
-# There is no space left
-#: ../src/gtk-ui/sync-ui.c:1983
-msgid "No space left"
-msgstr "Nie ma już miejsca"
-
-#. TODO identify problem item somehow ?
-#: ../src/gtk-ui/sync-ui.c:1986
-msgid "Failed to process SyncML"
-msgstr "Błąd przetwarzania SyncML"
-
-# the server didn't accept the authorization
-#: ../src/gtk-ui/sync-ui.c:1988
-msgid "Server authorization failed"
-msgstr "Serwer nie zaakceptował autoryzacji"
-
-# Error while analysing the syntax of the configuration file
-#: ../src/gtk-ui/sync-ui.c:1990
-msgid "Failed to parse configuration file"
-msgstr "Błąd składniowy w pliku konfiguracyjnym"
-
-# Error while reading the configuration file
-#: ../src/gtk-ui/sync-ui.c:1992
-msgid "Failed to read configuration file"
-msgstr "Błąd odczytu pliku konfiguracyjnego"
-
-# The configuration has not been found
-#: ../src/gtk-ui/sync-ui.c:1994
-msgid "No configuration found"
-msgstr "Nie znaleziono konfiguracji"
-
-# The configuration file has not been found
-#: ../src/gtk-ui/sync-ui.c:1996
-msgid "No configuration file found"
-msgstr "Nie znaleziono pliku konfiguracyjnego"
-
-# The server sent an an invalid content
-#: ../src/gtk-ui/sync-ui.c:1998
-msgid "Server sent bad content"
-msgstr "Serwer przysłał nie prawidłowe dane"
-
-# Error during transport (is there no connection?)
-#: ../src/gtk-ui/sync-ui.c:2000
-msgid "Transport failure (no connection?)"
-msgstr "Błąd transportu (brak polączenia?)"
-
-# Connection went over the waiting time
-#: ../src/gtk-ui/sync-ui.c:2002
-msgid "Connection timed out"
-msgstr "Połączenie przekroczyło czas oczekiwania"
-
-#: ../src/gtk-ui/sync-ui.c:2004
-msgid "Connection certificate has expired"
-msgstr "Wygasł certyfikat połączenia"
-
-# The connection certificate is not valid
-#: ../src/gtk-ui/sync-ui.c:2006
-msgid "Connection certificate is invalid"
-msgstr "Niewłaściwy certyfikat połączenia"
-
-#: ../src/gtk-ui/sync-ui.c:2009
-msgid "Connection failed"
-msgstr "Błąd połączenia"
-
-# The URL is incorrect
-#: ../src/gtk-ui/sync-ui.c:2011
-msgid "URL is bad"
-msgstr "Nieprawidłowy URL"
-
-#: ../src/gtk-ui/sync-ui.c:2013
-msgid "Server not found"
-msgstr "Nie znaleziono serwera"
-
-#: ../src/gtk-ui/sync-ui.c:2015
-#, c-format
-msgid "Error %d"
-msgstr "Błąd %d"
-
-# the syncronization service D-Bus closed unexpectedly
-#: ../src/gtk-ui/sync-ui.c:2025
-msgid "Sync D-Bus service exited unexpectedly"
-msgstr "Usługa D-Bus synchronizacji zakończyła nieoczekiwanie"
-
-#: ../src/gtk-ui/sync-ui.c:2028 ../src/gtk-ui/sync-ui.c:2079
-msgid "Sync Failed"
-msgstr "Nie powiodło się"
-
-#: ../src/gtk-ui/sync-ui.c:2071
+#: ../src/gtk-ui/sync-ui.c:2351
 msgid "Sync complete"
 msgstr "Synchronizacja zakończona"
 
-#: ../src/gtk-ui/sync-ui.c:2076
-msgid "Sync canceled"
-msgstr "Synchronizacja anulowana"
-
-#. NOTE extra1 can be error here
-#: ../src/gtk-ui/sync-ui.c:2094
-msgid "Ending sync"
-msgstr "Zamykanie synchronizacji"
-
-#. TRANSLATORS: placeholder is a source name (e.g. 'Calendar') in a progress text
-#: ../src/gtk-ui/sync-ui.c:2118
+#: ../src/gtk-ui/sync-ui.c:2443
 #, c-format
 msgid "Preparing '%s'"
 msgstr "Przygotowywanie '%s'"
 
-#. TRANSLATORS: placeholder is a source name in a progress text
-#: ../src/gtk-ui/sync-ui.c:2130
-#, c-format
-msgid "Sending '%s'"
-msgstr "Wysyłanie '%s'"
-
-#. TRANSLATORS: placeholder is a source name in a progress text
-#: ../src/gtk-ui/sync-ui.c:2142
+#: ../src/gtk-ui/sync-ui.c:2446
 #, c-format
 msgid "Receiving '%s'"
 msgstr "Odbieranie '%s'"
 
-#: ../src/gtk-ui/ui.glade.h:1
-msgid "<b>Data</b>"
-msgstr "<b>Dane</b>"
+#: ../src/gtk-ui/sync-ui.c:2449
+#, c-format
+msgid "Sending '%s'"
+msgstr "Wysyłanie '%s'"
 
-# there's no synchronization service in use
+#: ../src/gtk-ui/sync-ui.c:2570
+#, c-format
+msgid "There was one remote rejection."
+msgid_plural "There were %ld remote rejections."
+msgstr[0] "Druga strona odrzuciła jeden z elementów."
+msgstr[1] "Druga strona odrzuciła %ld elementy."
+msgstr[2] "Druga strona odrzuciła %ld elementów."
+
+#: ../src/gtk-ui/sync-ui.c:2575
+#, c-format
+msgid "There was one local rejection."
+msgid_plural "There were %ld local rejections."
+msgstr[0] "Odrzucono lokalnie jeden element."
+msgstr[1] "Odrzucono lokalnie %ld elementy."
+msgstr[2] "Odrzucono lokalnie %ld elementów."
+
+#: ../src/gtk-ui/sync-ui.c:2580
+#, c-format
+msgid "There were %ld local rejections and %ld remote rejections."
+msgstr "Odrzucono lokalnie %ld elementów podczas gdy druga strona odrzuciła %ld elementów."
+
+#: ../src/gtk-ui/sync-ui.c:2585
+#, c-format
+msgid "Last time: No changes."
+msgstr "Ostatnio: brak zmian."
+
+#: ../src/gtk-ui/sync-ui.c:2587
+#, c-format
+msgid "Last time: Sent one change."
+msgid_plural "Last time: Sent %ld changes."
+msgstr[0] "Ostatnio: wysłano jedną zmianę."
+msgstr[1] "Ostatnio: wysłano %ld zmiany."
+msgstr[2] "Ostatnio: wysłano %ld zmian."
+
+#. This is about changes made to the local data. Not all of these
+#. changes were requested by the remote server, so "applied"
+#. is a better word than "received" (bug #5185).
+#: ../src/gtk-ui/sync-ui.c:2595
+#, c-format
+msgid "Last time: Applied one change."
+msgid_plural "Last time: Applied %ld changes."
+msgstr[0] "Ostatnio: zastosowano jedną zmianę."
+msgstr[1] "Ostatnio: zastosowano %ld zmiany."
+msgstr[2] "Ostatnio: zastosowano %ld zmian."
+
+#: ../src/gtk-ui/sync-ui.c:2600
+#, c-format
+msgid "Last time: Applied %ld changes and sent %ld changes."
+msgstr "Ostatnio: zastosowano %ld zmian i wysłano %ld zmian."
+
+#. TRANSLATORS: the placeholder is a error message (hopefully)
+#. * explaining the problem
+#: ../src/gtk-ui/sync-ui.c:2807
+#, c-format
+msgid ""
+"There was a problem with last sync:\n"
+"%s"
+msgstr ""
+"Wystąpił problem z ostatnią synchronizacją:\n"
+"%s"
+
+#: ../src/gtk-ui/sync-ui.c:2817
+#, c-format
+msgid "You've just restored a backup. The changes have not been synced with %s yet"
+msgstr "Właśnie przywrócono kopię zapasową. Zmiany nie zostały jeszcze zsynchronizowane z %s"
+
+#: ../src/gtk-ui/sync-ui.c:3105
+msgid "Waiting for current operation to finish..."
+msgstr "Oczekiwanie na zakończenie bieżącej operacji..."
+
+#. TRANSLATORS: next strings are error messages.
+#: ../src/gtk-ui/sync-ui.c:3139
+msgid "A normal sync is not possible at this time. The server suggests a slow sync, but this might not always be what you want if both ends already have data."
+msgstr "Wykonanie normalnej synchronizacji nie jest teraz możliwe. Serwer sugeruje wykonanie wolnej synchronizacji, ale może to nie być pożądana czynność w przypadku, gdy po obu stronach znajdują się już dane."
+
+#: ../src/gtk-ui/sync-ui.c:3143
+msgid "The sync process died unexpectedly."
+msgstr "Proces synchronizacji został nieoczekiwanie zakończony."
+
+#: ../src/gtk-ui/sync-ui.c:3148
+msgid "Password request was not answered. You can save the password in the settings to prevent the request."
+msgstr "Nie uzyskano odpowiedzi na żądanie o hasło. Hasło można zapisać w ustawieniach, aby uniknąć wysyłania żądania."
+
+#. TODO use the service device name here, this is a remote problem
+#: ../src/gtk-ui/sync-ui.c:3152
+msgid "There was a problem processing sync request. Trying again may help."
+msgstr "Wystąpił problem z przetwarzaniem żądania synchronizacji. Ponowna próba może pomóc."
+
+#: ../src/gtk-ui/sync-ui.c:3158
+msgid "Failed to login. Could there be a problem with your username or password?"
+msgstr "Logowanie nie powiodło się. Czy może to być problem z nazwą użytkownika lub hasłem?"
+
+#: ../src/gtk-ui/sync-ui.c:3161
+msgid "Forbidden"
+msgstr "Nie dozwolone"
+
+#. TRANSLATORS: data source means e.g. calendar or addressbook
+#: ../src/gtk-ui/sync-ui.c:3167
+msgid "A data source could not be found. Could there be a problem with the settings?"
+msgstr "Nie można odnaleźć źródła danych. Czy może być to problem z ustawieniami?"
+
+# Fatal error in the database
+#: ../src/gtk-ui/sync-ui.c:3171
+msgid "Remote database error"
+msgstr "Błąd zdalnej bazy danych"
+
+#. This can happen when EDS is borked, restart it may help...
+#: ../src/gtk-ui/sync-ui.c:3174
+msgid "There is a problem with the local database. Syncing again or rebooting may help."
+msgstr "Wystąpił problem z lokalną bazą danych. Ponowna synchronizacja lub uruchomienie komputera mogą pomóc."
+
+# There is no space left
+#: ../src/gtk-ui/sync-ui.c:3177
+msgid "No space on disk"
+msgstr "Brak miejsca na dysku"
+
+#: ../src/gtk-ui/sync-ui.c:3179
+msgid "Failed to process SyncML"
+msgstr "Błąd przetwarzania SyncML"
+
+# the server didn't accept the authorization
+#: ../src/gtk-ui/sync-ui.c:3181
+msgid "Server authorization failed"
+msgstr "Serwer nie zaakceptował autoryzacji"
+
+# Error while analysing the syntax of the configuration file
+#: ../src/gtk-ui/sync-ui.c:3183
+msgid "Failed to parse configuration file"
+msgstr "Błąd składniowy w pliku konfiguracyjnym"
+
+# Error while reading the configuration file
+#: ../src/gtk-ui/sync-ui.c:3185
+msgid "Failed to read configuration file"
+msgstr "Błąd odczytu pliku konfiguracyjnego"
+
+# The configuration has not been found
+#: ../src/gtk-ui/sync-ui.c:3187
+msgid "No configuration found"
+msgstr "Nie znaleziono konfiguracji"
+
+# The configuration file has not been found
+#: ../src/gtk-ui/sync-ui.c:3189
+msgid "No configuration file found"
+msgstr "Nie znaleziono pliku konfiguracyjnego"
+
+# The server sent an an invalid content
+#: ../src/gtk-ui/sync-ui.c:3191
+msgid "Server sent bad content"
+msgstr "Serwer przysłał nie prawidłowe dane"
+
+#: ../src/gtk-ui/sync-ui.c:3193
+msgid "Connection certificate has expired"
+msgstr "Wygasł certyfikat połączenia"
+
+# The connection certificate is not valid
+#: ../src/gtk-ui/sync-ui.c:3195
+msgid "Connection certificate is invalid"
+msgstr "Niewłaściwy certyfikat połączenia"
+
+#: ../src/gtk-ui/sync-ui.c:3203
+msgid "We were unable to connect to the server. The problem could be temporary or there could be something wrong with the settings."
+msgstr "Nie można połączyć się z serwerem. Problem może być tymczasowy, lub ustawienia mogą być błędne."
+
+# The URL is incorrect
+#: ../src/gtk-ui/sync-ui.c:3210
+msgid "The server URL is bad"
+msgstr "Nieprawidłowy adres URL serwera"
+
+#: ../src/gtk-ui/sync-ui.c:3215
+msgid "The server was not found"
+msgstr "Nie znaleziono serwera"
+
+#: ../src/gtk-ui/sync-ui.c:3217
+#, c-format
+msgid "Error %d"
+msgstr "Błąd %d"
+
+#. TRANSLATORS: password request dialog contents: title, cancel button
+#. * and ok button
+#: ../src/gtk-ui/sync-ui.c:3355
+msgid "Password is required for sync"
+msgstr "Synchronizacja wymaga hasła"
+
+#: ../src/gtk-ui/sync-ui.c:3359
+msgid "Sync with password"
+msgstr "Synchronizacja z hasłem"
+
+#. TRANSLATORS: password request dialog message, placeholder is service name
+#: ../src/gtk-ui/sync-ui.c:3369
+#, c-format
+msgid "Please enter password for syncing with %s:"
+msgstr "Podaj hasło do synchronizacji z %s:"
+
+#. title for the buttons on the right side of main view
 #: ../src/gtk-ui/ui.glade.h:2
-msgid "<b>No sync service in use</b>"
-msgstr "<b>Brak usług synchronizacji w użyciu</b>"
+msgid "<b>Actions</b>"
+msgstr "<b>Czynności</b>"
 
-#: ../src/gtk-ui/ui.glade.h:3
-msgid "<b>Sync failure</b>"
-msgstr "<b>Błąd synchronizacji</b>"
-
+#. text between the two "start from scratch" buttons in emergency view
 #: ../src/gtk-ui/ui.glade.h:4
-msgid "<b>Type of Sync</b>"
-msgstr "<b>Typ synchronizacji</b>"
+msgid "<b>or</b>"
+msgstr "<b>lub</b>"
 
 #: ../src/gtk-ui/ui.glade.h:5
-msgid "<big>Manual setup</big>"
-msgstr "<big>Manualna konfiguracja</big>"
+msgid "<big>Direct sync</big>"
+msgstr "<big>Synchronizacja bezpośrednia</big>"
 
-# compatible services
 #: ../src/gtk-ui/ui.glade.h:6
-msgid "<big>Supported services</big>"
-msgstr "<big>Kompatybilne usługi</big>"
+msgid "<big>Network sync</big>"
+msgstr "<b>Synchronizacja sieciowa</b>"
 
-#: ../src/gtk-ui/ui.glade.h:7
+#. a title in emergency view
+#: ../src/gtk-ui/ui.glade.h:8
+msgid "<big>Restore from backup</big>"
+msgstr "<big>Przywracanie z kopii zapasowej</big>"
+
+#. a title in emergency view
+#: ../src/gtk-ui/ui.glade.h:10
+msgid "<big>Slow sync</big>"
+msgstr "<big>Wolna synchronizacja</big>"
+
+#. a title in emergency view
+#: ../src/gtk-ui/ui.glade.h:12
+msgid "<big>Start from scratch</big>"
+msgstr "<big>Zacznij od początku</big>"
+
+#: ../src/gtk-ui/ui.glade.h:13
+msgid ""
+"A slow sync compares items from both sides and tries to merge them. \n"
+"This may fail in some cases, leading to duplicates or lost information."
+msgstr ""
+"Powolna synchronizacja porównuje elementu po obu stronach i próbuje je połączyć. \n"
+"W niektórych przypadkach może się to nie powieść, prowadząc do zduplikowania lub utraty informacji."
+
+#: ../src/gtk-ui/ui.glade.h:15
+msgid "Add new device"
+msgstr "Dodaj nowe urządzenie"
+
+#: ../src/gtk-ui/ui.glade.h:16
 msgid "Add new service"
 msgstr "Dodaj nową usługę"
 
-#: ../src/gtk-ui/ui.glade.h:8
-msgid "Back to sync"
-msgstr "Powrót do synchronizacji"
-
-#: ../src/gtk-ui/ui.glade.h:9
-msgid ""
-"Change sync\n"
-"service"
-msgstr ""
-"Zmień usługę\n"
-"synchronizacji"
-
-#: ../src/gtk-ui/ui.glade.h:11
-msgid "Delete all local data and replace it with remote data"
-msgstr "Skasuj wszystkie lokalne dane i zastąp je zdalnymi"
-
-#: ../src/gtk-ui/ui.glade.h:12
-msgid "Delete all remote data and replace it with local data"
-msgstr "Skasuj wszystkie zdalne dane i zastąp je lokalnymi"
-
-#: ../src/gtk-ui/ui.glade.h:13
-msgid "Delete this service"
-msgstr "Skasuj tę usługę"
-
-# Edit the configuration of the service
-#: ../src/gtk-ui/ui.glade.h:14
-msgid "Edit service settings"
-msgstr "Edycja ustawień usługi"
-
-#: ../src/gtk-ui/ui.glade.h:15
-msgid ""
-"If you don't see your service above but know that your sync provider uses "
-"SyncML\n"
-"you can setup a service manually."
-msgstr ""
-"Jeśli Twoja usługa nie jest widoczna powyżej a wiesz że dostawca używa "
-"SyncML\n"
-"możesz ustawić usługę ręcznie."
-
+#. explanation of "Restore backup" function
 #: ../src/gtk-ui/ui.glade.h:18
-msgid "Merge local and remote data (recommended)"
-msgstr "Połącz dane lokalne i zdalne (zalecane)"
+msgid "Backups are made before every time we Sync. Choose a backup to restore. Any changes you have made since then will be lost."
+msgstr "Kopie zapasowe są wykonywane przy każdej synchronizacji. Wybierz kopię zapasową, z której przywrócić. Wszelkie zmiany wprowadzone od tamtego czasu zostaną utracone."
 
 #: ../src/gtk-ui/ui.glade.h:19
-msgid "Password"
-msgstr "Hasło"
+msgid "Calendar"
+msgstr "Kalendarz"
 
-# Go back to the original configuration of the server
-#: ../src/gtk-ui/ui.glade.h:20
-msgid "Reset original server settings"
-msgstr "Przywróć oryginalne ustawienia serwera"
-
+#. Button in main view, right side. Keep to below 20 chars per line, feel free to use two lines
 #: ../src/gtk-ui/ui.glade.h:21
-msgid "Save and use this service"
-msgstr "Zapisz i użyj tej usługi"
+msgid ""
+"Change or edit\n"
+"sync service"
+msgstr ""
+"Zmień lub edytuj\n"
+"usługę synchronizacji"
 
-# Configuration of the synchronization service
-#: ../src/gtk-ui/ui.glade.h:22
-msgid "Select sync service"
-msgstr "Wybierz usługę synchronizacji"
-
-#: ../src/gtk-ui/ui.glade.h:23
-msgid "Server settings"
-msgstr "Ustawienia usługi"
-
+#. close button for settings window
 #: ../src/gtk-ui/ui.glade.h:24
-msgid "Service name"
-msgstr "Nazwa usługi"
+msgid "Close"
+msgstr "Zamknij"
 
-# Synchronization needs an Internet connection.
 #: ../src/gtk-ui/ui.glade.h:25
 msgid ""
-"Sorry, you need an internet\n"
-"connection to sync."
+"Delete all data on Zyb \n"
+"and replace with your\n"
+"local information"
 msgstr ""
-"Niestety potrzebne jest połączenie\n"
-"z internetem aby zsynchronizować."
+"Skasuj wszystkie dane\n"
+"z usługi Zyb i zastąp\n"
+"je lokalnymi"
 
-#: ../src/gtk-ui/ui.glade.h:27
-msgid "Stop using this service"
-msgstr "Zaprzestań używania usługi"
-
-#: ../src/gtk-ui/ui.glade.h:30
+#: ../src/gtk-ui/ui.glade.h:28
 msgid ""
-"Synchronization is not available (D-Bus service does not answer), sorry."
-msgstr "Niestety synchronizacja jest niedostępna (usługa D-Bus nie odpowiada)."
-
-#: ../src/gtk-ui/ui.glade.h:31
-msgid ""
-"To sync you'll need a network connection and an account with a sync "
-"service.\n"
-"We support the following services: "
+"Delete all your local\n"
+"information and replace\n"
+"with data from Zyb"
 msgstr ""
-"Aby móc synchronizować potrzebne są połączenie z siecią oraz konto dla "
-"usługi\n"
-"synchronizacji. Następujące usługi są kompatybilne:"
+"Skasuj wszystkie lokalne\n"
+"dane i zastąp je zdalnymi\n"
+"z usługi Zyb"
 
-#: ../src/gtk-ui/ui.glade.h:33
-msgid "Username"
-msgstr "Nazwa użytkownika"
+#. button in main view, right side. Keep length to 20 characters or so, use two lines if needed
+#: ../src/gtk-ui/ui.glade.h:32
+msgid ""
+"Fix a sync\n"
+"emergency"
+msgstr ""
+"Napraw awarię\n"
+"synchronizacji"
 
-# There's no sync service yet between the netbook and a web service.
 #: ../src/gtk-ui/ui.glade.h:34
 msgid ""
-"You haven't selected a sync service yet. Sync services let you \n"
-"synchronize your data between your netbook and a web service."
+"If you don't see your service above but know that your sync provider uses SyncML\n"
+"you can setup a service manually."
 msgstr ""
-"Nie wybrałeś jeszcze usługi synchronizacji. Usługi synchronizacji \n"
-"pozwalają na synchronizowanie danych pomiędzy netbookiem a \n"
-"usługą internetową."
+"Jeśli Twoja usługa nie jest widoczna powyżej a wiesz że dostawca używa SyncML\n"
+"możesz ustawić usługę ręcznie."
 
-#: ../src/gtk-ui/sync.desktop.in.h:2 ../src/gtk-ui/sync-gtk.desktop.in.h:2
+#: ../src/gtk-ui/ui.glade.h:36
+msgid "Settings"
+msgstr "Ustawienia"
+
+#: ../src/gtk-ui/ui.glade.h:39
+msgid "Sync Emergency"
+msgstr "Awaria synchronizacji"
+
+#: ../src/gtk-ui/ui.glade.h:41
+msgid ""
+"To sync you'll need a network connection and an account with a sync service.\n"
+"We support the following services: "
+msgstr ""
+"Aby móc synchronizować potrzebne są połączenie z siecią oraz konto dla usługi\n"
+"synchronizacji. Następujące usługi są kompatybilne:"
+
+#: ../src/gtk-ui/ui.glade.h:43
+msgid "Use Bluetooth to Sync your data from one device to another."
+msgstr "Użyj interfejsu Bluetooth lub zsynchronizuj dane z jednego urządzenia z innym."
+
+#: ../src/gtk-ui/ui.glade.h:44
+msgid "You will need to add Bluetooth devices before they can be synced."
+msgstr "Konieczne będzie dodanie urządzeń Bluetooth, zanim będą one synchronizowane."
+
+#: ../src/gtk-ui/sync.desktop.in.h:2
+#: ../src/gtk-ui/sync-gtk.desktop.in.h:2
 msgid "Up to date"
 msgstr "Aktualny"
 
@@ -611,23 +677,245 @@ msgstr "Aktualny"
 msgid "Sync (GTK)"
 msgstr "Synchronizacja (GTK)"
 
-#~ msgid "Last time: Received one change."
-#~ msgid_plural "Last time: Received %d changes."
-#~ msgstr[0] "Ostatnio: przyjęto jedną zmianę."
-#~ msgstr[1] "Ostatnio: przyjęto %d zmiany."
-#~ msgstr[2] "Ostatnio: przyjęto %d zmian."
+#: ../src/gtk-ui/sync-config-widget.c:74
+msgid "ScheduleWorld enables you to keep your contacts, events, tasks, and notes in sync."
+msgstr "ScheduleWorld pozwala na synchronizowanie kontaktów, spotkań, zadań i notatek."
 
-#~ msgid "Last time: Received %d changes and sent %d changes."
-#~ msgstr "Ostatnio: przyjęto %d zmian i wysłano %d zmian."
+#: ../src/gtk-ui/sync-config-widget.c:77
+msgid "Google Sync can backup and synchronize your contacts with your Gmail contacts."
+msgstr "Google Sync może zapisywać i synchronizować kopię twojej książki adresowej z kontaktami Gmail."
 
-# Configuration of the synchronization service
-#~ msgid "Setup sync service"
-#~ msgstr "Ustaw usługę synchronizacji"
+#. TRANSLATORS: Please include the word "demo" (or the equivalent in
+#. your language): Funambol is going to be a 90 day demo service
+#. in the future
+#: ../src/gtk-ui/sync-config-widget.c:83
+msgid "Backup your contacts and calendar. Sync with a single click, anytime, anywhere (DEMO)."
+msgstr "Zrób kopię zapasową swoich kontaktów i kalendarza. Synchronizuj jednym kliknięciem, kiedykolwiek i gdziekolwiek (DEMO)."
 
-# There's no sync service yet between the netbook and a web service.
+#: ../src/gtk-ui/sync-config-widget.c:86
+msgid "Mobical Backup and Restore service allows you to securely backup your personal mobile data for free."
+msgstr "Usługa kopii zapasowej i przywracania Mobical umożliwia za darmo wykonanie bezpiecznej kopii zapasowej osobistych danych mobilnych."
+
+#: ../src/gtk-ui/sync-config-widget.c:89
+msgid "ZYB is a simple way for people to store and share mobile information online."
+msgstr "ZYB to prosty sposób na przechowywanie i udostępnianie informacji mobilnych w trybie online."
+
+#: ../src/gtk-ui/sync-config-widget.c:92
+msgid "Memotoo lets you access your personal data from any computer connected to the Internet."
+msgstr "Memotoo umożliwia dostęp do informacji osobistych z dowolnego komputera podłączonego do sieci Internet."
+
+# Error while analysing the syntax of the configuration file
+#: ../src/gtk-ui/sync-config-widget.c:188
+msgid "Sorry, failed to save the configuration"
+msgstr "Przepraszamy, zapis pliku konfiguracyjnego nie powiódł się"
+
+#: ../src/gtk-ui/sync-config-widget.c:377
+msgid "Service must have a name and server URL"
+msgstr "Usługa musi mieć nazwę i URL serwera"
+
+#: ../src/gtk-ui/sync-config-widget.c:418
+#, c-format
+msgid "Do you want to reset the settings for %s? This will not remove any synced information on either end."
+msgstr "Czy chcesz zresetować ustawienia dla %s? Nie spowoduje to usunięcia jakichkolwiek informacji zsynchronizowanych na żadnym z urządzeń."
+
+#. TRANSLATORS: buttons in reset-service warning dialog
+#: ../src/gtk-ui/sync-config-widget.c:422
+msgid "Yes, reset"
+msgstr "Tak, zresetuj"
+
+#: ../src/gtk-ui/sync-config-widget.c:423
+#: ../src/gtk-ui/sync-config-widget.c:434
+msgid "No, keep settings"
+msgstr "Nie, zachowaj ustawienia"
+
+#: ../src/gtk-ui/sync-config-widget.c:428
+#, c-format
+msgid "Do you want to delete the settings for %s? This will not remove any synced information on either end but it will remove these settings."
+msgstr "Czy chcesz usunąć ustawienia dla %s? Nie spowoduje to usunięcia jakichkolwiek informacji zsynchronizowanych na żadnym z urządzeń, ale spowoduje usunięcie ustawień."
+
+#. TRANSLATORS: buttons in delete-service warning dialog
+#: ../src/gtk-ui/sync-config-widget.c:433
+msgid "Yes, delete"
+msgstr "Tak, usuń"
+
+#: ../src/gtk-ui/sync-config-widget.c:463
+msgid "Reset settings"
+msgstr "Resetuj ustawienia"
+
+#: ../src/gtk-ui/sync-config-widget.c:466
+msgid "Delete settings"
+msgstr "Usuń ustawienia"
+
+#: ../src/gtk-ui/sync-config-widget.c:476
+msgid "Save and use"
+msgstr "Zapisz i użyj"
+
+#: ../src/gtk-ui/sync-config-widget.c:479
+msgid ""
+"Save and replace\n"
+"current service"
+msgstr ""
+"Zapisz i zastąp\n"
+"bieżącą usługę"
+
+#: ../src/gtk-ui/sync-config-widget.c:489
+msgid "Stop using device"
+msgstr "Zaprzestań używania urządzenia"
+
+#: ../src/gtk-ui/sync-config-widget.c:492
+msgid "Stop using service"
+msgstr "Zaprzestań używania usługi"
+
+# URI of %s
+#. TRANSLATORS: label for an entry in service configuration form.
+#. * Placeholder is a source  name.
+#. * Example: "Appointments URI"
+#: ../src/gtk-ui/sync-config-widget.c:675
+#, c-format
+msgid "%s URI"
+msgstr "URI %s"
+
+#. TRANSLATORS: toggles in service configuration form, placeholder is service
+#. * or device name
+#: ../src/gtk-ui/sync-config-widget.c:850
+#, c-format
+msgid "Send changes to %s"
+msgstr "Wyślij zmiany do %s"
+
+#: ../src/gtk-ui/sync-config-widget.c:855
+#, c-format
+msgid "Receive changes from %s"
+msgstr "Odbierz zmiany od %s"
+
+#: ../src/gtk-ui/sync-config-widget.c:871
+msgid "<b>Sync</b>"
+msgstr "<b>Synchronizacja</b>"
+
+#. TRANSLATORS: label of a entry in service configuration
+#: ../src/gtk-ui/sync-config-widget.c:887
+msgid "Server address"
+msgstr "Adres serwera"
+
+#. TRANSLATORS: explanation before a device template combobox.
+#. * Placeholder is a device name like 'Nokia N85' or 'Syncevolution
+#. * Client'
+#: ../src/gtk-ui/sync-config-widget.c:963
+#, c-format
+msgid "This device looks like it might be a '%s'. If this is not correct, please take a look at the list of supported devices and pick yours if it is listed"
+msgstr "Najprawdopodobniej do urządzenie to „%s”. Jeśli tak nie jest, przejrzyj listę obsługiwanych urządzeń i wybierz posiadane, jeśli się na niej znajduje."
+
+#: ../src/gtk-ui/sync-config-widget.c:969
+msgid "We don't know what this device is exactly. Please take a look at the list of supported devices and pick yours if it is listed"
+msgstr "Nie można dokładnie zidentyfikować urządzenia. Przejrzyj listę obsługiwanych urządzeń i wybierz posiadane, jeśli się na niej znajduje."
+
+#: ../src/gtk-ui/sync-config-widget.c:1122
+#, c-format
+msgid "%s - Bluetooth device"
+msgstr "%s - Urządzenie Bluetooth"
+
+#. TRANSLATORS: service title for services that are not based on a
+#. * template in service list, the placeholder is the name of the service
+#: ../src/gtk-ui/sync-config-widget.c:1128
+#, c-format
+msgid "%s - manually setup"
+msgstr "%s - konfiguracja ręczna"
+
+# Open the website
+#. TRANSLATORS: link button in service configuration form
+#: ../src/gtk-ui/sync-config-widget.c:1803
+msgid "Launch website"
+msgstr "Otworzyć stronę www"
+
+#. TRANSLATORS: button in service configuration form
+#: ../src/gtk-ui/sync-config-widget.c:1812
+msgid "Setup now"
+msgstr "Skonfiguruj teraz"
+
+#. TRANSLATORS: labels of entries in service configuration form
+#: ../src/gtk-ui/sync-config-widget.c:1908
+msgid "Username"
+msgstr "Nazwa użytkownika"
+
+#: ../src/gtk-ui/sync-config-widget.c:1923
+msgid "Password"
+msgstr "Hasło"
+
+#. TRANSLATORS: warning in service configuration form for people
+#. who have modified the configuration via other means.
+#: ../src/gtk-ui/sync-config-widget.c:1946
+msgid "Current configuration is more complex than what can be shown here. Changes to sync mode or synced data types will overwrite that configuration."
+msgstr "Bieżąca konfiguracja usługi jest bardziej skomplikowana niż to, co można tu pokazać. Zmiany trybu synchronizacji lub synchronizowanych typów danych nadpiszą tę konfigurację."
+
+#. TRANSLATORS: this is the epander label for server settings
+#. in service configuration form
+#: ../src/gtk-ui/sync-config-widget.c:1965
+msgid "Hide server settings"
+msgstr "Ukryj ustawienia serwera"
+
+#. TRANSLATORS: this is the epander label for server settings
+#. in service configuration form
+#: ../src/gtk-ui/sync-config-widget.c:1985
+msgid "Show server settings"
+msgstr "Pokaż ustawienia serwera"
+
+#: ../src/gnome-bluetooth/syncevolution.c:110
+msgid "Sync in the Sync application"
+msgstr "Synchronizuj w aplikacji do synchronizacji"
+
+# Synchronization is taking place
+#: ../src/syncevo-dbus-server.cpp:5622
+#, c-format
+msgid "%s is syncing"
+msgstr "Synchronizowanie %s"
+
+#: ../src/syncevo-dbus-server.cpp:5623
+#, c-format
+msgid "We have just started to sync your computer with the %s sync service."
+msgstr "Właśnie rozpoczęto synchronizację komputera z usługą synchronizacji %s."
+
+#. if sync is successfully started and done
+#: ../src/syncevo-dbus-server.cpp:5637
+#, c-format
+msgid "%s sync complete"
+msgstr "Synchronizacja %s zakończona"
+
+#: ../src/syncevo-dbus-server.cpp:5638
+#, c-format
+msgid "We have just finished syncing your computer with the %s sync service."
+msgstr "Właśnie zakończono synchronizację komputera z usługą synchronizacji %s."
+
+#. if sync is successfully started and has errors, or not started successful with a fatal problem
+#: ../src/syncevo-dbus-server.cpp:5643
+msgid "Sync problem."
+msgstr "Problem z synchronizacją."
+
+#: ../src/syncevo-dbus-server.cpp:5644
+msgid "Sorry, there's a problem with your sync that you need to attend to."
+msgstr "Przepraszamy, wystąpił problem z synchronizacją wymagający interwencji użytkownika."
+
+#: ../src/syncevo-dbus-server.cpp:5717
+msgid "View"
+msgstr "Pokaż"
+
+#: ../src/syncevo-dbus-server.cpp:5718
+msgid "Dismiss"
+msgstr "Odrzuć"
+
 #~ msgid ""
-#~ "You haven't set up a sync service yet. Sync services let you \n"
-#~ "synchronize your data between your netbook and a web service."
+#~ "Do you want to replace %s with %s? This will not remove any synced "
+#~ "information on either end but you will no longer be able to sync with %s."
 #~ msgstr ""
-#~ "Nie ustawiłeś jeszcze usługi synchronizacji pomiędzy netbookiem\n"
-#~ "a web-serwisem."
+#~ "Czy chcesz zastąpić %s poprzez %s? Nie spowoduje to usunięcia "
+#~ "jakichkolwiek informacji zsynchronizowanych na żadnym z urządzeń, ale nie "
+#~ "będzie już można dokonać synchronizacji z %s."
+#~ msgid "Yes, use %s"
+#~ msgstr "Tak, użyj %s"
+#~ msgid "No, use %s"
+#~ msgstr "Nie, użyj %s"
+#~ msgid "Database error"
+#~ msgstr "Błąd bazy danych"
+#~ msgid "Reset service"
+#~ msgstr "Zresetuj usługę"
+#~ msgid "Addressbook"
+#~ msgstr "Książka adresowa"
+

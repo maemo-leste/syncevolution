@@ -75,20 +75,33 @@
       <doc:doc><doc:description>
         Get an array of all configured servers (or templates)
 
-        In getting templates mode, the dbus server checks the paired devices
-        from bluez and returns the matched templates. Templates for each device
-        are re-named with 'Bluetooth_&lt;mac address&gt;_&lt;number&gt;', where number
-        enumerates the templates created for the device.
+        In getting templates mode, the dbus server checks all paired devices
+        from bluez daemon and filters them by SyncML capability. Then it
+        looks through built-in templates and returns their matched templates.
+        Multiple templates might be created for each device, with different
+        matching scores(range: 1-5). Scores represent how well the device name
+        matches a template. The higher, the better.
+        
+        A template might be used to help creation for multiple devices. Thus template
+        names must be reset in a naming rule. They are re-named with 'Bluetooth_&lt;
+        mac address&gt;_&lt;sequence number&gt;'. Here 'mac address' is the mac
+        address of the Bluetooth device and 'sequence number' enumerates all the
+        matched templates created for the device.
 
-        Get these templates latter when calling GetConfig with additional new
-        properties: 
-            description - the description for the template
-            score - the calculated score based on the device name and template
-            deviceName - the device name that the template is for
-            fingerPrint - the fingerPrint of the template, used for dbus
-                          clients to re-match with user input device info
-        Also a property value is changed: 'syncURL' is replaced with the device 
-        mac address.
+        When retrieving the templates with GetConfig(), several additional
+        properties will be returned:
+            description - the description for the template (non-localized string)
+            score - the calculated score based on the device name and template (1-5, 5 is best)
+            deviceName - the device name that the template is for (copied verbatim from that device)
+            templateName - string identifying the class of devices the templates works for,
+                           like "Nokia S40"; meant to be shown to users; optional, fall back
+                           to first entry in fingerPrint if not set
+            fingerPrint - comma separated list of devices which work with this template,
+                          typically in "vendor model" format; can be used by D-Bus
+                          clients to re-match with user provided device information
+
+        Together with these changes, a property value is changed: 'syncURL' in the
+        configuration is replaced with the mac address of the device.
       </doc:description></doc:doc>
       <arg type="b" name="template" direction="in">
         <doc:doc><doc:summary>
@@ -524,7 +537,7 @@
           </doc:summary>
         </doc:doc>
       </arg>
-      <arg type="o" name="handler">
+      <arg type="s" name="handler">
         <doc:doc>
           <doc:summary>
             for state="waiting": the client which first replied
@@ -587,6 +600,24 @@
         </doc:doc>
       </arg>
     </method>
+
+    <signal name="LogOutput">
+      <doc:doc><doc:description></doc:description>Broadcast the console part of the output</doc:doc>
+      <arg type="o" name="path">
+          <doc:doc>
+            <doc:summary>
+              D-Bus object path. If the output belongs to a session, then path is set as session's
+              object path. Else, it's set as dbus server's object path.
+            </doc:summary>
+          </doc:doc>
+      </arg>
+      <arg type="s" name="level">
+        <doc:doc><doc:summary>the output level (DEBUG/INFO/SHOW/ERROR/WARNING/DEV)</doc:summary></doc:doc>
+      </arg>
+      <arg type="s" name="output">
+        <doc:doc><doc:summary>the output string to be broadcast</doc:summary></doc:doc>
+      </arg>
+    </signal>
 
   </interface>
 </node>

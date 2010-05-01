@@ -80,11 +80,11 @@
               <enum name="X-EVOLUTION-TELEX" value="B11"/>
               <enum name="X-EVOLUTION-TTYTDD" value="B12"/>
 
-              <enum mode="prefix" name="X-CustomLabel-" value="1.L"/>
-              <enum mode="prefix" name="X-Synthesis-Ref" value="2.L"/>
+              <!-- enum mode="prefix" name="X-CustomLabel-" value="1.L"/ -->
+              <!-- enum mode="prefix" name="X-Synthesis-Ref" value="2.L"/ -->
             </value>
           </parameter>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="TEL_SLOT"/>
           </parameter>
         </property>
@@ -99,11 +99,11 @@
               <enum mode="ignore"   value="B2"/> <!-- OTHER -->
               <enum name="INTERNET" value="B3"/>
 
-              <enum mode="prefix" name="X-CustomLabel-" value="1.L"/>
-              <enum mode="prefix" name="X-Synthesis-Ref" value="2.L"/>
+              <!-- enum mode="prefix" name="X-CustomLabel-" value="1.L"/ -->
+              <!-- enum mode="prefix" name="X-Synthesis-Ref" value="2.L"/ -->
             </value>
           </parameter>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="EMAIL_SLOT"/>
           </parameter>
         </property>
@@ -118,8 +118,8 @@
               <enum mode="ignore"   value="B2"/> <!-- OTHER -->
               <enum name="PREF"     value="B3"/>
 
-              <enum mode="prefix" name="X-CustomLabel-" value="1.L"/>
-              <enum mode="prefix" name="X-Synthesis-Ref" value="2.L"/>
+              <!-- enum mode="prefix" name="X-CustomLabel-" value="1.L"/ -->
+              <!-- enum mode="prefix" name="X-Synthesis-Ref" value="2.L"/ -->
             </value>
           </parameter>
         </property>
@@ -188,57 +188,57 @@
 
         <property name="X-AIM" suppressempty="yes">
           <value field="AIM_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="AIM_SLOT"/>
           </parameter>
         </property>
         <property name="X-GADUGADU" suppressempty="yes">
           <value field="GADUGADU_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="GADUGADU_SLOT"/>
           </parameter>
         </property>
         <property name="X-GROUPWISE" suppressempty="yes">
           <value field="GROUPWISE_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="GROUPWISE_SLOT"/>
           </parameter>
         </property>
         <property name="X-ICQ" suppressempty="yes">
           <value field="ICQ_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="ICQ_SLOT"/>
           </parameter>
         </property>
         <property name="X-JABBER" suppressempty="yes">
           <value field="JABBER_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="JABBER_SLOT"/>
           </parameter>
         </property>
         <property name="X-MSN" suppressempty="yes">
           <value field="MSN_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="MSN_SLOT"/>
           </parameter>
         </property>
         <property name="X-YAHOO" suppressempty="yes">
           <value field="YAHOO_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="YAHOO_SLOT"/>
           </parameter>
         </property>
 
         <property name="X-SKYPE" suppressempty="yes"> 
           <value field="SKYPE_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="SKYPE_SLOT"/>
           </parameter>
         </property>
 
         <property name="X-SIP" suppressempty="yes">
           <value field="SIP_HANDLE"/>
-          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="yes">
+          <parameter name="X-EVOLUTION-UI-SLOT" positional="no" show="no">
             <value field="SIP_SLOT"/>
           </parameter>
         </property>
@@ -258,8 +258,8 @@
               <enum name="WORK"     value="B1"/>
               <enum mode="ignore"   value="B2"/> <!-- OTHER -->
 
-              <enum mode="prefix" name="X-CustomLabel-" value="1.L"/>
-              <enum mode="prefix" name="X-Synthesis-Ref" value="2.L"/>
+              <!-- enum mode="prefix" name="X-CustomLabel-" value="1.L"/ -->
+              <!-- enum mode="prefix" name="X-Synthesis-Ref" value="2.L"/ -->
             </value>
           </parameter>
         </property>

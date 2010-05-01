@@ -5,7 +5,7 @@ dnl Invoke autogen.sh to produce a configure script.
 # Debian packages. For prereleases (beta, alpha),
 # set it to something like "0.9.2+" and the AC_INIT
 # VERSION to 1.0beta1 to produce 0.9.2+1.0beta1.
-AC_INIT([syncevolution], [1.0beta2a])
+AC_INIT([syncevolution], [1.0beta3])
 STABLE_VERSION=0.9.2+
 AC_SUBST(STABLE_VERSION)
 
@@ -320,8 +320,7 @@ AC_ARG_ENABLE(gui,
                              [enables building the GTK+ UI that uses the SyncEvolution DBus API.
                               Options: gtk, moblin, all (builds sync-ui-gtk and sync-ui-moblin)
                               "gtk" is the default for --enable-gui without type. No GUI is
-                              built when --enable-gui is not used.
-                              --enable-gui implies --enable-dbus.]),
+                              built when --enable-gui is not used.]),
               [ if test "$enableval" = "gtk" ; then
                     enable_gui=gtk
                 elif test "$enableval" = "yes" ; then
@@ -340,9 +339,17 @@ AC_ARG_ENABLE(gui,
 
 AM_CONDITIONAL([COND_GUI], [test "$enable_gui" != "no"])
 
+AC_ARG_ENABLE(core,
+              AS_HELP_STRING([--enable-core],
+                             [enables building the core SyncEvolution (library, backends)]),
+              enable_core="$enableval",
+              enable_core="yes")
+AM_CONDITIONAL([COND_CORE], [test "$enable_core" = "yes"])
+
 AC_ARG_ENABLE(dbus-service,
               AS_HELP_STRING([--enable-dbus-service],
-                             [enables building the dbus service executable and the wrapper library for it]),
+                             [enables building the dbus service executable and all related features
+                             (the DBus wrapper library, command line usage of server, etc).]),
               enable_dbus_service="$enableval",
               [if test $enable_gui == "no"; then
                   enable_dbus_service="no"
@@ -350,10 +357,6 @@ AC_ARG_ENABLE(dbus-service,
                   enable_dbus_service="yes"
                fi])
 AM_CONDITIONAL([COND_DBUS], [test "$enable_dbus_service" = "yes"])
-
-if test $enable_gui != "no" && test $enable_dbus_service == "no"; then
-   AC_ERROR([cannot build GUI without building the D-Bus service])
-fi
 
 PKG_CHECK_MODULES(KEYRING, [gnome-keyring-1], HAVE_KEYRING=yes, HAVE_KEYRING=no)
 if test $HAVE_KEYRING == "yes"; then
@@ -365,9 +368,6 @@ if test $HAVE_KEYRING == "yes"; then
 fi
 
 if test $enable_dbus_service == "yes"; then
-    PKG_CHECK_MODULES(DBUS_GLIB, dbus-glib-1 glib-2.0)
-    AC_PATH_PROG(DBUS_BINDING_TOOL, dbus-binding-tool)
-    AC_PATH_PROG(GLIB_GENMARSHAL, glib-genmarshal)
     if test -z "$XSLT"; then
        AC_ERROR([xsltproc not found, is required for D-Bus service])
     fi
@@ -377,6 +377,16 @@ if test $enable_dbus_service == "yes"; then
                  AC_DEFINE(NEED_DBUS_WATCH_GET_UNIX_FD, 1,
                  [Define to 1 if you need the dbus_watch_get_unix_fd() function.]))
     need_glib=yes
+    PKG_CHECK_MODULES(LIBNOTIFY, [libnotify], HAVE_LIBNOTIFY=yes, HAVE_LIBNOTIFY=no)
+    AC_ARG_ENABLE(notify,
+                  AS_HELP_STRING([--enable-notify],
+                                 [send notifications for automatic sync events]),
+                  [ test "$enableval" = "no" || test $HAVE_LIBNOTIFY = "yes" || AC_ERROR([required libnotify package not found]) ],
+                  [ test $HAVE_LIBNOTIFY = "yes" || AC_ERROR([required libnotify package not found, use --disable-notify to compile without notifications]) ])
+    if test $HAVE_LIBNOTIFY == "yes"; then
+        AC_DEFINE(HAS_NOTIFY, 1, [define if libnotify could be used in dbus service])
+    fi
+    AC_DEFINE(DBUS_SERVICE, 1, [define if dbus service is enabled])
 fi
 AC_SUBST(DBUS_CFLAGS)
 AC_SUBST(DBUS_LIBS)
@@ -384,11 +394,21 @@ AC_SUBST(DBUS_GLIB_CFLAGS)
 AC_SUBST(DBUS_GLIB_LIBS)
 AC_SUBST(KEYRING_CFLAGS) 
 AC_SUBST(KEYRING_LIBS) 
+AC_SUBST(LIBNOTIFY_CFLAGS)
+AC_SUBST(LIBNOTIFY_LIBS)
 AC_SUBST(LIBEXECDIR)
 
 DBUS_SERVICES_DIR="${datadir}/dbus-1/services"
 AC_SUBST(DBUS_SERVICES_DIR)
 AC_DEFINE_UNQUOTED(DBUS_SERVICES_DIR, "$DBUS_SERVICES_DIR", [Location of D-Bus services directory])
+
+if test $enable_gui != "no" || test $enable_dbus_service == "yes"; then
+    IT_PROG_INTLTOOL([0.37.1])
+    GETTEXT_PACKAGE=syncevolution
+    AC_DEFINE_UNQUOTED(GETTEXT_PACKAGE, "$GETTEXT_PACKAGE", [The gettext package name])
+    AM_GLIB_GNU_GETTEXT
+    SYNCEVOLUTION_LOCALEDIR=[${datadir}/locale]
+fi
 
 # decide which sync-ui(s) we are building:
 # sync-ui (in either GTK or Moblin mode) or both (in separate binaries)
@@ -400,12 +420,23 @@ case $enable_gui in
 esac
 
 if test $enable_gui != "no"; then
+    PKG_CHECK_MODULES(DBUS_GLIB, dbus-glib-1 glib-2.0)
+    AC_PATH_PROG(DBUS_BINDING_TOOL, dbus-binding-tool)
+    AC_PATH_PROG(GLIB_GENMARSHAL, glib-genmarshal)
+
     gui_modules="glib-2.0 dbus-glib-1 >= 0.60 gtk+-2.0 libglade-2.0 gio-2.0"
     if test $enable_gui == "moblin"; then
         AC_DEFINE(USE_MOBLIN_UX, 1, [Use Moblin UI widgets])
     fi
     if test $enable_gui == "moblin" -o $enable_gui == "all"; then
         gui_modules="$guimodules mx-gtk-1.0"
+
+        PKG_CHECK_MODULES(MX_GTK_0_99_1, mx-gtk-1.0 >= 0.99.1,
+                          have_mx_gtk_0_99_1="yes",
+                          have_mx_gtk_0_99_1="no")
+        if test $have_mx_gtk_0_99_1 == "yes"; then
+            AC_DEFINE(MX_GTK_0_99_1, 1, [we have Mx-Gtk 0.99.1 or better])
+        fi
     fi
 
     PKG_CHECK_MODULES(UNIQUE, unique-1.0,
@@ -426,11 +457,9 @@ if test $enable_gui != "no"; then
     PKG_CHECK_MODULES(GUI, $gui_modules)
 
     AC_PATH_PROG([GTK_BUILDER_CONV], gtk-builder-convert)
-    IT_PROG_INTLTOOL([0.37.1])
-    GETTEXT_PACKAGE=syncevolution
-    AC_DEFINE_UNQUOTED(GETTEXT_PACKAGE, "$GETTEXT_PACKAGE", [The gettext package name])
-    AM_GLIB_GNU_GETTEXT
-    SYNCEVOLUTION_LOCALEDIR=[${datadir}/locale]
+elif test "$enable_dbus_service" = "yes"; then
+    # syncevo-dbus-server needs localization
+    :
 else
     INTLTOOL_UPDATE="true"
     USE_NLS="no"
@@ -537,6 +566,11 @@ if test $SYNTHESIS_SRC != "no-synthesis-source"; then
     SYNTHESIS_CFLAGS="-I$SYNTHESIS_SUBDIR/src"
     SYNTHESIS_LIBS="$SYNTHESIS_SUBDIR/src/libsynthesissdk.la"
 
+    if test "$enable_core" = "no" && test "$enable_gui" != "no"; then
+       # SYNTHESIS_SUBDIR is ignored, at least build headers for GUI
+       SYNTHESIS_SUBDIR_INCLUDES=synthesis-includes
+    fi
+
     if test "$enable_shared" = "no"; then
         # link against the engines that were enabled
         case $SYNCML_ENGINES in both|client|server) SYNTHESIS_LIBS="$SYNTHESIS_LIBS $SYNTHESIS_SUBDIR/src/libsynthesis.la";; esac
@@ -563,6 +597,7 @@ AC_SUBST(SYNTHESIS_CFLAGS)
 AC_SUBST(SYNTHESIS_LIBS)
 AC_SUBST(SYNTHESIS)
 AC_SUBST(SYNTHESIS_SUBDIR)
+AC_SUBST(SYNTHESIS_SUBDIR_INCLUDES)
 AC_SUBST(SYNTHESIS_DEP)
 AC_SUBST(SYNTHESIS_ENGINE)
 AC_SUBST(SYNTHESIS_LIB)

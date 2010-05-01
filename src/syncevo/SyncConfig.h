@@ -521,6 +521,31 @@ typedef ScalarConfigProperty<long, LONG_MIN, LONG_MAX, long, LONG_MIN, LONG_MAX,
 typedef ScalarConfigProperty<unsigned long, 0, ULONG_MAX, unsigned long, 0, ULONG_MAX, strtoul> ULongConfigProperty;
 
 /**
+ * Time interval >= 0. Values are formatted as number of seconds
+ * and accepted in a variety of formats, following ISO 8601:
+ * - x = x seconds
+ * - d = x[YyWwDdHhMmSs] = x years/weeks/days/hours/minutes/seconds
+ * - d[+]d... = combination of the previous durations
+ *
+ * As an extension of ISO 8601, white spaces are silently ignored,
+ * suffix checks are case-insensitive and s (or S) for seconds
+ * can be omitted.
+ */
+class SecondsConfigProperty : public UIntConfigProperty
+{
+ public:
+    SecondsConfigProperty(const string &name, const string &comment,
+                          const string &defValue = string("0"), const string &descr = "") :
+        UIntConfigProperty(name, comment, defValue, descr)
+        {}
+
+    virtual bool checkValue(const string &value, string &error) const;
+    unsigned int getPropertyValue(const ConfigNode &node, bool *isDefault = NULL) const;
+
+    static bool parseDuration(const string &value, string &error, unsigned int &seconds);
+};
+
+/**
  * This struct wraps keys for storing passwords
  * in configuration system. Some fields might be empty
  * for some passwords. Each field might have different 
@@ -843,8 +868,8 @@ class SyncConfig {
      * template. The rank field is used to indicate how good it matches the
      * user input <MacAddress, DeviceName> */
     struct TemplateDescription {
-        // The name of the template
-        std::string m_name;
+        // The unique identifier of the template
+        std::string m_templateId;
         // The description of the template (eg. the web server URL for a
         // SyncML server. This is not used for UI, only CMD line used this.
         std::string m_description;
@@ -852,7 +877,7 @@ class SyncConfig {
         int m_rank;
 
         //a unique identity of the device that the template is for, used by caller
-        std::string m_id;
+        std::string m_deviceId;
 
         // A string identify which fingerprint the template is matched with.
         std::string m_fingerprint;
@@ -865,15 +890,19 @@ class SyncConfig {
         // will not necessarily the same with m_fingerprint
         std::string m_matchedModel;
 
-        TemplateDescription (const std::string &name, const std::string &description, 
-                const int rank, const std::string id, const std::string &fingerprint, const std::string &path, const std::string &model)
-            :   m_name (name),
+        // The template name (device class) presented
+        std::string m_templateName;
+
+        TemplateDescription (const std::string &templateId, const std::string &description, 
+                const int rank, const std::string deviceId, const std::string &fingerprint, const std::string &path, const std::string &model, const std::string &templateName)
+            :   m_templateId (templateId),
                 m_description (description),
                 m_rank (rank),
-                m_id (id),
+                m_deviceId (deviceId),
                 m_fingerprint (fingerprint),
                 m_path (path),
-                m_matchedModel(model)
+                m_matchedModel(model),
+                m_templateName (templateName)
         {
         }
 
@@ -1007,8 +1036,10 @@ class SyncConfig {
      * Split a config string (normalized or not) into the peer part
      * (before final @) and the context (after that @, not including
      * it), return "default" as context if not specified otherwise.
+     *
+     * @return true when the context was specified explicitly
      */
-    static void splitConfigString(const string &config, string &peer, string &context);
+    static bool splitConfigString(const string &config, string &peer, string &context);
 
     /**
      * Replaces the property filter of either the sync properties or
@@ -1256,10 +1287,12 @@ class SyncConfig {
     virtual void setDevID(const string &value, bool temporarily = false);
 
     /*Used for Server Alerted Sync*/
-    virtual const char*  getRemoteIdentifier() const;
+    virtual const char* getRemoteIdentifier() const;
     virtual void setRemoteIdentifier (const string &value, bool temporaritly = false);
     virtual bool getPeerIsClient () const;
     virtual void setPeerIsClient (bool value, bool temporarily = false);
+    virtual const char* getSyncMLVersion() const;
+    virtual void setSyncMLVersion (const string &value, bool temporarily = false);
 
     /**
      * An arbitrary name assigned to the peer configuration,
@@ -1290,6 +1323,16 @@ class SyncConfig {
      */
     virtual string getDeviceData() const;
     virtual void setDeviceData(const string &value);
+
+    /**
+     * Automatic sync related properties, used to control its behaviors
+     */
+    virtual string getAutoSync() const; 
+    virtual void setAutoSync(const string &value, bool temporarily = false);
+    virtual unsigned int getAutoSyncInterval() const;
+    virtual void setAutoSyncInterval(unsigned int value, bool temporarily = false);
+    virtual unsigned int getAutoSyncDelay() const;
+    virtual void setAutoSyncDelay(unsigned int value, bool temporarily = false);
 
     /**
      * Specifies whether WBXML is to be used (default).
@@ -1416,6 +1459,9 @@ class SyncSourceNodes {
     SyncSourceNodes() {}
 
     /**
+     * @param havePeerNode    false when peerNode is a dummy instance which has to
+     *                        be ignored for properties which may exist there as
+     *                        well as in the shared node (for example, "type")
      * @param sharedNode      node for user-visible properties, shared between peers
      * @param peerNode        node for user-visible, per-peer properties (the same
      *                        as sharedNode in SYNC4J_LAYOUT and HTTP_SERVER_LAYOUT)
@@ -1425,12 +1471,17 @@ class SyncSourceNodes {
      *                        other nodes)
      * @param serverNode      node for tracking items in a server (always different
      *                        than the other nodes)
+     * @param cacheDir        a per-peer, per-source directory for exclusive use by
+     *                        the SyncSource, must be created if needed; not available
+     *                        when source is accessed independently of peer
      */
-    SyncSourceNodes(const boost::shared_ptr<FilterConfigNode> &sharedNode,
+    SyncSourceNodes(bool havePeerNode,
+                    const boost::shared_ptr<FilterConfigNode> &sharedNode,
                     const boost::shared_ptr<FilterConfigNode> &peerNode,
                     const boost::shared_ptr<ConfigNode> &hiddenPeerNode,
                     const boost::shared_ptr<ConfigNode> &trackingNode,
-                    const boost::shared_ptr<ConfigNode> &serverNode);
+                    const boost::shared_ptr<ConfigNode> &serverNode,
+                    const string &cacheDir);
 
     /** true if the peer-specific config node exists */
     bool exists() const { return m_peerNode->exists(); }
@@ -1454,12 +1505,15 @@ class SyncSourceNodes {
     /** read-write access to backend specific tracking node */
     boost::shared_ptr<ConfigNode> getTrackingNode() const { return m_trackingNode; }
 
+    string getCacheDir() const { return m_cacheDir; }
+
  protected:
     const boost::shared_ptr<FilterConfigNode> m_sharedNode;
     const boost::shared_ptr<FilterConfigNode> m_peerNode;
     const boost::shared_ptr<ConfigNode> m_hiddenPeerNode;
     const boost::shared_ptr<ConfigNode> m_trackingNode;
     const boost::shared_ptr<ConfigNode> m_serverNode;
+    const string m_cacheDir;
 
     /** multiplexer for the other nodes */
     boost::shared_ptr<FilterConfigNode> m_props[2];
@@ -1512,6 +1566,13 @@ class SyncSourceConfig {
     boost::shared_ptr<const FilterConfigNode> getProperties(bool hidden = false) const { return const_cast<SyncSourceConfig *>(this)->getProperties(hidden); }
 
     virtual const char*  getName() const { return m_name.c_str(); }
+
+    /**
+     * Directory to be used by source when it needs to store
+     * something per-peer in the file system. Currently not
+     * configurable, set via SyncSourceNodes.
+     */
+    string getCacheDir() const { return m_nodes.getCacheDir(); }
 
     /**
      * Returns the right config node for a certain property,
@@ -1626,7 +1687,9 @@ class TemplateConfig
 {
     boost::shared_ptr<FileConfigNode> m_metaNode;
     ConfigProps m_metaProps;
-    string m_name;
+    string m_id;
+    string m_templateName;
+    string m_path;
 public:
     TemplateConfig (const string &path);
     enum {
@@ -1641,9 +1704,10 @@ public:
     virtual int metaMatch (const string &fingerprint, SyncConfig::MatchMode mode);
     virtual int serverModeMatch (SyncConfig::MatchMode mode);
     virtual int fingerprintMatch (const string &fingerprint);
-    virtual string getName();
+    virtual string getTemplateId ();
     virtual string getDescription();
     virtual string getFingerprint();
+    virtual string getTemplateName();
 };
 
 

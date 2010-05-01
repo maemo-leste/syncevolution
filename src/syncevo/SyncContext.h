@@ -158,6 +158,11 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
      * urls in the configuration.
      * */
     string m_usedSyncURL;
+
+    /* Indicates whether current sync session is triggered by remote peer
+     * (such as server alerted sync)
+     */
+    bool m_remoteInitiated;
   public:
     /**
      * SyncContext using a volatile config
@@ -173,6 +178,13 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
                 bool doLogging = false);
     ~SyncContext();
 
+    /**
+     * Output channel to be used by this context. NULL means "use std::cout", the default.
+     * Owned by caller, must remain valid as long as SyncContext exists.
+     */
+    void setOutput(ostream *out);
+    ostream &getOutput() const { return *m_out; }
+
     bool getQuiet() { return m_quiet; }
     void setQuiet(bool quiet) { m_quiet = quiet; }
 
@@ -187,14 +199,15 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
     static const SuspendFlags &getSuspendFlags() { return s_flags; }
 
     /*
-     * Use initSAN as the first step is sync() if this is a server alerted sync.
+     * Use sendSAN as the first step is sync() if this is a server alerted sync.
      * Prepare the san package and send the SAN request to the peer.
      * Returns false if failed to get a valid client sync request
      * otherwise put the client sync request into m_initialMessage which will
      * be used to initalze the server via initServer(), then continue sync() to
      * start the real sync serssion.
+     * @version indicates the SAN protocal version used (1.2 or 1.1/1.0)
      */
-    bool initSAN();
+    bool sendSAN(uint16_t version);
 
     /**
      * Initializes the session so that it runs as SyncML server once
@@ -408,6 +421,17 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
      */
     static void resetSignals() { s_flags = SuspendFlags(); }
 
+    /**
+     * handleSignals() is called in a signal handler,
+     * which can only call reentrant functions. Our
+     * logging code is not reentrant and thus has
+     * to be called outside of the signal handler.
+     */
+    static void printSignals();
+
+    bool getRemoteInitiated() {return m_remoteInitiated;}
+    void setRemoteInitiated(bool remote) {m_remoteInitiated = remote;}
+
   protected:
     /** exchange active Synthesis engine */
     SharedEngine swapEngine(SharedEngine newengine) {
@@ -564,7 +588,7 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
     /**
      * instantiate transport agent
      *
-     * Called by engine when it needs to do HTTP POST requests.  The
+     * Called by engine when it needs to exchange messages.  The
      * transport agent will be used throughout the sync session and
      * unref'ed when no longer needed. At most one agent will be
      * requested at a time. The transport agent is intentionally
@@ -572,6 +596,12 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
      * class with a different life cycle is possible, either by
      * keeping a reference or by returning a shared_ptr where the
      * destructor doesn't do anything.
+     *
+     * The agent must be ready for use:
+     * - HTTP specific settings must have been applied
+     * - the current SyncContect's transport_cb() must have been
+     *   installed via TransportAgent::setCallback(), with a suitable
+     *   timeout for the agent
      *
      * The default implementation instantiates one of the builtin
      * transport agents, depending on how it was compiled.
@@ -681,6 +711,14 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
     void checkSourceChanges(SourceList &sourceList, SyncReport &changes);
 
     /**
+     * A method to report sync is really successfully started.
+     * It happens at the same time SynthesDBPlugin starts to access source.
+     * For each sync, it is only called at most one time.
+     * The default action is nothing.
+     */
+    virtual void syncSuccessStart() { }
+
+    /**
      * sets up Synthesis session and executes it
      */
     SyncMLStatus doSync();
@@ -691,14 +729,6 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
      * peer
      */
     string getSynthesisDatadir() { return getRootPath() + "/.synthesis"; }
-
-    /**
-     * handleSignals() is called in a signal handler,
-     * which can only call reentrant functions. Our
-     * logging code is not reentrant and thus has
-     * to be called outside of the signal handler.
-     */
-    static void printSignals();
 
     /**
      * return true if "delayedabort" session variable is true
@@ -712,9 +742,15 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
     // Current retry count
     int m_retries;
 
+    //a flag indicating whether it is the first time to start source access.
+    //It can be used to report infomation about a sync is successfully started.
+    bool m_firstSourceAccess;
+
+    // output stream to be used by this context, never NULL (uses cout as fallback)
+    ostream *m_out;
+
 public:
     static bool transport_cb (void *data);
-    void setTransportCallback(int seconds);
 
     string getUsedSyncURL();
 };

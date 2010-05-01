@@ -1,5 +1,6 @@
-syncevolution (1.0+ds1~beta2a-2) unstable; urgency=low
+syncevolution (1.0+ds1~beta3-1) unstable; urgency=low
 
+  * New upstream beta
   * Add syncevo-http-server.py to sync-ui examples (Closes: #573265)
 
  -- David Bremner <bremner@unb.ca>  Sun, 14 Mar 2010 08:37:03 -0300

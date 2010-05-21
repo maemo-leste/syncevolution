@@ -15,7 +15,7 @@ Vcs-Browser: http://git.debian.org/?p=collab-maint/syncevolution
 
 Package: syncevolution
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${Source-Version})
 Recommends: evolution
 Description: Evolution data synchronization program using SyncML
  SyncEvolution synchronizes Evolution's contact, calendar and task
@@ -27,7 +27,7 @@ Description: Evolution data synchronization program using SyncML
 
 Package: sync-ui
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${Source-Version})
 Recommends: evolution
 Description: Evolution data synchronization program using SyncML (GTK+ GUI)
  SyncEvolution synchronizes Evolution's contact, calendar and task
@@ -38,3 +38,17 @@ Description: Evolution data synchronization program using SyncML (GTK+ GUI)
  items are supported.
  .
  This package provides a GTK+ graphical user interface.
+
+Package: syncevolution-common
+Architecture: all
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: evolution
+Description: Evolution data synchronization program using SyncML (GTK+ GUI)
+ SyncEvolution synchronizes Evolution's contact, calendar and task
+ items via SyncML. The items are exchanged in the vCard 2.1 or 3.0
+ format and iCalender 2.0 format via the Synthesis C++ client API
+ library, which should make SyncEvolution compatible with the majority
+ of SyncML servers. Full, one-way and incremental synchronization of
+ items are supported.
+ .
+ This package provides common files. 

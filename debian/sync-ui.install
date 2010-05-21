@@ -1,9 +1,5 @@
 usr/bin/sync-ui  /usr/bin
 usr/share/icons/hicolor/48x48/apps/sync.png
-usr/share/syncevolution/close.png
-usr/share/syncevolution/settings_hover.png
-usr/share/syncevolution/close_hover.png
-usr/share/syncevolution/settings.png
 usr/share/syncevolution/sync-ui.rc
 usr/share/syncevolution/sync-generic.png
 usr/share/syncevolution/sync-spinner.gif

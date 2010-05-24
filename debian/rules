@@ -6,6 +6,8 @@ SOURCEPKG=$(shell dpkg-parsechangelog | sed  -n 's/^Source: \(.*\)/\1/p')
 UPSTREAM=$(shell dpkg-parsechangelog |  sed -n 's/^Version: \(.*\)-[^-]*/\1/p')
 ORIG=${SOURCEPKG}_${UPSTREAM}.orig.tar.gz
 
+export CONFIG_SHELL=/bin/bash
+
 %: 
 	dh $@
 

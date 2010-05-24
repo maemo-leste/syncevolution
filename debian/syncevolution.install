@@ -2,4 +2,3 @@ usr/bin/synccompare
 usr/bin/syncevolution
 usr/share/syncevolution/templates
 usr/share/syncevolution/xml
-usr/lib/syncevolution/syncevo-dbus-server

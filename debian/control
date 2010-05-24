@@ -4,10 +4,11 @@ Priority: optional
 Maintainer: David Bremner <bremner@unb.ca>
 Build-Depends: debhelper (>= 7.0.50~), autotools-dev, libedataserver1.2-dev, 
  libecal1.2-dev, libebook1.2-dev, libcurl4-gnutls-dev, libboost-dev,
- libsynthesis-dev (>=3.4.0.5~), libtool, automake, intltool, pkg-config,
+ libsynthesis-dev (>=3.4.0.6~), libtool, automake, intltool, pkg-config,
  libglib2.0-dev, libglade2-dev, libdbus-glib-1-dev, libgtk2.0-dev,
  libgconf2-dev, libgnome-keyring-dev, xsltproc, 
- libopenobex1-dev [!kfreebsd-i386 !kfreebsd-amd64], libnotify-dev
+ libopenobex1-dev [!kfreebsd-i386 !kfreebsd-amd64], libnotify-dev,
+ bash
 Standards-Version: 3.8.4
 Homepage: http://www.syncevolution.org
 Vcs-Git: git://git.debian.org/git/collab-maint/syncevolution
@@ -16,7 +17,7 @@ Vcs-Browser: http://git.debian.org/?p=collab-maint/syncevolution
 Package: syncevolution
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version})
-Recommends: evolution
+Recommends: evolution, bluez
 Description: Evolution data synchronization program using SyncML
  SyncEvolution synchronizes Evolution's contact, calendar and task
  items via SyncML. The items are exchanged in the vCard 2.1 or 3.0
@@ -28,7 +29,7 @@ Description: Evolution data synchronization program using SyncML
 Package: sync-ui
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version})
-Recommends: evolution
+Recommends: evolution, bluez
 Description: Evolution data synchronization program using SyncML (GTK+ GUI)
  SyncEvolution synchronizes Evolution's contact, calendar and task
  items via SyncML. The items are exchanged in the vCard 2.1 or 3.0
@@ -51,4 +52,19 @@ Description: Evolution data synchronization program using SyncML (GTK+ GUI)
  of SyncML servers. Full, one-way and incremental synchronization of
  items are supported.
  .
- This package provides common files. 
+ This package provides common files.
+
+Package: syncevolution-dbus
+Architecture: all
+Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version}), dbus
+Recommends: evolution
+Description: Evolution data synchronization program using SyncML (GTK+ GUI)
+ SyncEvolution synchronizes Evolution's contact, calendar and task
+ items via SyncML. The items are exchanged in the vCard 2.1 or 3.0
+ format and iCalender 2.0 format via the Synthesis C++ client API
+ library, which should make SyncEvolution compatible with the majority
+ of SyncML servers. Full, one-way and incremental synchronization of
+ items are supported.
+ .
+ This package provides dbus services.
+

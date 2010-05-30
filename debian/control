@@ -17,7 +17,7 @@ Package: syncevolution
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version})
 Recommends: evolution, bluez
-Description: Evolution data synchronization program using SyncML
+Description: Evolution data synchronization program using SyncML (CLI)
  SyncEvolution synchronizes Evolution's contact, calendar and task
  items via SyncML. The items are exchanged in the vCard 2.1 or 3.0
  format and iCalender 2.0 format via the Synthesis C++ client API
@@ -43,7 +43,7 @@ Package: syncevolution-common
 Architecture: all
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Recommends: evolution
-Description: Evolution data synchronization program using SyncML (GTK+ GUI)
+Description: Evolution data synchronization program using SyncML 
  SyncEvolution synchronizes Evolution's contact, calendar and task
  items via SyncML. The items are exchanged in the vCard 2.1 or 3.0
  format and iCalender 2.0 format via the Synthesis C++ client API
@@ -57,7 +57,7 @@ Package: syncevolution-dbus
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version}), dbus
 Recommends: evolution
-Description: Evolution data synchronization program using SyncML (GTK+ GUI)
+Description: Evolution data synchronization program using SyncML (D-Bus support)
  SyncEvolution synchronizes Evolution's contact, calendar and task
  items via SyncML. The items are exchanged in the vCard 2.1 or 3.0
  format and iCalender 2.0 format via the Synthesis C++ client API
@@ -65,5 +65,5 @@ Description: Evolution data synchronization program using SyncML (GTK+ GUI)
  of SyncML servers. Full, one-way and incremental synchronization of
  items are supported.
  .
- This package provides dbus services.
+ This package provides D-Bus services.
 

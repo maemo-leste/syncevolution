@@ -2,20 +2,15 @@ syncevolution (1.0+ds1~beta3-1) unstable; urgency=low
 
   [ David Bremner ]
   * New upstream beta (Closes: #582376)
-  * Add syncevo-http-server.py to sync-ui examples (Closes: #573265)
+  * Add syncevo-http-server.py to syncevolution examples (Closes: #573265)
 
   [ Thomas Bechtold ]
-  * Split source package in syncevolution-common, syncevolution and
+  * Split source package into syncevolution-common, syncevolution and
     sync-ui.
-  * Move syncevo-bus-server from sync-ui to syncevolution
-  * Add dependency syncevolution-common (= ${source:Version}) to 
-    syncevolution and sync-ui
-  * move syncevo-http-server.py from sync-ui examples to syncevolution
-    examples
   * add dbus-server-sync.py and syncevo-phone-config.py to syncevolution
     examples
 
- -- Thomas Bechtold <thomasbechtold@jpberlin.de>  Fri, 21 May 2010 16:50:35 +0200
+ -- David Bremner <bremner@unb.ca>  Sat, 29 May 2010 19:36:18 -0600
 
 syncevolution (1.0+ds1~beta2a-1) unstable; urgency=low
 

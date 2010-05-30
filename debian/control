@@ -27,7 +27,8 @@ Description: Evolution data synchronization program using SyncML (CLI)
 
 Package: sync-ui
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version})
+Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version}), 
+	 syncevolution-dbus 
 Recommends: evolution, bluez
 Description: Evolution data synchronization program using SyncML (GTK+ GUI)
  SyncEvolution synchronizes Evolution's contact, calendar and task

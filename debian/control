@@ -55,7 +55,7 @@ Description: Evolution data synchronization program using SyncML (GTK+ GUI)
  This package provides common files.
 
 Package: syncevolution-dbus
-Architecture: all
+Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version}), dbus
 Recommends: evolution
 Description: Evolution data synchronization program using SyncML (GTK+ GUI)

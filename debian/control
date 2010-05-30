@@ -41,7 +41,7 @@ Description: Evolution data synchronization program using SyncML (GTK+ GUI)
 
 Package: syncevolution-common
 Architecture: all
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${misc:Depends}
 Conflicts: sync-ui (<<1.0+ds1~beta3)
 Replaces: sync-ui (<<1.0+ds1~beta3)
 Recommends: evolution

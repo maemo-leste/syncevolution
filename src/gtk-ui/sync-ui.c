@@ -691,6 +691,11 @@ set_app_state (app_data *data, app_state state)
             gtk_widget_show (data->no_connection_box);
         }
 
+        /* TRANSLATORS: These are for the button in main view, right side.
+           Keep line length below ~20 characters, use two lines if needed */
+        gtk_button_set_label (GTK_BUTTON (data->sync_btn),
+                              _("Sync now"));
+
         if (!data->current_service) {
             gtk_widget_hide (data->service_box);
             gtk_widget_hide (data->autosync_box);
@@ -715,15 +720,11 @@ set_app_state (app_data *data, app_state state)
             gtk_widget_show (data->autosync_box);
             gtk_widget_set_sensitive (data->sync_btn, data->online);
             gtk_widget_set_sensitive (data->emergency_btn, TRUE);
-            /* TRANSLATORS: These are for the button in main view, right side.
-               Keep line length below ~20 characters, use two lines if needed */
             if (data->synced_this_session && data->current_operation != OP_RESTORE) {
                 gtk_button_set_label (GTK_BUTTON (data->sync_btn),
                                       _("Sync again"));
             } else {
                 gtk_widget_hide (data->progress);
-                gtk_button_set_label (GTK_BUTTON (data->sync_btn),
-                                      _("Sync now"));
             }
             gtk_window_set_focus (GTK_WINDOW (data->sync_win), data->sync_btn);
         }
@@ -920,6 +921,7 @@ setup_windows (app_data *data,
                         FALSE, FALSE, 0);
 
     data->back_btn = gtk_button_new_with_label (_("Back to sync"));
+    gtk_widget_set_name (data->back_btn, "moblin-toolbar-button");
     gtk_widget_set_can_focus (data->back_btn, FALSE);
     gtk_widget_set_no_show_all (data->back_btn, TRUE);
     g_signal_connect_swapped (data->back_btn, "clicked",
@@ -928,7 +930,7 @@ setup_windows (app_data *data,
     gtk_container_add (GTK_CONTAINER (item), data->back_btn);
     gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, 0);
 
-    item = gtk_separator_tool_item_new ();
+    item = gtk_tool_item_new ();
     gtk_tool_item_set_expand (item, TRUE);
     gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, 1);
 
@@ -939,8 +941,8 @@ setup_windows (app_data *data,
                                           G_CALLBACK (settings_toggled), data);
 
     gtk_container_add (GTK_CONTAINER (data->settings_btn),
-                       gtk_image_new_from_icon_name ("preferences-other-hover",
-                                                     GTK_ICON_SIZE_DIALOG));
+                       gtk_image_new_from_icon_name ("preferences-other",
+                                                     GTK_ICON_SIZE_LARGE_TOOLBAR));
     item = gtk_tool_item_new ();
     gtk_container_add (GTK_CONTAINER (item), data->settings_btn);
     gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, -1);
@@ -951,8 +953,8 @@ setup_windows (app_data *data,
     g_signal_connect (close_btn, "clicked",
                       G_CALLBACK (gtk_main_quit), NULL);
     gtk_container_add (GTK_CONTAINER (close_btn),
-                       gtk_image_new_from_icon_name ("window-close-hover",
-                                                     GTK_ICON_SIZE_DIALOG));
+                       gtk_image_new_from_icon_name ("window-close",
+                                                     GTK_ICON_SIZE_LARGE_TOOLBAR));
     item = gtk_tool_item_new ();
     gtk_container_add (GTK_CONTAINER (item), close_btn);
     gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, -1);
@@ -1250,6 +1252,17 @@ build_autosync_ui (app_data *data)
     gtk_widget_show (data->autosync_toggle);
 }
 
+static void
+glade_name_workaround (GtkBuilder *builder, const char *name)
+{
+    GtkWidget *w;
+
+    w = GTK_WIDGET (gtk_builder_get_object (builder, name));
+    if (w) {
+        gtk_widget_set_name (w, name);
+    }
+}
+
 static gboolean
 init_ui (app_data *data)
 {
@@ -1365,6 +1378,19 @@ init_ui (app_data *data)
     data->new_device_btn = GTK_WIDGET (gtk_builder_get_object (builder, "new_device_btn"));
     g_signal_connect (data->new_device_btn, "clicked", 
                       G_CALLBACK (new_device_clicked_cb), data);    
+
+    /* workarounds for glade not working with gtkbuilder >= 2.20:
+     * widgets do not get names. */
+    glade_name_workaround (builder, "meego_win");
+    glade_name_workaround (builder, "sync_data_and_type_box");
+    glade_name_workaround (builder, "log_frame");
+    glade_name_workaround (builder, "backup_frame");
+    glade_name_workaround (builder, "services_frame");
+    glade_name_workaround (builder, "sync_service_label");
+    glade_name_workaround (builder, "sync_status_label");
+    glade_name_workaround (builder, "no_server_label");
+    glade_name_workaround (builder, "sync_failure_label");
+    glade_name_workaround (builder, "sync_btn");
 
     init_bluetooth_ui (data);
 
@@ -2040,6 +2066,7 @@ get_config_for_config_widget_cb (SyncevoServer *server,
             /* NOTE: using device_name here means a new config will be saved with
              * device_name (and not the template name). Not sure if this is
              * what we really want... */
+
             syncevo_config_get_value (config, NULL, "templateName", &device_name);
             if (!device_name) {
                 syncevo_config_get_value (config, NULL, "fingerPrint", &fp);
@@ -2072,7 +2099,7 @@ get_config_for_config_widget_cb (SyncevoServer *server,
                  * all configs / templates, then decide what to sho w*/
 
                 /* there is a widget for this device already, add this info there*/
-                if (g_strcmp0 ("1", ready) == 0) {
+                if (c_data->has_configuration || g_strcmp0 ("1", ready) == 0) {
                     sync_config_widget_add_alternative_config (w, device_name, config, 
                                                                c_data->has_configuration);
                 }
@@ -2902,7 +2929,7 @@ save_config (app_data *data, SyncevoSession *session)
 }
 
 static void
-sync (operation_data *op_data, SyncevoSession *session)
+do_sync (operation_data *op_data, SyncevoSession *session)
 {
     GHashTable *source_modes;
     GHashTableIter iter;
@@ -2972,7 +2999,7 @@ set_config_for_sync_cb (SyncevoSession *session,
         return;
     }
 
-    sync (op_data, session);
+    do_sync (op_data, session);
 }
 
 static void

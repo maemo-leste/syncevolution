@@ -1,13 +1,12 @@
-syncevolution (1.0+ds1-1) unstable; urgency=low
+syncevolution (1.0.1+ds1-1) unstable; urgency=low
 
-  * New upstream release
+  * New upstream release (Closes: #582376)
 
- -- David Bremner <bremner@unb.ca>  Thu, 17 Jun 2010 22:00:26 -0300
+ -- David Bremner <bremner@unb.ca>  Sun, 01 Aug 2010 20:42:53 -0400
 
 syncevolution (1.0+ds1~beta3-1) unstable; urgency=low
 
   [ David Bremner ]
-  * New upstream beta (Closes: #582376)
   * Add syncevo-http-server.py to syncevolution-dbus examples 
     (Closes: #573265)
   * Add -dbg package to hold debugging symbols
@@ -19,7 +18,7 @@ syncevolution (1.0+ds1~beta3-1) unstable; urgency=low
   * add dbus-server-sync.py and syncevo-phone-config.py to syncevolution
     examples
 
- -- David Bremner <bremner@unb.ca>  Sun, 13 Jun 2010 15:04:49 -0300
+ --
 
 syncevolution (1.0+ds1~beta2a-1) unstable; urgency=low
 

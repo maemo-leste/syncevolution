@@ -71,7 +71,7 @@ Description: Evolution data synchronization program using SyncML (D-Bus support)
 
 Package: syncevolution-http
 Architecture: all
-Depends: ${misc:Depends}, syncevolution-dbus (= ${source:Version}),
+Depends: ${misc:Depends}, syncevolution-dbus (>= ${source:Version}), python,
  python-dbus, dbus-x11, python-twisted-web, python-gobject
 Description: Evolution data synchronization program using SyncML (http support)
  SyncEvolution synchronizes Evolution's contact, calendar and task

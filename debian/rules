@@ -19,7 +19,8 @@ override_dh_auto_install:
 override_dh_auto_configure: 
 	sh autogen.sh
 	./configure --with-synthesis-src=none --prefix=/usr --sysconfdir=/etc \
-			--libexecdir=/usr/lib/syncevolution --enable-gui
+			--libexecdir=/usr/lib/syncevolution --enable-gui \
+			--with-rst2man --with-rst2html
 
 override_dh_install:
 	dh_install -X"*.pl"

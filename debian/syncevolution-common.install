@@ -19,3 +19,5 @@ usr/share/locale/nl/LC_MESSAGES/syncevolution.mo
 usr/share/locale/it/LC_MESSAGES/syncevolution.mo
 usr/share/locale/th/LC_MESSAGES/syncevolution.mo
 usr/share/locale/ca/LC_MESSAGES/syncevolution.mo
+usr/bin/synccompare
+usr/share/syncevolution

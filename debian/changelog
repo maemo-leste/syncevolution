@@ -1,4 +1,4 @@
-syncevolution (1.0.1+ds1-1) unstable; urgency=low
+syncevolution (1.0.99.7+ds1-1) unstable; urgency=low
 
   [ David Bremner ]
   * New upstream release (Closes: #582376)

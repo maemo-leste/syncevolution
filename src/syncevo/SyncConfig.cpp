@@ -189,7 +189,8 @@ SyncConfig::SyncConfig(const string &peer,
             root = getNewRoot();
             path = root + "/" + m_peerPath;
             if (!access((path + "/config.ini").c_str(), F_OK) &&
-                !access((path + "/sources").c_str(), F_OK)) {
+                !access((path + "/sources").c_str(), F_OK) &&
+                access((path + "/peers").c_str(), F_OK)) {
                 m_layout = HTTP_SERVER_LAYOUT;
             } else {
                 // check whether config name specifies a context,
@@ -200,7 +201,8 @@ SyncConfig::SyncConfig(const string &peer,
                 }
             }
         }
-        m_tree.reset(new FileConfigTree(root, m_peerPath,
+        m_tree.reset(new FileConfigTree(root,
+                                        m_peerPath.empty() ? m_contextPath : m_peerPath,
                                         m_layout == SYNC4J_LAYOUT));
     }
 
@@ -939,6 +941,19 @@ ConstSyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
                                                     const string &changeId) const
 {
     return const_cast<SyncConfig *>(this)->getSyncSourceNodes(name, changeId);
+}
+
+SyncSourceNodes SyncConfig::getSyncSourceNodesNoTracking(const string &name)
+{
+    SyncSourceNodes nodes = getSyncSourceNodes(name);
+    boost::shared_ptr<ConfigNode> dummy(new VolatileConfigNode());
+    return SyncSourceNodes(nodes.m_havePeerNode,
+                           nodes.m_sharedNode,
+                           nodes.m_peerNode,
+                           nodes.m_hiddenPeerNode,
+                           dummy,
+                           nodes.m_serverNode,
+                           nodes.m_cacheDir);
 }
 
 static ConfigProperty syncPropSyncURL("syncURL",
@@ -1838,7 +1853,7 @@ SyncSourceConfig::SyncSourceConfig(const string &name, const SyncSourceNodes &no
 }
 
 StringConfigProperty SyncSourceConfig::m_sourcePropSync("sync",
-                                           "requests a certain synchronization mode:\n"
+                                           "Requests a certain synchronization mode when initiating a sync:\n"
                                            "  two-way             = only send/receive changes since last sync\n"
                                            "  slow                = exchange all items\n"
                                            "  refresh-from-client = discard all remote items and replace with\n"
@@ -1847,7 +1862,13 @@ StringConfigProperty SyncSourceConfig::m_sourcePropSync("sync",
                                            "                        the items on the server\n"
                                            "  one-way-from-client = transmit changes from client\n"
                                            "  one-way-from-server = transmit changes from server\n"
-                                           "  none (or disabled)  = synchronization disabled",
+                                           "  disabled (or none)  = synchronization disabled\n"
+                                           "When accepting a sync session in a SyncML server (HTTP server), only\n"
+                                           "sources with sync != disabled are made available to the client,\n"
+                                           "which chooses the final sync mode based on its own configuration.\n"
+                                           "When accepting a sync session in a SyncML client (local sync with\n"
+                                           "the server contacting SyncEvolution on a device), the sync mode\n"
+                                           "specified in the client is typically overriden by the server.\n",
                                            "disabled",
                                            "",
                                            Values() +
@@ -1893,25 +1914,28 @@ public:
                              "  calendar,todo\n"
                              "\n"
                              "In all cases the format of this configuration is\n"
-                             "  <backend>[:format]\n"
+                             "  <backend>[:format][!]\n"
                              "\n"
                              "Different sources combined in one virtual source must\n"
                              "have a common representation. As with other backends,\n"
                              "the preferred format can be influenced via the 'format'\n"
                              "attribute.\n"
+                             "\n"
+                             "When there are alternative formats for the same data,\n"
+                             "each side offers all that it supports and marks one as\n"
+                             "preferred. The other side then picks the format that it\n"
+                             "uses for sending data. Some peers get confused by this or\n"
+                             "pick the less suitable format. In this case the trailing\n"
+                             "exclamation mark can be used to configure exactly one format.\n"
+                             "\n"
                              "Here are some valid examples:\n"
                              "  contacts - synchronize address book with default vCard 2.1 format\n"
                              "  contacts:text/vcard - address book with vCard 3.0 format\n"
                              "  calendar - synchronize events in iCalendar 2.0 format\n"
                              "  calendar:text/x-vcalendar - prefer legacy vCalendar 1.0 format\n"
+                             "  calendar:text/calendar! - allow only iCalendar 2.0\n"
                              "  virtual:text/x-vcalendar - a virtual backend using vCalendar 1.0 format\n"
                              "\n"
-                             "Sending and receiving items in the same format as used by the server for\n"
-                             "the uri selected below is essential. Normally, SyncEvolution and the server\n"
-                             "negotiate the preferred format automatically. With some servers, it is\n"
-                             "necessary to change the defaults (vCard 2.1 and iCalendar 2.0), typically\n"
-                             "because the server does not implement the format selection or the format\n"
-                             "itself correctly.\n"
                              "Errors while starting to sync and parsing and/or storing\n"
                              "items on either client or server can be caused by a mismatch between\n"
                              "type and uri.\n"

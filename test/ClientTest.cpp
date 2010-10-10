@@ -42,6 +42,7 @@
 
 #include <memory>
 #include <vector>
+#include <set>
 #include <utility>
 #include <sstream>
 #include <iomanip>
@@ -56,14 +57,24 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
+static set<ClientTest::Cleanup_t> cleanupSet;
+
 /**
  * Using this pointer automates the open()/beginSync()/endSync()/close()
  * life cycle: it automatically calls these functions when a new
  * pointer is assigned or deleted.
+ *
+ * Anchors are stored globally in a hash which uses the tracking node
+ * name as key. This name happens to be the unique file path that
+ * is created for each source (see TestEvolution::createSource() and
+ * SyncConfig::getSyncSourceNodes()).
  */
 class TestingSyncSourcePtr : public std::auto_ptr<TestingSyncSource>
 {
     typedef std::auto_ptr<TestingSyncSource> base_t;
+
+    static StringMap m_anchors;
+
 public:
     TestingSyncSourcePtr() {}
     TestingSyncSourcePtr(TestingSyncSource *source) :
@@ -71,7 +82,8 @@ public:
     {
         CPPUNIT_ASSERT(source);
         SOURCE_ASSERT_NO_FAILURE(source, source->open());
-        SOURCE_ASSERT_NO_FAILURE(source, source->beginSync("", ""));
+        string node = source->getTrackingNode()->getName();
+        SOURCE_ASSERT_NO_FAILURE(source, source->beginSync(m_anchors[node], ""));
         const char * serverMode = getenv ("CLIENT_TEST_MODE");
         if (serverMode && !strcmp (serverMode, "server")) {
             SOURCE_ASSERT_NO_FAILURE(source, source->enableServerMode());
@@ -89,13 +101,15 @@ public:
                           get()->getOperations().m_endSession) {
                 callback();
             }
-            SOURCE_ASSERT_NO_FAILURE(get(), get()->endSync(true));
+            string node = get()->getTrackingNode()->getName();
+            SOURCE_ASSERT_NO_FAILURE(get(), (m_anchors[node] = get()->endSync(true)));
             SOURCE_ASSERT_NO_FAILURE(get(), get()->close());
         }
         CPPUNIT_ASSERT_NO_THROW(base_t::reset(source));
         if (source) {
             SOURCE_ASSERT_NO_FAILURE(source, source->open());
-            SOURCE_ASSERT_NO_FAILURE(source, source->beginSync("", ""));
+            string node = source->getTrackingNode()->getName();
+            SOURCE_ASSERT_NO_FAILURE(source, source->beginSync(m_anchors[node], ""));
             const char * serverMode = getenv ("CLIENT_TEST_MODE");
             if (serverMode && !strcmp (serverMode, "server")) {
                 SOURCE_ASSERT_NO_FAILURE(source, source->enableServerMode());
@@ -107,6 +121,8 @@ public:
         }
     }
 };
+
+StringMap TestingSyncSourcePtr::m_anchors;
 
 bool SyncOptions::defaultWBXML()
 {
@@ -3371,6 +3387,18 @@ ClientTest::~ClientTest()
     }
 }
 
+void ClientTest::registerCleanup(Cleanup_t cleanup)
+{
+    cleanupSet.insert(cleanup);
+}
+
+void ClientTest::shutdown()
+{
+    BOOST_FOREACH(Cleanup_t cleanup, cleanupSet) {
+        cleanup();
+    }
+}
+
 LocalTests *ClientTest::createLocalTests(const std::string &name, int sourceParam, ClientTest::Config &co)
 {
     return new LocalTests(name, *this, sourceParam, co);
@@ -3674,7 +3702,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
             "UID:1234567890!@#$%^&*()<>@dummy\n"
-            "DTSTAMP:20060406T211449Z\n"
+            // "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201\n"
             "CREATED:20060409T213201\n"
             "LOCATION:my office\n"
@@ -3694,7 +3722,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
             "UID:1234567890!@#$%^&*()<>@dummy\n"
-            "DTSTAMP:20060406T211449Z\n"
+            // "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201\n"
             "CREATED:20060409T213201\n"
             "LOCATION:big meeting room\n"
@@ -3715,7 +3743,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
             "UID:1234567890!@#$%^&*()<>@dummy\n"
-            "DTSTAMP:20060406T211449Z\n"
+            // "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201\n"
             "CREATED:20060409T213201\n"
             "LOCATION:calling from home\n"
@@ -3741,7 +3769,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
             "UID:1234567890!@#$%^&*()<>@dummy\n"
-            "DTSTAMP:20060406T211449Z\n"
+            // "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201\n"
             "CREATED:20060409T213201\n"
             "LOCATION:my office\n"
@@ -3753,7 +3781,12 @@ void ClientTest::getTestData(const char *type, Config &config)
             "END:VEVENT\n"
             "END:VCALENDAR\n";
 
-        if (getenv("CLIENT_TEST_SIMPLE_UID")) {
+        if (getenv("CLIENT_TEST_NO_UID")) {
+            boost::replace_all(insertItem, "UID:1234567890!@#$%^&*()<>@dummy\n", "");
+            boost::replace_all(updateItem, "UID:1234567890!@#$%^&*()<>@dummy\n", "");
+            boost::replace_all(mergeItem1, "UID:1234567890!@#$%^&*()<>@dummy\n", "");
+            boost::replace_all(mergeItem2, "UID:1234567890!@#$%^&*()<>@dummy\n", "");
+        } else if (getenv("CLIENT_TEST_SIMPLE_UID")) {
             boost::replace_all(insertItem, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
             boost::replace_all(updateItem, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
             boost::replace_all(mergeItem1, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
@@ -3772,7 +3805,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "METHOD:PUBLISH\n"
             "BEGIN:VEVENT\n"
             "UID:20080407T193125Z-19554-727-1-50@gollum\n"
-            "DTSTAMP:20080407T193125Z\n"
+            // "DTSTAMP:20080407T193125Z\n"
             "DTSTART:20080406T090000Z\n"
             "DTEND:20080406T093000Z\n"
             "TRANSP:OPAQUE\n"
@@ -3792,7 +3825,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "METHOD:PUBLISH\n"
             "BEGIN:VEVENT\n"
             "UID:20080407T193125Z-19554-727-1-50@gollum\n"
-            "DTSTAMP:20080407T193125Z\n"
+            // "DTSTAMP:20080407T193125Z\n"
             "DTSTART:20080413T090000Z\n"
             "DTEND:20080413T093000Z\n"
             "TRANSP:OPAQUE\n"
@@ -3821,7 +3854,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SUMMARY:phone meeting\n"
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
-            "DTSTAMP:20060406T211449Z\n"
+            // "DTSTAMP:20060406T211449Z\n"
             "LOCATION:my office\n"
             "DESCRIPTION:let's talk<<REVISION>>\n"
             "END:VEVENT\n"
@@ -3833,7 +3866,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SUMMARY:meeting on site\n"
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
-            "DTSTAMP:20060406T211449Z\n"
+            // "DTSTAMP:20060406T211449Z\n"
             "LOCATION:big meeting room\n"
             "DESCRIPTION:nice to see you\n"
             "END:VEVENT\n"

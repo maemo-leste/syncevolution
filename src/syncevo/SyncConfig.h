@@ -742,11 +742,11 @@ class SafeConfigProperty : public ConfigProperty {
     {}
 
     void setProperty(ConfigNode &node, const string &value) {
-        ConfigProperty::setProperty(node, SafeConfigNode::escape(value, true, false));
+        ConfigProperty::setProperty(node, StringEscape::escape(value, '!', StringEscape::INI_WORD));
     }
     virtual string getProperty(const ConfigNode &node, bool *isDefault = NULL) const {
         string res = ConfigProperty::getProperty(node, isDefault);
-        res = SafeConfigNode::unescape(res);
+        res = StringEscape::unescape(res, '!');
         return res;
     }
 };
@@ -1109,6 +1109,20 @@ class SyncConfig {
                                        const string &trackName = "");
     ConstSyncSourceNodes getSyncSourceNodes(const string &name,
                                             const string &trackName = "") const;
+
+    /**
+     * Creates config nodes for a certain node. The nodes are not
+     * yet created in the backend if they do not yet exist.
+     * In contrast to the normal set of nodes, the tracking node
+     * is empty and discards all changes. This is useful when
+     * trying to initialize a SyncSource without a peer (normally
+     * has a tracking node which rejects writes with an exception)
+     * or with a peer without interfering with normal change tracking
+     * (normally SyncSource might overwrite change tracking).
+     *
+     * @param name          the name of the sync source
+     */
+    SyncSourceNodes getSyncSourceNodesNoTracking(const string &name);
 
     /**
      * initialize all properties with their default value
@@ -1482,6 +1496,8 @@ class SyncSourceNodes {
                     const boost::shared_ptr<ConfigNode> &trackingNode,
                     const boost::shared_ptr<ConfigNode> &serverNode,
                     const string &cacheDir);
+
+    friend class SyncConfig;
 
     /** true if the peer-specific config node exists */
     bool exists() const { return m_peerNode->exists(); }

@@ -1,4 +1,4 @@
-syncevolution (1.0.99.7+ds1-1) unstable; urgency=low
+syncevolution (1.0.99.7+ds1-1) experimental; urgency=low
 
   [ David Bremner ]
   * New upstream release (Closes: #582376)
@@ -14,7 +14,7 @@ syncevolution (1.0.99.7+ds1-1) unstable; urgency=low
   * add dbus-server-sync.py and syncevo-phone-config.py to syncevolution
     examples
 
- -- David Bremner <bremner@unb.ca>  Tue, 03 Aug 2010 15:07:55 -0400
+ -- David Bremner <bremner@unb.ca>  Tue, 12 Oct 2010 21:37:25 -0300
 
 syncevolution (1.0+ds1~beta2a-1) unstable; urgency=low
 

@@ -30,6 +30,7 @@
 #include <journal.h>
 #include <extendedcalendar.h>
 #include <extendedstorage.h>
+#include <sqlitestorage.h>
 #include <icalformat.h>
 #include <memorycalendar.h>
 
@@ -150,9 +151,9 @@ KCalCore::Incidence::Ptr KCalExtendedData::findIncidence(const string &luid)
     ItemID id(luid);
     QString uid = id.getIDString();
     KDateTime rid = id.getDateTime();
-    if (!m_storage->load(uid, rid)) {
-        m_parent->throwError(string("failed to load incidence ") + luid);
-    }
+    // if (!m_storage->load(uid, rid)) {
+    // m_parent->throwError(string("failed to load incidence ") + luid);
+    // }
     KCalCore::Incidence::Ptr incidence = m_calendar->incidence(uid, rid);
     return incidence;
 }
@@ -200,16 +201,65 @@ void KCalExtendedSource::open()
     m_data = new KCalExtendedData(this, getDatabaseID(),
                                   KCalCore::IncidenceBase::TypeEvent);
     m_data->m_calendar = mKCal::ExtendedCalendar::Ptr(new mKCal::ExtendedCalendar(KDateTime::Spec::LocalZone()));
-    m_data->m_storage = mKCal::ExtendedCalendar::defaultStorage(m_data->m_calendar);
 
-    if (!m_data->m_storage->open()) {
-        throwError("failed to open storage");
+    // read specified database name from evolutionsource property
+    const char *databaseID = getDatabaseID();
+
+    if ( strcmp(databaseID, "" ) == 0 || boost::starts_with(databaseID, "file://") ) {
+        // if databaseID is empty, create default storage at default location
+        // else if databaseID has a "file://" prefix, create storage at the specified place
+        // use default notebook in default storage
+        if ( boost::starts_with(databaseID, "file://") ) {
+            mKCal::SqliteStorage::Ptr ss(new mKCal::SqliteStorage(m_data->m_calendar, QString(databaseID + 7), false));
+            m_data->m_storage = ss.staticCast<mKCal::ExtendedStorage>();
+        } else {
+            m_data->m_storage = mKCal::ExtendedCalendar::defaultStorage(m_data->m_calendar);
+        }
+        if (!m_data->m_storage->open()) {
+            throwError("failed to open storage");
+        }
+        if (!m_data->m_storage->load()) {
+            throwError("failed to load calendar");
+        }
+        mKCal::Notebook::Ptr defaultNotebook = m_data->m_storage->defaultNotebook();
+        if (!defaultNotebook) {
+            throwError("no default Notebook");
+        }
+        m_data->m_notebookUID = defaultNotebook->uid();
+    } else {
+        // use databaseID as notebook name to search for an existing notebook
+        // if found use it, otherwise:
+        // 1) with "SyncEvolution_Test_" prefix, create a new notebook with given name and add it to default storage
+        // 2) without a special prefix, throw an error
+        m_data->m_storage = mKCal::ExtendedCalendar::defaultStorage(m_data->m_calendar);
+        if (!m_data->m_storage->open()) {
+            throwError("failed to open storage");
+        }
+        QString name = databaseID;
+        mKCal::Notebook::Ptr notebook;
+        mKCal::Notebook::List notebookList = m_data->m_storage->notebooks();
+        mKCal::Notebook::List::Iterator it;
+
+        for ( it = notebookList.begin(); it != notebookList.end(); ++it ) {
+            if ( name == (*it)->name() ) {
+                break;
+            }
+        }
+        if ( it == notebookList.end() ) {
+            if ( boost::starts_with(databaseID, "SyncEvolution_Test_") ) {
+                notebook = mKCal::Notebook::Ptr ( new mKCal::Notebook(QString(), name, QString(), QString(), false, true, false, false,true) );
+                if ( !notebook ) {
+                    throwError("failed to create notebook");
+                }
+                m_data->m_storage->addNotebook(notebook, false);
+            } else {
+                throwError(string("no such notebook with name \"") + string(databaseID) + string("\" in default storage"));
+            }
+        } else {
+            notebook = *it;
+        }
+        m_data->m_notebookUID = notebook->uid();
     }
-    mKCal::Notebook::Ptr defaultNotebook = m_data->m_storage->defaultNotebook();
-    if (!defaultNotebook) {
-        throwError("no default Notebook");
-    }
-    m_data->m_notebookUID = defaultNotebook->uid();
 }
 
 bool KCalExtendedSource::isEmpty()
@@ -242,8 +292,23 @@ KCalExtendedSource::Databases KCalExtendedSource::getDatabases()
 {
     Databases result;
 
-    result.push_back(Database("select database via Notebook name",
-                              ""));
+    m_data = new KCalExtendedData(this, getDatabaseID(),
+                                  KCalCore::IncidenceBase::TypeEvent);
+    m_data->m_calendar = mKCal::ExtendedCalendar::Ptr(new mKCal::ExtendedCalendar(KDateTime::Spec::LocalZone()));
+    m_data->m_storage = mKCal::ExtendedCalendar::defaultStorage(m_data->m_calendar);
+    if (!m_data->m_storage->open()) {
+        throwError("failed to open storage");
+    }
+    mKCal::Notebook::List notebookList = m_data->m_storage->notebooks();
+    mKCal::Notebook::List::Iterator it;
+    for ( it = notebookList.begin(); it != notebookList.end(); ++it ) {
+        bool isDefault = (*it)->isDefault();
+        result.push_back(Database( (*it)->name().toStdString(), 
+                                   (m_data->m_storage).staticCast<mKCal::SqliteStorage>()->databaseName().toStdString(), 
+                                   isDefault));
+    }
+    m_data->m_storage->close();
+    m_data->m_calendar->close();
     return result;
 }
 
@@ -334,10 +399,23 @@ TestingSyncSource::InsertItemResult KCalExtendedSource::insertItem(const string 
         QString id = incidences[0]->uid();
         KDateTime rid = incidences[0]->recurrenceId();
         if (!id.isEmpty()) {
-            m_data->m_storage->load(id, rid);
+            // m_data->m_storage->load(id, rid);
             KCalCore::Incidence::Ptr incidence = m_data->m_calendar->incidence(id, rid);
             if (incidence) {
                 oldUID = m_data->getItemID(incidence).getLUID();
+            }
+        }
+    }
+
+    // Brute-force copying of all time zone definitions. Ignores name
+    // conflicts, which is something better handled in a generic mKCal
+    // API function (BMC #8604).
+    KCalCore::ICalTimeZones *source = calendar->timeZones();
+    if (source) {
+        KCalCore::ICalTimeZones *target = m_data->m_calendar->timeZones();
+        if (target) {
+            BOOST_FOREACH(const KCalCore::ICalTimeZone &zone, source->zones().values()) {
+                target->add(zone);
             }
         }
     }
@@ -370,15 +448,11 @@ TestingSyncSource::InsertItemResult KCalExtendedSource::insertItem(const string 
             incidence->setRecurrenceId(original->recurrenceId());
         }
 
-        // also preserve original creation time, unless explicitly
-        // set in update
-        // TODO: if created() == CREATED, then preserving it
-        // unconditionally is right. If created() == DTSTAMP,
-        // then it has to be conditionally.
-        // TODO: handle both DTSTAMP and CREATED
-        if (true || !incidence->created().isValid()) {
-            incidence->setCreated(original->created());
-        }
+        // created() corresponds to the CREATED property (= time when
+        // item was created in the local storage for the first time),
+        // so it can never be modified by our peer and must be
+        // preserved unconditionally in updates.
+        incidence->setCreated(original->created());
 
         // now overwrite item in calendar
         (KCalCore::IncidenceBase &)*original = (KCalCore::IncidenceBase &)*incidence;
@@ -398,7 +472,10 @@ void KCalExtendedSource::deleteItem(const string &uid)
 {
     KCalCore::Incidence::Ptr incidence = m_data->findIncidence(uid);
     if (!incidence) {
-        throwError(string("incidence ") + uid + " not found");
+        // throwError(string("incidence ") + uid + " not found");
+        // don't treat this as error, it can happen, for example
+        // when the master event was removed before (MBC #6061)
+        return;
     }
     if (!m_data->m_calendar->deleteIncidence(incidence)) {
         throwError(string("could not delete incidence") + uid);

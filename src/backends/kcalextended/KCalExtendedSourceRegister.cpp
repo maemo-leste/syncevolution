@@ -53,7 +53,14 @@ static RegisterSyncSource registerMe("KCalExtended",
 #endif
                                      createSource,
                                      "mkcal = KCalExtended = calendar\n"
-                                     "   iCalendar 2.0 = text/calendar\n",
+                                     "   iCalendar 2.0 = text/calendar\n"
+                                     "   \"evolutionsource\" normally is the name of a calendar\n"
+                                     "   inside the default calendar storage. If it starts\n" 
+                                     "   with the \"SyncEvolution_Test_\" prefix, it will be\n"
+                                     "   created as needed, otherwise it must exist.\n"
+                                     "   If it starts with the \"file://\" prefix, the default\n"
+                                     "   calendar in the specified SQLite storage file will\n"
+                                     "   created (if needed) and used.\n",
                                      Values() +
                                      (Aliases("mkcal") + "KCalExtended" + "MeeGo Calendar"));
 
@@ -88,6 +95,9 @@ public:
     virtual void updateConfig(ClientTestConfig &config) const
     {
         config.type = "KCalExtended:text/calendar";
+        // currently removing the parent also removes the child (BMC #6061)
+        // with no workaround in our code
+        config.linkedItemsRelaxedSemantic = false;
     }
 } iCal20Test;
 

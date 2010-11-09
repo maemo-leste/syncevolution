@@ -1,4 +1,4 @@
-syncevolution (1.0.99.7+ds1-1) experimental; urgency=low
+syncevolution (1.1+ds1-1) experimental; urgency=low
 
   [ David Bremner ]
   * New upstream release (Closes: #582376)

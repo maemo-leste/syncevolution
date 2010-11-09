@@ -7,7 +7,7 @@ syncevolution (1.1+ds1-1) experimental; urgency=low
     (Closes: #573265)
   * Add -dbg package to hold debugging symbols
   * Recommend evolution-data-server instead of evolution
-  * Update Standards-Version to 3.9.0 (No changes).
+  * Update Standards-Version to 3.9.1 (No changes).
   
   [ Thomas Bechtold ]
   * Split source package into syncevolution-common, syncevolution and

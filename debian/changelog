@@ -2,6 +2,7 @@ syncevolution (1.1+ds1-1) experimental; urgency=low
 
   [ David Bremner ]
   * New upstream release (Closes: #582376)
+  * Update maintainer address
   * New binary package syncevolution-http for syncevo-http-server
     (Closes: #573265)
   * Add -dbg package to hold debugging symbols
@@ -14,7 +15,7 @@ syncevolution (1.1+ds1-1) experimental; urgency=low
   * add dbus-server-sync.py and syncevo-phone-config.py to syncevolution
     examples
 
- -- David Bremner <bremner@unb.ca>  Tue, 12 Oct 2010 21:37:25 -0300
+ -- David Bremner <bremner@debian.org>  Mon, 08 Nov 2010 19:59:29 -0400
 
 syncevolution (1.0+ds1~beta2a-1) unstable; urgency=low
 

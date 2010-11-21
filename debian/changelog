@@ -1,3 +1,10 @@
+syncevolution (1.1+ds1-2) experimental; urgency=low
+
+  * Update conflicts/replaces for syncevolution-common. Thanks to Simon
+    McVittie for the report, and the fix. (Closes: #603023).
+
+ -- David Bremner <bremner@debian.org>  Wed, 10 Nov 2010 16:32:55 -0400
+
 syncevolution (1.1+ds1-1) experimental; urgency=low
 
   [ David Bremner ]

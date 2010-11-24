@@ -2,8 +2,10 @@ syncevolution (1.1+ds1-4) experimental; urgency=low
 
   * Remove build dependency on libopenobex1-dev on hurd-i386, because it is not 
     available there. The package is already built without it on kfreebsd.
+  * Explicitly translate between sysync::memSize and size_t. Thanks to
+    Patrick Ohly for the patch. (Closes: #604480).
 
- -- David Bremner <bremner@debian.org>  Wed, 24 Nov 2010 09:31:37 -0800
+ -- David Bremner <bremner@debian.org>  Wed, 24 Nov 2010 15:10:00 -0800
 
 syncevolution (1.1+ds1-3) experimental; urgency=low
 

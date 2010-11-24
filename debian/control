@@ -8,7 +8,7 @@ Build-Depends: debhelper (>= 7.0.50~), autotools-dev, libedataserver1.2-dev,
  libtool, automake, intltool, pkg-config,
  libglib2.0-dev, libglade2-dev, libdbus-glib-1-dev, libgtk2.0-dev,
  libgconf2-dev, libgnome-keyring-dev, xsltproc, 
- libopenobex1-dev [!kfreebsd-i386 !kfreebsd-amd64], libnotify-dev,
+ libopenobex1-dev [!kfreebsd-i386 !kfreebsd-amd64 !hurd-i386], libnotify-dev,
  python-docutils
 Standards-Version: 3.9.1
 Homepage: http://www.syncevolution.org

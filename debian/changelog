@@ -1,7 +1,9 @@
 syncevolution (1.1+ds1-5) unstable; urgency=low
 
   * patch: Avoid dependence on PATH_MAX (fixes FTBFS on hurd).
-  * patch: Add a second translation between sysync::memSize and size_t (Closed: #604840)
+  * patch: Add a second translation between sysync::memSize and size_t
+    (Closed: #604840)
+  * Move synccompare man page to syncevolution-common
 
  -- David Bremner <bremner@debian.org>  Sun, 28 Nov 2010 10:27:11 -0400
 

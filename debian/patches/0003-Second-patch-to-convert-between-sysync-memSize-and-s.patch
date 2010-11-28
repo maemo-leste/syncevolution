@@ -1,0 +1,36 @@
+From: David Bremner <bremner@unb.ca>
+Date: Sat, 27 Nov 2010 21:14:16 -0400
+Subject: [PATCH] Second patch to convert between sysync::memSize and size_t.
+
+This is to fix a second build problem on Debian s390
+---
+ src/syncevo/SynthesisDBPlugin.cpp |   15 +++++++++++++--
+ 1 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/src/syncevo/SynthesisDBPlugin.cpp b/src/syncevo/SynthesisDBPlugin.cpp
+index 089a687..346e552 100644
+--- a/src/syncevo/SynthesisDBPlugin.cpp
++++ b/src/syncevo/SynthesisDBPlugin.cpp
+@@ -721,8 +721,19 @@ sysync::TSyError SyncEvolution_ReadBlob(CContext aContext, cItemID  aID,  cAppCh
+   TSyError res;
+   if (source->getOperations().m_readBlob) {
+       try {
+-          res = source->getOperations().m_readBlob(aID, aBlobID, (void **)aBlkPtr, aBlkSize,
+-                                                   aTotSize, aFirst, aLast);
++	    size_t blksize, totsize;
++	    /* Another conversion between memSize and size_t to make s390 happy */
++            res = source->getOperations().m_readBlob(aID, aBlobID, (void **)aBlkPtr,
++						     aBlkSize ? &blksize : NULL,
++						     aTotSize ? &totsize : NULL,
++						     aFirst, aLast);
++	    if (aBlkSize) {
++	        *aBlkSize = blksize;
++	    }
++            if (aTotSize) {
++                *aTotSize = totsize;
++            }
++
+       } catch (...) {
+           res = source->handleException();
+       }
+-- 

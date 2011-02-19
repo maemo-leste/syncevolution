@@ -185,7 +185,7 @@ static void update_services_list (app_data *data);
 static void update_service_ui (app_data *data);
 static void setup_new_service_clicked (GtkButton *btn, app_data *data);
 static gboolean source_config_update_widget (source_config *source);
-static void get_presence_cb (SyncevoServer *server, char *status, char *transport,
+static void get_presence_cb (SyncevoServer *server, char *status, char **transport,
                              GError *error, app_data *data);
 static void get_reports_cb (SyncevoServer *server, SyncevoReports *reports, 
                             GError *error, app_data *data);
@@ -1210,7 +1210,7 @@ autosync_toggle_cb (GtkWidget *widget, gpointer x, app_data *data)
             op_data->data = data;
             op_data->operation = OP_SAVE;
             op_data->started = FALSE;
-            syncevo_server_start_session (data->server,
+            syncevo_server_start_no_sync_session (data->server,
                                           data->current_service->name,
                                           (SyncevoServerStartSessionCb)start_session_cb,
                                           op_data);
@@ -2063,7 +2063,10 @@ get_config_for_config_widget_cb (SyncevoServer *server,
     syncevo_config_get_value (config, NULL, "PeerIsClient", &is_peer);
     syncevo_config_get_value (config, NULL, "syncURL", &url);
 
-    if (is_peer && g_strcmp0 ("1", is_peer) == 0) {
+    if (g_strcmp0 ("1", ready) != 0) {
+        /* Ignore existing configs and templates unless they are
+           explicitly marked as "ConsumerReady. */
+    } else if (is_peer && g_strcmp0 ("1", is_peer) == 0) {
         if (url) {
             SyncConfigWidget *w;
             char *fp, *tmp, *template_name, *device_name = NULL;
@@ -2091,40 +2094,34 @@ get_config_for_config_widget_cb (SyncevoServer *server,
             /* keep a list of added devices */
             w = g_hash_table_lookup (c_data->device_templates, url);
             if (!w) {
-                if (c_data->has_configuration || g_strcmp0 ("1", ready) == 0) {
-                    w = add_configuration_to_box (GTK_BOX (c_data->data->devices_box),
-                                                           config,
-                                                           device_name,
-                                                           c_data->has_template,
-                                                           c_data->has_configuration,
-                                                           c_data->data);
-                    g_hash_table_insert (c_data->device_templates, url, w);
-                    sync_config_widget_add_alternative_config (w, template_name, config,
-                                                               c_data->has_configuration);
-                }
+                w = add_configuration_to_box (GTK_BOX (c_data->data->devices_box),
+                                              config,
+                                              device_name,
+                                              c_data->has_template,
+                                              c_data->has_configuration,
+                                              c_data->data);
+                g_hash_table_insert (c_data->device_templates, url, w);
+                sync_config_widget_add_alternative_config (w, template_name, config,
+                                                           c_data->has_configuration);
             } else {
                 /* TODO: might want to add a new widget, if user has created more
                  * configs for same device: this really requires us to look at 
                  * all configs / templates, then decide what to sho w*/
 
                 /* there is a widget for this device already, add this info there*/
-                if (c_data->has_configuration || g_strcmp0 ("1", ready) == 0) {
-                    sync_config_widget_add_alternative_config (w, template_name, config,
-                                                               c_data->has_configuration);
-                }
+                sync_config_widget_add_alternative_config (w, template_name, config,
+                                                           c_data->has_configuration);
             }
             g_free (device_name);
             g_strfreev (fpv);
         }
     } else {
-        if (c_data->has_configuration || g_strcmp0 ("1", ready) == 0) {
-            add_configuration_to_box (GTK_BOX (c_data->data->services_box),
-                                      config,
-                                      c_data->name,
-                                      c_data->has_template,
-                                      c_data->has_configuration,
-                                      c_data->data);
-        }
+        add_configuration_to_box (GTK_BOX (c_data->data->services_box),
+                                  config,
+                                  c_data->name,
+                                  c_data->has_template,
+                                  c_data->has_configuration,
+                                  c_data->data);
     }
 
     g_free (c_data->name);
@@ -3328,7 +3325,7 @@ set_online_status (app_data *data, gboolean online)
 static void
 get_presence_cb (SyncevoServer *server,
                  char *status,
-                 char *transport,
+                 char **transports,
                  GError *error,
                  app_data *data)
 {
@@ -3343,7 +3340,7 @@ get_presence_cb (SyncevoServer *server,
         set_online_status (data, strcmp (status, "") == 0);
     }
     g_free (status);
-    g_free (transport);
+    g_strfreev (transports);
 }
 
 static void
@@ -3456,7 +3453,7 @@ server_presence_changed_cb (SyncevoServer *server,
 {
     if (data->current_service &&
         config_name && status &&
-        strcmp (data->current_service->name, config_name) == 0) {
+        g_strcasecmp (data->current_service->name, config_name) == 0) {
 
         set_online_status (data, strcmp (status, "") == 0);
     }
@@ -3549,9 +3546,9 @@ sync_ui_create ()
                       G_CALLBACK (server_shutdown_cb), data);
     g_signal_connect (data->server, "session-changed",
                       G_CALLBACK (server_session_changed_cb), data);
-    g_signal_connect (data->server, "presence_changed",
+    g_signal_connect (data->server, "presence-changed",
                       G_CALLBACK (server_presence_changed_cb), data);
-    g_signal_connect (data->server, "templates_changed",
+    g_signal_connect (data->server, "templates-changed",
                       G_CALLBACK (server_templates_changed_cb), data);
     g_signal_connect (data->server, "info-request",
                       G_CALLBACK (info_request_cb), data);

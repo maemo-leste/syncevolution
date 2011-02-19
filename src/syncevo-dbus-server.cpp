@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2009 Intel Corporation
+ * Copyright (C) 2011 Symbio, Ville Nummela
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -969,7 +970,7 @@ class PresenceStatus {
 };
 
 /*
- * Implements org.moblin.connman.Manager
+ * Implements org.connman.Manager
  * GetProperty  : getPropCb
  * PropertyChanged: propertyChanged
  **/
@@ -977,9 +978,9 @@ class ConnmanClient : public DBusRemoteObject
 {
 public:
     ConnmanClient (DBusServer &server);
-    virtual const char *getDestination() const {return "org.moblin.connman";}
+    virtual const char *getDestination() const {return "net.connman";}
     virtual const char *getPath() const {return "/";}
-    virtual const char *getInterface() const {return "org.moblin.connman.Manager";}
+    virtual const char *getInterface() const {return "net.connman.Manager";}
     virtual DBusConnection *getConnection() const {return m_connmanConn.get();}
 
     void propertyChanged(const string &name,
@@ -994,6 +995,72 @@ private:
     SignalWatch2 <string,boost::variant<vector<string>, string> > m_propertyChanged;
 };
 
+/**
+ * Client for org.freedesktop.NetworkManager
+ * The initial state of NetworkManager is queried via
+ * org.freedesktop.DBus.Properties. Dynamic changes are listened via
+ * org.freedesktop.NetworkManager - StateChanged signal
+ */
+class NetworkManagerClient : public DBusRemoteObject
+{
+public:
+    enum NM_State
+      {
+        NM_STATE_UNKNOWN,
+        NM_STATE_ASLEEP,
+        NM_STATE_CONNECTING,
+        NM_STATE_CONNECTED,
+        NM_STATE_DISCONNECTED
+      };
+public:
+    NetworkManagerClient(DBusServer& server);
+    
+    virtual const char *getDestination() const {
+        return "org.freedesktop.NetworkManager";
+    }
+    virtual const char *getPath() const {
+        return "/org/freedesktop/NetworkManager";
+    }
+    virtual const char *getInterface() const {
+        return "org.freedesktop.NetworkManager";
+    }
+    virtual DBusConnection *getConnection() const {
+        return m_networkManagerConn.get();
+    }
+
+    void stateChanged(uint32_t uiState);
+
+private:
+
+    class NetworkManagerProperties : public DBusRemoteObject
+    {
+    public:
+        NetworkManagerProperties(NetworkManagerClient& manager);
+
+        virtual const char *getDestination() const {
+            return "org.freedesktop.NetworkManager";
+        }
+        virtual const char *getPath() const {
+            return "/org/freedesktop/NetworkManager";
+        }
+        virtual const char *getInterface() const {
+            return "org.freedesktop.DBus.Properties";
+        }
+        virtual DBusConnection* getConnection() const {
+            return m_manager.getConnection();
+        }
+        void get();
+        void getCallback(const boost::variant<uint32_t, std::string> &prop,
+                         const std::string &error);
+    private:
+        NetworkManagerClient &m_manager;
+    };
+    
+    DBusServer &m_server;
+    DBusConnectionPtr m_networkManagerConn;
+    SignalWatch1<uint32_t> m_stateChanged;
+    NetworkManagerProperties m_properties;
+};
 
 
 /**
@@ -1238,7 +1305,8 @@ class DBusServer : public DBusObjectHelper,
 
     PresenceStatus m_presence;
     ConnmanClient m_connman;
-
+    NetworkManagerClient m_networkManager;
+    
     /** manager to automatic sync */
     AutoSyncManager m_autoSync;
 
@@ -1394,6 +1462,8 @@ public:
                           const char *function,
                           const char *format,
                           va_list args);
+
+    virtual bool isProcessSafe() const { return false; }
 };
 
 /**
@@ -2728,11 +2798,23 @@ void ReadOperations::getConfig(bool getTemplate,
     BOOST_FOREACH(const ConfigProperty *prop, syncRegistry) {
         bool isDefault = false;
         string value = prop->getProperty(*syncConfig->getProperties(), &isDefault);
-        if(boost::iequals(prop->getName(), "syncURL") && !syncURL.empty() ) {
-            localConfigs.insert(pair<string, string>(prop->getName(), syncURL));
+        if(boost::iequals(prop->getMainName(), "syncURL") && !syncURL.empty() ) {
+            localConfigs.insert(pair<string, string>(prop->getMainName(), syncURL));
         } else if(!isDefault) {
-            localConfigs.insert(pair<string, string>(prop->getName(), value));
+            localConfigs.insert(pair<string, string>(prop->getMainName(), value));
         }
+    }
+
+    // Set ConsumerReady for existing SyncEvolution < 1.2 configs
+    // if not set explicitly,
+    // because in older releases all existing configurations where
+    // shown. SyncEvolution 1.2 is more strict and assumes that
+    // ConsumerReady must be set explicitly. The sync-ui always has
+    // set the flag for configs created or modified with it, but the
+    // command line did not. Matches similar code in the Cmdline.cpp
+    // migration code.
+    if (syncConfig->getConfigVersion(CONFIG_LEVEL_PEER, CONFIG_CUR_VERSION) == 0 /* SyncEvolution < 1.2 */) {
+        localConfigs.insert(make_pair("ConsumerReady", "1"));
     }
 
     // insert 'configName' of the chosen config (m_configName is not normalized)
@@ -2750,7 +2832,7 @@ void ReadOperations::getConfig(bool getTemplate,
             bool isDefault = false;
             string value = prop->getProperty(*sourceNodes.getProperties(), &isDefault);
             if(!isDefault) {
-                localConfigs.insert(pair<string, string>(prop->getName(), value));
+                localConfigs.insert(pair<string, string>(prop->getMainName(), value));
             }
         }
         config.insert(pair<string, map<string, string> >( "source/" + name, localConfigs));
@@ -2818,7 +2900,7 @@ void ReadOperations::checkSource(const std::string &sourceName)
     bool checked = false;
     try {
         // this can already throw exceptions when the config is invalid
-        SyncSourceParams params(sourceName, config->getSyncSourceNodes(sourceName));
+        SyncSourceParams params(sourceName, config->getSyncSourceNodes(sourceName), config);
         auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false, config.get()));
 
         if (syncSource.get()) {
@@ -2839,7 +2921,7 @@ void ReadOperations::getDatabases(const string &sourceName, SourceDatabases_t &d
     boost::shared_ptr<SyncConfig> config(new SyncConfig(m_configName));
     setFilters(*config);
 
-    SyncSourceParams params(sourceName, config->getSyncSourceNodes(sourceName));
+    SyncSourceParams params(sourceName, config->getSyncSourceNodes(sourceName), config);
     const SourceRegistry &registry(SyncSource::getSourceRegistry());
     BOOST_FOREACH(const RegisterSyncSource *sourceInfo, registry) {
         SyncSource *source = sourceInfo->m_create(params);
@@ -3078,24 +3160,62 @@ void Session::detach(const Caller_t &caller)
     client->detach(this);
 }
 
+/**
+ * validate key/value property and copy it to the filter
+ * if okay
+ */
+static void copyProperty(const StringPair &keyvalue,
+                         ConfigPropertyRegistry &registry,
+                         FilterConfigNode::ConfigFilter &filter)
+{
+    const std::string &name = keyvalue.first;
+    const std::string &value = keyvalue.second;
+    const ConfigProperty *prop = registry.find(name);
+    if (!prop) {
+        SE_THROW_EXCEPTION(InvalidCall, StringPrintf("unknown property '%s'", name.c_str()));
+    }
+    std::string error;
+    if (!prop->checkValue(value, error)) {
+        SE_THROW_EXCEPTION(InvalidCall, StringPrintf("invalid value '%s' for property '%s': '%s'",
+                                                     value.c_str(), name.c_str(), error.c_str()));
+    }
+    filter.insert(keyvalue);
+}                        
+
 static void setSyncFilters(const ReadOperations::Config_t &config,FilterConfigNode::ConfigFilter &syncFilter,std::map<std::string, FilterConfigNode::ConfigFilter> &sourceFilters)
 {
     ReadOperations::Config_t::const_iterator it;
     for (it = config.begin(); it != config.end(); it++) {
         map<string, string>::const_iterator sit;
-        if(it->first.empty()) {
+        string name = it->first;
+        if (name.empty()) {
+            ConfigPropertyRegistry &registry = SyncConfig::getRegistry();
             for (sit = it->second.begin(); sit != it->second.end(); sit++) {
-                syncFilter.insert(*sit);
-            }
-        } else {
-            string name = it->first;
-            if(name.find("source/") == 0) {
-                name = name.substr(7); ///> 7 is the length of "source/"
-                FilterConfigNode::ConfigFilter &sourceFilter = sourceFilters[name];
-                for (sit = it->second.begin(); sit != it->second.end(); sit++) {
-                    sourceFilter.insert(*sit);
+                // read-only properties can (and have to be) ignored
+                static const char *init[] = {
+                    "configName",
+                    "description",
+                    "score",
+                    "deviceName",
+                    "templateName",
+                    "fingerprint"
+                };
+                static const set< std::string, Nocase<std::string> >
+                    special(init,
+                            init + (sizeof(init) / sizeof(*init)));
+                if (special.find(sit->first) == special.end()) {
+                    copyProperty(*sit, registry, syncFilter);
                 }
             }
+        } else if (boost::starts_with(name, "source/")) {
+            name = name.substr(strlen("source/"));
+            FilterConfigNode::ConfigFilter &sourceFilter = sourceFilters[name];
+            ConfigPropertyRegistry &registry = SyncSourceConfig::getRegistry();
+            for (sit = it->second.begin(); sit != it->second.end(); sit++) {
+                copyProperty(*sit, registry, sourceFilter);
+            }
+        } else {
+            SE_THROW_EXCEPTION(InvalidCall, StringPrintf("invalid config entry '%s'", name.c_str()));
         }
     }
 }
@@ -3109,13 +3229,10 @@ void Session::setConfig(bool update, bool temporary,
         string msg = StringPrintf("%s started, cannot change configuration at this time", runOpToString(m_runOperation).c_str());
         SE_THROW_EXCEPTION(InvalidCall, msg);
     }
-    if (!update && temporary) {
-        throw std::runtime_error("Clearing existing configuration and temporary configuration changes which only affects the duration of the session are mutually exclusive");
-    }
 
     m_server.getPresenceStatus().updateConfigPeers (m_configName, config);
     /** check whether we need remove the entire configuration */
-    if(!update && config.empty()) {
+    if(!update && !temporary && config.empty()) {
         boost::shared_ptr<SyncConfig> syncConfig(new SyncConfig(getConfigName()));
         if(syncConfig.get()) {
             syncConfig->remove();
@@ -3123,14 +3240,36 @@ void Session::setConfig(bool update, bool temporary,
         }
         return;
     }
-    if(temporary) {
-        /* save temporary configs in session filters */
-        setSyncFilters(config, m_syncFilter, m_sourceFilters);
+
+    /*
+     * validate input config and convert to filters;
+     * if validation fails, no harm was done at this point yet
+     */
+    FilterConfigNode::ConfigFilter syncFilter;
+    SourceFilters_t sourceFilters;
+    setSyncFilters(config, syncFilter, sourceFilters);
+
+    if (temporary) {
+        /* save temporary configs in session filters, either erasing old
+           temporary settings or adding to them */
+        if (update) {
+            m_syncFilter.insert(syncFilter.begin(), syncFilter.end());
+            BOOST_FOREACH(SourceFilters_t::value_type &source, sourceFilters) {
+                SourceFilters_t::iterator it = m_sourceFilters.find(source.first);
+                if (it != m_sourceFilters.end()) {
+                    // add to existing source filter
+                    it->second.insert(source.second.begin(), source.second.end());
+                } else {
+                    // add source filter
+                    m_sourceFilters.insert(source);
+                }
+            }
+        } else {
+            m_syncFilter = syncFilter;
+            m_sourceFilters = sourceFilters;            
+        }
         m_tempConfig = true;
     } else {
-        FilterConfigNode::ConfigFilter syncFilter;
-        std::map<std::string, FilterConfigNode::ConfigFilter> sourceFilters;
-        setSyncFilters(config, syncFilter, sourceFilters);
         /* need to save configurations */
         boost::shared_ptr<SyncConfig> from(new SyncConfig(getConfigName()));
         /* if it is not clear mode and config does not exist, an error throws */
@@ -3169,6 +3308,7 @@ void Session::setConfig(bool update, bool temporary,
             from->setConfigFilter(false, it->first, it->second);
         }
         boost::shared_ptr<DBusSync> syncConfig(new DBusSync(getConfigName(), *this));
+        syncConfig->prepareConfigForWrite();
         syncConfig->copy(*from, NULL);
 
         syncConfig->preFlush(*syncConfig);
@@ -3220,7 +3360,7 @@ void Session::sync(const std::string &mode, const SourceModes_t &source_modes)
     FilterConfigNode::ConfigFilter filter;
     filter = m_sourceFilter;
     if (!mode.empty()) {
-        filter[SyncSourceConfig::m_sourcePropSync.getName()] = mode;
+        filter["sync"] = mode;
     }
     m_sync->setConfigFilter(false, "", filter);
     BOOST_FOREACH(const std::string &source,
@@ -3228,7 +3368,7 @@ void Session::sync(const std::string &mode, const SourceModes_t &source_modes)
         filter = m_sourceFilters[source];
         SourceModes_t::const_iterator it = source_modes.find(source);
         if (it != source_modes.end()) {
-            filter[SyncSourceConfig::m_sourcePropSync.getName()] = it->second;
+            filter["sync"] = it->second;
         }
         m_sync->setConfigFilter(false, source, filter);
     }
@@ -3692,12 +3832,12 @@ void Session::restore(const string &dir, bool before, const std::vector<std::str
     if(!sources.empty()) {
         BOOST_FOREACH(const std::string &source, sources) {
             FilterConfigNode::ConfigFilter filter;
-            filter[SyncSourceConfig::m_sourcePropSync.getName()] = "two-way";
+            filter["sync"] = "two-way";
             m_sync->setConfigFilter(false, source, filter);
         }
         // disable other sources
         FilterConfigNode::ConfigFilter disabled;
-        disabled[SyncSourceConfig::m_sourcePropSync.getName()] = "disabled";
+        disabled["sync"] = "disabled";
         m_sync->setConfigFilter(false, "", disabled);
     }
     m_restoreBefore = before;
@@ -4240,6 +4380,9 @@ void Connection::process(const Caller_t &caller,
                                     info.toString().c_str(),
                                     entry.first.c_str(),
                                     entry.second.c_str());
+                        // Stop searching. Other peer configs might have the same remoteDevID.
+                        // We go with the first one found, which because of the sort order
+                        // of getConfigs() ensures that "foo" is found before "foo.old".
                         break;
                     }
                 }
@@ -4866,6 +5009,65 @@ void ConnmanClient::propertyChanged(const string &name,
     }
 }
 
+/***************** NetworkManagerClient implementation *************/
+NetworkManagerClient::NetworkManagerClient(DBusServer &server) :
+    m_server(server),
+    m_stateChanged(*this, "StateChanged"),
+    m_properties(*this)
+{
+    m_networkManagerConn = b_dbus_setup_bus(DBUS_BUS_SYSTEM, NULL, true, NULL);
+    if(m_networkManagerConn) {
+        m_properties.get();
+        m_stateChanged.activate(boost::bind(
+                                    &NetworkManagerClient::stateChanged,
+                                    this, _1));
+    } else {
+        SE_LOG_ERROR(NULL, NULL,
+                     "DBus connection setup for NetworkManager failed");
+    }
+}
+
+void NetworkManagerClient::stateChanged(uint32_t uiState)
+{
+    if(uiState==NM_STATE_CONNECTED) {
+        SE_LOG_DEBUG(NULL, NULL, "NetworkManager connected");
+        m_server.getPresenceStatus().updatePresenceStatus(
+            true, PresenceStatus::HTTP_TRANSPORT);
+    } else {
+        SE_LOG_DEBUG(NULL, NULL, "NetworkManager disconnected");
+        m_server.getPresenceStatus().updatePresenceStatus(
+            false, PresenceStatus::HTTP_TRANSPORT);
+    }
+}
+
+NetworkManagerClient::NetworkManagerProperties::NetworkManagerProperties(
+    NetworkManagerClient& manager) :
+    m_manager(manager)
+{
+
+}
+
+void NetworkManagerClient::NetworkManagerProperties::get()
+{
+    DBusClientCall1<boost::variant<uint32_t, std::string> > get(*this, "Get");
+    get(std::string(""), std::string("State"),
+        boost::bind(&NetworkManagerProperties::getCallback, this, _1, _2));    
+}
+
+void NetworkManagerClient::NetworkManagerProperties::getCallback(
+    const boost::variant<uint32_t, std::string> &prop,
+    const std::string &error)
+{
+    if(!error.empty()) {
+        SE_LOG_DEBUG (
+            NULL, NULL,
+            "Error in calling Get of Interface "
+            "org.freedesktop.DBus.Properties : %s", error.c_str());
+    } else {
+        m_manager.stateChanged(boost::get<uint32_t>(prop));
+    }
+}
+
 /********************** DBusServer implementation ******************/
 
 void DBusServer::clientGone(Client *c)
@@ -4909,6 +5111,7 @@ vector<string> DBusServer::getCapabilities()
     capabilities.push_back("Version");
     capabilities.push_back("SessionFlags");
     capabilities.push_back("SessionAttach");
+    capabilities.push_back("DatabaseProperties");
     return capabilities;
 }
 
@@ -5057,6 +5260,7 @@ DBusServer::DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn, int durat
     logOutput(*this, "LogOutput"),
     m_presence(*this),
     m_connman(*this),
+    m_networkManager(*this),
     m_autoSync(*this),
     m_autoTerm(m_autoSync.preventTerm() ? -1 : duration), //if there is any task in auto sync, prevent auto termination
     m_parentLogger(LoggerBase::instance())
@@ -6108,7 +6312,14 @@ void AutoSyncManager::Notification::send(const char *summary,
         notify_notification_clear_actions(m_notification);
         notify_notification_close(m_notification, NULL);
     }
+#ifndef NOTIFY_CHECK_VERSION
+# define NOTIFY_CHECK_VERSION(_x,_y,_z) 0
+#endif
+#if !NOTIFY_CHECK_VERSION(0,7,0)
     m_notification = notify_notification_new(summary, body, NULL, NULL);
+#else
+    m_notification = notify_notification_new(summary, body, NULL);
+#endif
     //if actions are not supported, don't add actions
     //An example is Ubuntu Notify OSD. It uses an alert box
     //instead of a bubble when a notification is appended with actions.
@@ -6193,16 +6404,7 @@ int main(int argc, char **argv)
         opt++;
     }
     try {
-        g_type_init();
-        g_thread_init(NULL);
-        g_set_application_name("SyncEvolution");
-
-        // Initializing a potential use of EDS early is necessary for
-        // libsynthesis when compiled with
-        // --enable-evolution-compatibility: in that mode libical will
-        // only be found by libsynthesis after EDSAbiWrapperInit()
-        // pulls it into the process by loading libecal.
-        EDSAbiWrapperInit();
+        SyncContext::initMain("syncevo-dbus-server");
 
         loop = g_main_loop_new (NULL, FALSE);
 

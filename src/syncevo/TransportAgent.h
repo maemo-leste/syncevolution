@@ -203,17 +203,5 @@ class HTTPTransportAgent : public TransportAgent
     void setConfig(SyncConfig &config);
 };
 
-
-class TransportException : public Exception
-{
- public:
-    TransportException(const std::string &file,
-                       int line,
-                       const std::string &what) :
-    Exception(file, line, what) {}
-    ~TransportException() throw() {}
-};
-
-
 SE_END_CXX
 #endif // INCL_TRANSPORTAGENT

@@ -89,12 +89,16 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
     bool m_quiet;
     bool m_dryrun;
 
+    bool m_localSync;
+    string m_localPeerContext; /**< context name (including @) if doing local sync */
+    string m_localClientRootPath;
     bool m_serverMode;
     std::string m_sessionID;
     SharedBuffer m_initialMessage;
     string m_initialMessageType;
     string m_syncDeviceID;
 
+    FullProps m_configFilters;
     
     boost::shared_ptr<TransportAgent> m_agent;
     /**
@@ -165,17 +169,58 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
     bool m_remoteInitiated;
   public:
     /**
+     * Common initialization code which needs to be done once
+     * at the start of main() in any application using SyncEvolution.
+     * For example, initializes (if applicable) glib and EDS.
+     *
+     * @param appname     static string, must remain valid, defines name of executable (see g_set_prgname())
+     */
+    static void initMain(const char *appname);
+
+    /**
+     * true if binary was compiled as stable release
+     * (see gen-autotools.sh)
+     */
+    static bool isStableRelease();
+
+    /**
+     * override stable release mode (for testing purposes)
+     */
+    static void setStableRelease(bool isStableRelease);
+
+    /**
      * SyncContext using a volatile config
      * and no logging.
      */
     SyncContext();
 
     /**
-     * @param server     identifies the server config to be used
-     * @param doLogging  write additional log and datatbase files about the sync
+     * Constructor for syncing with a SyncML peer.
+     *
+     * @param peer       identifies the client or server config to be used
+     * @param doLogging  write additional log and datatbase files about the sync;
+     *                   true for regular syncs, false for debugging
      */
     SyncContext(const string &server,
                 bool doLogging = false);
+
+    /**
+     * Constructor for client in a local sync.
+     *
+     * @param client     identifies the client context to be used (@foobar)
+     * @param server     identifies the server peer (foo@bar)
+     * @param rootPath   use this directory as config directory for the
+     *                   peer-specific files (located inside peer directory
+     *                   of server config)
+     * @param agent      transport agent, ready for communication with server
+     * @param doLogging  write additional log and datatbase files about the sync
+     */
+    SyncContext(const string &client,
+                const string &server,
+                const string &rootPath,
+                const boost::shared_ptr<TransportAgent> &agent,
+                bool doLogging = false);
+
     ~SyncContext();
 
     /**
@@ -190,6 +235,15 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
 
     bool getDryRun() { return m_dryrun; }
     void setDryRun(bool dryrun) { m_dryrun = dryrun; }
+
+    bool isLocalSync() const { return m_localSync; }
+
+    /**
+     * Sets configuration filters. Currently only used in local sync
+     * to configure the sync client.
+     */
+    void setConfigProps(const FullProps &props) { m_configFilters = props; }
+    const FullProps &getConfigProps() const { return m_configFilters; }
 
     /** only for server: device ID of peer */
     void setSyncDeviceID(const std::string &deviceID) { m_syncDeviceID = deviceID; }
@@ -708,6 +762,12 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
     void initSources(SourceList &sourceList);
 
     /**
+     * set m_localSync and m_localPeerContext
+     * @param config    config name of peer
+     */
+    void initLocalSync(const string &config);
+
+    /**
      * called by SynthesDBPlugin in SyncEvolution_StartDataRead()
      */
     void startSourceAccess(SyncSource *source);
@@ -736,7 +796,7 @@ class SyncContext : public SyncConfig, public ConfigUserInterface {
      * Synthesis server textdb files, unique for each
      * peer
      */
-    string getSynthesisDatadir() { return getRootPath() + "/.synthesis"; }
+    string getSynthesisDatadir();
 
     /**
      * return true if "delayedabort" session variable is true

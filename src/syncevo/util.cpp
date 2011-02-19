@@ -30,6 +30,7 @@
 
 #include <boost/scoped_array.hpp>
 #include <boost/foreach.hpp>
+#include <boost/algorithm/string/join.hpp>
 #include <fstream>
 #include <iostream>
 
@@ -42,6 +43,7 @@
 #include <dirent.h>
 #include <limits.h>
 #include <stdlib.h>
+#include <math.h>
 
 #if USE_SHA256 == 1
 # include <glib.h>
@@ -117,9 +119,10 @@ void splitPath(const string &path, string &dir, string &file)
 
 bool relToAbs(string &path)
 {
-    char buffer[PATH_MAX+1];
-    if (realpath(path.c_str(), buffer)) {
+    char *buffer;
+    if ((buffer = realpath(path.c_str(), NULL)) != NULL) {
         path = buffer;
+	free(buffer);
         return true;
     } else {
         return false; 
@@ -459,6 +462,39 @@ std::string SHA_256(const std::string &data)
 #endif
 }
 
+StringEscape::StringEscape(char escapeChar, const char *forbidden) :
+    m_escapeChar(escapeChar)
+{
+    while (*forbidden) {
+        m_forbidden.insert(*forbidden);
+        ++forbidden;
+    }
+}
+
+string StringEscape::escape(const string &str) const
+{
+    if (m_mode != SET) {
+        return escape(str, m_escapeChar, m_mode);
+    }
+
+    string res;
+    char buffer[4];
+
+    res.reserve(str.size() * 3);
+    BOOST_FOREACH(char c, str) {
+        if(c != m_escapeChar &&
+           m_forbidden.find(c) == m_forbidden.end()) {
+            res += c;
+        } else {
+            sprintf(buffer, "%c%02x",
+                    m_escapeChar,
+                    (unsigned int)(unsigned char)c);
+            res += buffer;
+        }
+    }
+    return res;
+}
+
 string StringEscape::escape(const string &str, char escapeChar, Mode mode)
 {
     string res;
@@ -625,35 +661,61 @@ std::string StringPrintfV(const char *format, va_list ap)
     return res;
 }
 
-SyncMLStatus Exception::handle(SyncMLStatus *status, Logger *logger)
+char *Strncpy(char *dest, const char *src, size_t n)
+{
+    strncpy(dest, src, n);
+    if (n) {
+        dest[n - 1] = 0;
+    }
+    return dest;
+}
+
+void Sleep(double seconds)
+{
+    timeval delay;
+    delay.tv_sec = floor(seconds);
+    delay.tv_usec = (seconds - (double)delay.tv_sec) * 1e6;
+    select(0, NULL, NULL, NULL, &delay);
+}
+
+
+SyncMLStatus Exception::handle(SyncMLStatus *status, Logger *logger, std::string *explanation, Logger::Level level)
 {
     // any problem here is a fatal local problem, unless set otherwise
     // by the specific exception
     SyncMLStatus new_status = SyncMLStatus(STATUS_FATAL + sysync::LOCAL_STATUS_CODE);
+    std::string error;
 
     try {
         throw;
     } catch (const TransportException &ex) {
         SE_LOG_DEBUG(logger, NULL, "TransportException thrown at %s:%d",
                      ex.m_file.c_str(), ex.m_line);
-        SE_LOG_ERROR(logger, NULL, "%s", ex.what());
+        error = ex.what();
         new_status = SyncMLStatus(sysync::LOCERR_TRANSPFAIL);
     } catch (const BadSynthesisResult &ex) {
         new_status = SyncMLStatus(ex.result());
-        SE_LOG_DEBUG(logger, NULL, "error code from Synthesis engine %s",
-                     Status2String(new_status).c_str());
+        error = StringPrintf("error code from Synthesis engine %s",
+                             Status2String(new_status).c_str());
     } catch (const StatusException &ex) {
         new_status = ex.syncMLStatus();
-        SE_LOG_DEBUG(logger, NULL, "error code from SyncEvolution %s and exception thrown at %s:%d",
-                     Status2String(new_status).c_str(), ex.m_file.c_str(), ex.m_line);
+        SE_LOG_DEBUG(logger, NULL, "exception thrown at %s:%d",
+                     ex.m_file.c_str(), ex.m_line);
+        error = StringPrintf("error code from SyncEvolution %s: %s",
+                             Status2String(new_status).c_str(), ex.what());
     } catch (const Exception &ex) {
         SE_LOG_DEBUG(logger, NULL, "exception thrown at %s:%d",
                      ex.m_file.c_str(), ex.m_line);
-        SE_LOG_ERROR(logger, NULL, "%s", ex.what());
+        error = ex.what();
     } catch (const std::exception &ex) {
-        SE_LOG_ERROR(logger, NULL, "%s", ex.what());
+        error = ex.what();
     } catch (...) {
-        SE_LOG_ERROR(logger, NULL, "unknown error");
+        error = "unknown error";
+    }
+    SE_LOG(level, logger, NULL, "%s", error.c_str());
+
+    if (explanation) {
+        *explanation = error;
     }
 
     if (status && *status == STATUS_OK) {
@@ -730,6 +792,19 @@ std::vector<std::string> unescapeJoinedString (const std::string& src, char sep)
         }
     }
     return splitStrings;
+}
+
+std::string Flags2String(int flags, const Flag *descr, const std::string &sep)
+{
+    std::list<std::string> tmp;
+
+    while (descr->m_flag) {
+        if (flags & descr->m_flag) {
+            tmp.push_back(descr->m_description);
+        }
+        ++descr;
+    }
+    return boost::join(tmp, ", ");
 }
 
 ScopedEnvChange::ScopedEnvChange(const string &var, const string &value) :

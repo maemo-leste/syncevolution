@@ -41,6 +41,11 @@
 #include <syncevo/VolatileConfigNode.h>
 
 #include <syncevo/declarations.h>
+
+#ifdef ENABLE_BUTEO_TESTS
+#include "client-test-buteo.h"
+#endif
+
 SE_BEGIN_CXX
 
 /*
@@ -255,7 +260,6 @@ public:
                     boost::shared_ptr<SyncSourceConfig> scServerTemplate = from->getSyncSourceConfig(testconfig.sourceNameServerTemplate);
                     sc->setURI(scServerTemplate->getURI());
                 }
-                sc->setSourceType(testconfig.type);
             }
 
             // always set these properties: they might have changed since the last run
@@ -263,6 +267,7 @@ public:
             sc->setDatabaseID(database);
             sc->setUser(m_evoUser);
             sc->setPassword(m_evoPassword);
+            sc->setSourceType(SourceType(testconfig.type));
         }
         config->flush();
     }
@@ -319,14 +324,41 @@ public:
         return false;
     }
 
+#ifdef ENABLE_BUTEO_TESTS
+    virtual void setup() {
+        QtContactsSwitcher::prepare(*this);
+    }
+#endif
+
     virtual SyncMLStatus doSync(const int *sources,
                                 const std::string &logbase,
                                 const SyncOptions &options)
     {
+        // check whether using buteo to do sync
+        const char *buteo = getenv("CLIENT_TEST_BUTEO");
+        bool useButeo = false;
+        if (buteo && 
+                (boost::equals(buteo, "1") || boost::iequals(buteo, "t"))) {
+            useButeo = true;
+        }
+
         string server = getenv("CLIENT_TEST_SERVER") ? getenv("CLIENT_TEST_SERVER") : "funambol";
         server += "_";
         server += m_clientID;
         
+
+        if (useButeo) {
+#ifdef ENABLE_BUTEO_TESTS
+            ButeoTest buteo(*this, server, logbase, options);
+            buteo.prepareSources(sources, m_syncSource2Config);
+            SyncReport report;
+            SyncMLStatus status = buteo.doSync(&report);
+            options.m_checkReport.check(status, report);
+            return status;
+#else
+            throw runtime_error("This client-test was built without enabling buteo testing.");
+#endif
+        }
         class ClientTest : public CmdlineSyncClient {
         public:
             ClientTest(const string &server,
@@ -347,6 +379,18 @@ public:
                 setWBXML(m_options.m_isWBXML, true);
                 setRetryDuration(m_options.m_retryDuration, true);
                 setRetryInterval(m_options.m_retryInterval, true);
+                if (m_options.m_syncMode == SYNC_TWO_WAY &&
+                    m_options.m_checkReport.syncMode == SYNC_NONE) {
+                    // For this test, any kind of final sync mode is
+                    // acceptable. Disable slow sync prevention
+                    // temporarily. The check for the requested sync
+                    // mode is perhaps too conservative, but in
+                    // practice the only test where slow sync
+                    // prevention caused a test failure was
+                    // Client::Sync::vcard30::testTwoWaySync after
+                    // some other failed test, so let's be conservative...
+                    setPreventSlowSync(false);
+                }
                 SyncContext::prepare();
             }
 
@@ -384,9 +428,9 @@ public:
         // configure active sources with the desired sync mode,
         // disable the rest
         FilterConfigNode::ConfigFilter filter;
-        filter[SyncSourceConfig::m_sourcePropSync.getName()] = "none";
+        filter["sync"] = "none";
         client.setConfigFilter(false, "", filter);
-        filter[SyncSourceConfig::m_sourcePropSync.getName()] =
+        filter["sync"] =
             PrettyPrintSyncMode(options.m_syncMode);
         for(int i = 0; sources[i] >= 0; i++) {
             std::string &name = m_syncSource2Config[sources[i]];
@@ -440,10 +484,10 @@ private:
     /** called internally in this class */
     TestingSyncSource *createSource(const string &name, bool isSourceA) {
         string database = getDatabaseName(name);
-        SyncConfig config("client-test-changes");
-        SyncSourceNodes nodes = config.getSyncSourceNodes(name,
-                                                          string("_") + m_clientID +
-                                                          "_" + (isSourceA ? "A" : "B"));
+        boost::shared_ptr<SyncConfig> context(new SyncConfig("source-config@client-test"));
+        SyncSourceNodes nodes = context->getSyncSourceNodes(name,
+                                                            string("_") + m_clientID +
+                                                            "_" + (isSourceA ? "A" : "B"));
 
         // always set this property: the name might have changes since last test run
         nodes.getProperties()->setProperty("evolutionsource", database.c_str());
@@ -451,14 +495,14 @@ private:
         nodes.getProperties()->setProperty("evolutionpassword", m_evoPassword.c_str());
 
         SyncSourceParams params(name,
-                                nodes);
-
+                                nodes,
+                                context);
         const RegisterSyncSourceTest *test = m_configs[name];
         ClientTestConfig testConfig;
         getSourceConfig(test, testConfig);
 
         PersistentSyncSourceConfig sourceConfig(params.m_name, params.m_nodes);
-        sourceConfig.setSourceType(testConfig.type);
+        sourceConfig.setSourceType(SourceType(testConfig.type));
 
         // downcasting here: anyone who registers his sources for testing
         // must ensure that they are indeed TestingSyncSource instances

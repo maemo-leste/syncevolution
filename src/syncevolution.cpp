@@ -459,12 +459,7 @@ int main( int argc, char **argv )
     // output.
     LogRedirect redirect(false);
 
-#if defined(HAVE_GLIB)
-    // this is required when using glib directly or indirectly
-    g_type_init();
-    g_thread_init(NULL);
-    g_set_prgname("syncevolution");
-#endif
+    SyncContext::initMain("syncevolution");
 
     setvbuf(stderr, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -486,6 +481,10 @@ int main( int argc, char **argv )
     free(exe);
 
     try {
+        if (getenv("SYNCEVOLUTION_DEBUG")) {
+            LoggerBase::instance().setLevel(Logger::DEBUG);
+        }
+
         /*
          * don't log errors to cerr: LogRedirect cannot distinguish
          * between our valid error messages and noise from other

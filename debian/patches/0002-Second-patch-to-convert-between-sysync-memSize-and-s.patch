@@ -8,10 +8,10 @@ This is to fix a second build problem on Debian s390
  1 files changed, 13 insertions(+), 2 deletions(-)
 
 diff --git a/src/syncevo/SynthesisDBPlugin.cpp b/src/syncevo/SynthesisDBPlugin.cpp
-index 089a687..346e552 100644
+index efad26c..2b51355 100644
 --- a/src/syncevo/SynthesisDBPlugin.cpp
 +++ b/src/syncevo/SynthesisDBPlugin.cpp
-@@ -721,8 +721,19 @@ sysync::TSyError SyncEvolution_ReadBlob(CContext aContext, cItemID  aID,  cAppCh
+@@ -732,8 +732,19 @@ sysync::TSyError SyncEvolution_ReadBlob(CContext aContext, cItemID  aID,  cAppCh
    TSyError res;
    if (source->getOperations().m_readBlob) {
        try {

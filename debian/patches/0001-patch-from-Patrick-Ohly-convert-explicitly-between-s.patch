@@ -8,10 +8,10 @@ Subject: [PATCH] patch from Patrick Ohly: convert explicitly between sysync::mem
  1 files changed, 14 insertions(+), 1 deletions(-)
 
 diff --git a/src/syncevo/SyncSource.h b/src/syncevo/SyncSource.h
-index f9053c8..ccd3587 100644
+index a11bbbe..89b1bc6 100644
 --- a/src/syncevo/SyncSource.h
 +++ b/src/syncevo/SyncSource.h
-@@ -1713,7 +1713,20 @@ class SyncSourceBlob : public virtual SyncSourceBase
+@@ -1831,7 +1831,20 @@ class SyncSourceBlob : public virtual SyncSourceBase
                                void **aBlkPtr, size_t *aBlkSize,
                                size_t *aTotSize,
                                bool aFirst, bool *aLast) {

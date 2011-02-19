@@ -1,3 +1,9 @@
+syncevolution (1.1.99.2+ds1-1) unstable; urgency=low
+
+  * New upstream (pre-release) version
+
+ -- David Bremner <bremner@debian.org>  Sat, 19 Feb 2011 15:02:33 -0400
+
 syncevolution (1.1+ds1-5) unstable; urgency=low
 
   * patch: Avoid dependence on PATH_MAX (fixes FTBFS on hurd).

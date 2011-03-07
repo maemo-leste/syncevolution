@@ -1,6 +1,8 @@
 syncevolution (1.1.99.3+ds1-1) experimental; urgency=low
 
   * New upstream (pre-release) version
+  * Remove two s390 related patches, now contained in upstream 
+    commit 63d76f874270cbafb2.
 
  -- David Bremner <bremner@debian.org>  Sat, 19 Feb 2011 15:02:33 -0400
 

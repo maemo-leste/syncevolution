@@ -51,6 +51,8 @@
 #include <algorithm>
 
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #include <boost/bind.hpp>
 
@@ -624,6 +626,23 @@ std::list<std::string> LocalTests::insertManyItems(CreateSource createSource, in
 
     return luids;
 }
+
+// update every single item in the database
+void LocalTests::updateData(CreateSource createSource) {
+    // check additional requirements
+    CPPUNIT_ASSERT(config.update);
+
+    TestingSyncSourcePtr source;
+    SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSource()));
+    BOOST_FOREACH(const string &luid, source->getAllItems()) {
+        string item;
+        source->readItemRaw(luid, item);
+        config.update(item);
+        source->insertItemRaw(luid, item);
+    }
+    CPPUNIT_ASSERT_NO_THROW(source.reset());
+}
+
 
 // creating sync source
 void LocalTests::testOpen() {
@@ -1592,7 +1611,7 @@ SyncTests::~SyncTests() {
 }
 
 /** adds the supported tests to the instance itself */
-void SyncTests::addTests() {
+void SyncTests::addTests(bool isFirstSource) {
     if (sources.size()) {
         const ClientTest::Config &config(sources[0].second->config);
 
@@ -1609,6 +1628,9 @@ void SyncTests::addTests() {
         ADD_TEST(SyncTests, testSlowSync);
         ADD_TEST(SyncTests, testRefreshFromServerSync);
         ADD_TEST(SyncTests, testRefreshFromClientSync);
+        if (isFirstSource) {
+            ADD_TEST(SyncTests, testTimeout);
+        }
 
         if (config.compare &&
             config.testcases &&
@@ -1646,6 +1668,9 @@ void SyncTests::addTests() {
                         ADD_TEST(SyncTests, testTwinning);
                         ADD_TEST(SyncTests, testItems);
                         ADD_TEST(SyncTests, testItemsXML);
+                        if (config.update) {
+                            ADD_TEST(SyncTests, testExtensions);
+                        }
                     }
                     if (config.templateItem) {
                         ADD_TEST(SyncTests, testMaxMsg);
@@ -1732,7 +1757,6 @@ void SyncTests::addTests() {
             ADD_TEST_TO_SUITE(resendTests, SyncTests, testResendProxyFull);
             addTest(FilterTest(resendTests));
         }
-
     }
 }
 
@@ -2494,8 +2518,8 @@ bool SyncTests::doConversionCallback(bool *success,
     return true;
 }
 
-// creates several items, transmits them back and forth and
-// then compares which of them have been preserved
+// imports test data, transmits it from client A to the server to
+// client B and then compares which of the data has been transmitted
 void SyncTests::testItems() {
     // clean server and first test database
     deleteAll();
@@ -2530,6 +2554,67 @@ void SyncTests::testItemsXML() {
     accessClientB->refreshClient(SyncOptions().setWBXML(false));
 
     compareDatabases();
+}
+
+// imports test data, transmits it from client A to the server to
+// client B, update on B and transfers back to the server,
+// then compares against reference data that has the same changes
+// applied on A
+void SyncTests::testExtensions() {
+    // clean server and first test database
+    deleteAll();
+
+    // import data and create reference data
+    source_it it;
+    for (it = sources.begin(); it != sources.end(); ++it) {
+        it->second->testImport();
+
+        string refDir = getCurrentTest() + "." + it->second->config.sourceName + ".ref.dat";
+        simplifyFilename(refDir);
+        rm_r(refDir);
+        mkdir_p(refDir);
+
+        TestingSyncSourcePtr source;
+        int counter = 0;
+        SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(it->second->createSourceB()));
+        BOOST_FOREACH(const string &luid, source->getAllItems()) {
+            string item;
+            source->readItemRaw(luid, item);
+            it->second->config.update(item);
+            ofstream out(StringPrintf("%s/%d", refDir.c_str(), counter).c_str());
+            out.write(item.c_str(), item.size());
+            counter++;
+        }
+        CPPUNIT_ASSERT_NO_THROW(source.reset());
+    }
+
+    // transfer from client A to server to client B
+    doSync("send", SyncOptions(SYNC_TWO_WAY));
+    accessClientB->refreshClient(SyncOptions());
+
+    // update on client B
+    for (it = accessClientB->sources.begin(); it != accessClientB->sources.end(); ++it) {
+        it->second->updateData(it->second->createSourceB);
+    }
+
+    // send back
+    accessClientB->doSync("update", SyncOptions(SYNC_TWO_WAY));
+    doSync("patch", SyncOptions(SYNC_TWO_WAY));
+
+    // compare data in source A against reference data *without* telling synccompare
+    // to ignore known data loss for the server
+    ScopedEnvChange env("CLIENT_TEST_SERVER", "");
+    bool equal = true;
+    for (it = sources.begin(); it != sources.end(); ++it) {
+        string refDir = getCurrentTest() + "." + it->second->config.sourceName + ".ref.dat";
+        simplifyFilename(refDir);
+        TestingSyncSourcePtr source;
+        SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(it->second->createSourceB()));
+        if (!it->second->compareDatabases(refDir.c_str(), *source, false)) {
+            equal = false;
+        }
+    }
+    CPPUNIT_ASSERT(equal);
 }
 
 // tests the following sequence of events:
@@ -3505,6 +3590,78 @@ void SyncTests::testResendProxyFull()
                       boost::shared_ptr<TransportWrapper> (new TransportResendProxy()));
 }
 
+static bool setDeadSyncURL(SyncContext &context,
+                           SyncOptions &options,
+                           int port,
+                           bool *skipped)
+{
+    vector<string> urls = context.getSyncURL();
+    string url;
+    if (urls.size() == 1) {
+        url = urls.front();
+    }
+
+    // use IPv4 localhost address, that's what we listen on
+    string fakeURL = StringPrintf("http://127.0.0.1:%d/foobar", port);
+
+    if (boost::starts_with(url, "http")) {
+        context.setSyncURL(fakeURL, true);
+        context.setUsername("foo", true);
+        context.setPassword("bar", true);
+        return false;
+    } else if (boost::starts_with(url, "local://")) {
+        FullProps props = context.getConfigProps();
+        string target = url.substr(strlen("local://"));
+        props[target].m_syncProps["syncURL"] = fakeURL;
+        props[target].m_syncProps["retryDuration"] = "10";
+        props[target].m_syncProps["retryInterval"] = "10";
+        context.setConfigProps(props);
+        return false;
+    } else {
+        // cannot run test, tell parent
+        *skipped = true;
+        return true;
+    }
+}
+
+void SyncTests::testTimeout()
+{
+    // Create a dead listening socket, then run a sync with a sync URL
+    // which points towards localhost at that port. Do this with no
+    // message resending and a very short overall timeout. The
+    // expectation is that the transmission timeout strikes.
+    time_t start = time(NULL);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    CPPUNIT_ASSERT(fd != -1);
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    int res = bind(fd, (sockaddr *)&servaddr, sizeof(servaddr));
+    CPPUNIT_ASSERT(res == 0);
+    socklen_t len = sizeof(servaddr);
+    res = getsockname(fd, (sockaddr *)&servaddr, &len);
+    CPPUNIT_ASSERT(res == 0);
+    res = listen(fd, 10);
+    CPPUNIT_ASSERT(res == 0);
+    bool skipped = false;
+    SyncReport report;
+    doSync("timeout",
+           SyncOptions(SYNC_SLOW,
+                       CheckSyncReport(-1, -1, -1, -1, -1, -1,
+                                       false).setReport(&report))
+           .setPrepareCallback(boost::bind(setDeadSyncURL, _1, _2, ntohs(servaddr.sin_port), &skipped))
+           .setRetryDuration(10)
+           .setRetryInterval(10));
+    time_t end = time(NULL);
+    close(fd);
+    if (!skipped) {
+        CPPUNIT_ASSERT_EQUAL(STATUS_TRANSPORT_FAILURE, report.getStatus());
+        CPPUNIT_ASSERT(end - start >= 9);
+        CPPUNIT_ASSERT(end - start < 15);
+    }
+}
+
 void SyncTests::doSync(const SyncOptions &options)
 {
     int res = 0;
@@ -3614,7 +3771,7 @@ public:
                 sources.push_back(source);
                 SyncTests *synctests =
                     client.createSyncTests(tests->getName() + "::" + config.sourceName, sources);
-                synctests->addTests();
+                synctests->addTests(source == 0);
                 tests->addTest(FilterTest(synctests));
             }
         }
@@ -3804,6 +3961,24 @@ bool ClientTest::compare(ClientTest &client, const char *fileA, const char *file
     return success;
 }
 
+void ClientTest::update(std::string &item)
+{
+    const static char *props[] = {
+        "\nFN:",
+        "\nN:",
+        "\nSUMMARY:",
+        NULL
+    };
+
+    for (const char **prop = props; *prop; prop++) {
+        size_t pos;
+        pos = item.find(*prop);
+        if (pos != item.npos) {
+            item.insert(pos + strlen(*prop), "MOD-");
+        }
+    }
+}
+
 void ClientTest::postSync(int res, const std::string &logname)
 {
 #ifdef WIN32
@@ -3908,6 +4083,8 @@ void ClientTest::getTestData(const char *type, Config &config)
     config.import = import;
     config.dump = dump;
     config.compare = compare;
+    // Sync::*::testExtensions not enabled by default.
+    // config.update = update;
 
     // redirect requests for "ical20" towards "ical20_noutc"?
     bool noutc = false;

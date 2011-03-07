@@ -24,13 +24,8 @@
 #include <syncevo/TransportAgent.h>
 #include <syncevo/SyncML.h>
 #include <syncevo/SmartPtr.h>
+#include <syncevo/GLibSupport.h>
 #include <string>
-
-#ifdef HAVE_GLIB
-#include <glib/gmain.h>
-#else
-typedef void *GMainLoop;
-#endif
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -112,13 +107,13 @@ class LocalTransportAgent : public TransportAgent
     virtual void cancel();
     virtual Status wait(bool noReply = false);
     virtual void getReply(const char *&data, size_t &len, std::string &contentType);
-    virtual void setCallback (TransportCallback cb, void * udata, int interval);
+    virtual void setTimeout(int seconds);
 
  private:
     SyncContext *m_server;
     string m_clientContext;
     GMainLoop *m_loop;
-
+    int m_timeoutSeconds;
     Status m_status;
 
     /** type of message for next send() */
@@ -167,22 +162,29 @@ class LocalTransportAgent : public TransportAgent
     /**
      * Write Message with given type into file descriptor.
      * Retries until error or all data written.
+     *
+     * @return ACTIVE for success, TIME_OUT or FAILED for failure, exception for really bad error
      */
-    void writeMessage(int fd, Message::Type type, const char *data, size_t len);
+    Status writeMessage(int fd, Message::Type type, const char *data, size_t len, Timespec deadline);
 
     /**
      * Read bytes into buffer until complete Message
      * is assembled. Will read additional bytes beyond
      * end of that Message if available. An existing
      * complete message is not overwritten.
+     *
+     * @return ACTIVE for success, TIME_OUT or FAILED for failure, exception for really bad error
      */
-    void readMessage(int fd, Buffer &buffer);
+    Status readMessage(int fd, Buffer &buffer, Timespec deadline);
 
     /** utility function for parent: copy child's report into m_clientReport */
     void receiveChildReport();
 
     /** utility function for parent: check m_clientReport and log/throw errors */
     void checkChildReport();
+
+    /** utility function: calculate deadline for operation starting now */
+    Timespec deadline() { return m_timeoutSeconds ? (Timespec::monotonic() + m_timeoutSeconds) : Timespec(); }
 };
 
 SE_END_CXX

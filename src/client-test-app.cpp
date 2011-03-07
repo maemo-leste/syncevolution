@@ -267,7 +267,7 @@ public:
             sc->setDatabaseID(database);
             sc->setUser(m_evoUser);
             sc->setPassword(m_evoPassword);
-            sc->setSourceType(SourceType(testconfig.type));
+            sc->setBackend(SourceType(testconfig.type).m_backend);
         }
         config->flush();
     }
@@ -392,6 +392,10 @@ public:
                     setPreventSlowSync(false);
                 }
                 SyncContext::prepare();
+                if (m_options.m_prepareCallback &&
+                    m_options.m_prepareCallback(*this, m_options)) {
+                    m_options.m_isAborted = true;
+                }
             }
 
             virtual void displaySyncProgress(sysync::TProgressEventEnum type,

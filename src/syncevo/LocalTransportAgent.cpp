@@ -23,11 +23,13 @@
 #include <syncevo/LogRedirect.h>
 #include <syncevo/StringDataBlob.h>
 #include <syncevo/IniConfigNode.h>
+#include <syncevo/GLibSupport.h>
 
 #include <stddef.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 
 #include <algorithm>
 
@@ -46,6 +48,7 @@ LocalTransportAgent::LocalTransportAgent(SyncContext *server,
     m_server(server),
     m_clientContext(SyncConfig::normalizeConfigString(clientContext)),
     m_loop(static_cast<GMainLoop *>(loop)),
+    m_timeoutSeconds(0),
     m_status(INACTIVE),
     m_messageFD(-1),
     m_statusFD(-1),
@@ -98,6 +101,22 @@ void LocalTransportAgent::start()
             m_server->throwError("socketpair()", errno);
         }
 
+        // Set close-on-exec flag for all file descriptors:
+        // they are used for tracking the death of either
+        // parent or child, so additional processes should
+        // not inherit them.
+        //
+        // Also set them to non-blocking, needed for the
+        // timeout handling.
+        for (int *fd = &sockets[0][0];
+             fd < &sockets[2][2];
+             ++fd) {
+            long flags = fcntl(*fd, F_GETFD);
+            fcntl(*fd, F_SETFD, flags | FD_CLOEXEC);
+            flags = fcntl(*fd, F_GETFL);
+            fcntl(*fd, F_SETFL, flags | O_NONBLOCK);
+        }
+
         pid_t pid = fork();
         switch (pid) {
         case -1:
@@ -136,6 +155,12 @@ void LocalTransportAgent::start()
 
 void LocalTransportAgent::run()
 {
+    // delay the client for debugging purposes
+    const char *delay = getenv("SYNCEVOLUTION_LOCAL_CHILD_DELAY");
+    if (delay) {
+        sleep(atoi(delay));
+    }
+
     // If we did an exec here, we could start with a clean slate.
     // But that forces us to pass all relevant parameters to some
     // specific executable, which is more complicated than simply
@@ -169,6 +194,15 @@ void LocalTransportAgent::run()
         }
         --index;
     }
+
+    // do not mix our own output into the output of the parent
+    if (redirect) {
+        redirect->redoRedirect();
+    }
+
+    // Ignore parent's timeout and event loop.
+    m_timeoutSeconds = 0;
+    m_loop = 0;
 
     // Now run. Under no circumstances must we leave this function,
     // because our caller is not prepared for running inside a forked
@@ -276,7 +310,7 @@ void LocalTransportAgent::run()
                      m_clientReport.getError().c_str(),
                      data->c_str());
         node.flush();
-        writeMessage(m_statusFD, Message::MSG_SYNC_REPORT, data->c_str(), data->size());
+        writeMessage(m_statusFD, Message::MSG_SYNC_REPORT, data->c_str(), data->size(), Timespec());
     } catch (...) {
         SyncMLStatus status = m_clientReport.getStatus();
         Exception::handle(&status, redirect);
@@ -341,16 +375,19 @@ void LocalTransportAgent::receiveChildReport()
         try {
             SE_LOG_DEBUG(NULL, NULL, "parent: receiving report");
             m_receiveBuffer.m_used = 0;
-            readMessage(statusFD, m_receiveBuffer);
-            boost::shared_ptr<std::string> data(new std::string);
-            data->assign(m_receiveBuffer.m_message->m_data, m_receiveBuffer.m_message->getDataLength());
-            boost::shared_ptr<StringDataBlob> dump(new StringDataBlob("buffer", data, false));
-            IniHashConfigNode node(dump);
-            node >> m_clientReport;
-            SE_LOG_DEBUG(NULL, NULL, "parent: received report (%s/ERROR '%s'):\n%s",
-                         Status2String(m_clientReport.getStatus()).c_str(),
-                         m_clientReport.getError().c_str(),
-                         data->c_str());
+            if (readMessage(statusFD, m_receiveBuffer, deadline()) == ACTIVE) {
+                boost::shared_ptr<std::string> data(new std::string);
+                data->assign(m_receiveBuffer.m_message->m_data, m_receiveBuffer.m_message->getDataLength());
+                boost::shared_ptr<StringDataBlob> dump(new StringDataBlob("buffer", data, false));
+                IniHashConfigNode node(dump);
+                node >> m_clientReport;
+                SE_LOG_DEBUG(NULL, NULL, "parent: received report (%s/ERROR '%s'):\n%s",
+                             Status2String(m_clientReport.getStatus()).c_str(),
+                             m_clientReport.getError().c_str(),
+                             data->c_str());
+            } else {
+                SE_LOG_DEBUG(NULL, NULL, "parent: timeout receiving report");
+            }
         } catch (...) {
             close(statusFD);
             throw;
@@ -389,26 +426,22 @@ bool LocalTransportAgent::Buffer::haveMessage()
 
 void LocalTransportAgent::send(const char *data, size_t len)
 {
-    if (m_loop) {
-        SE_THROW("glib support not implemented");
-    } else {
-        // first throw away old received message
-        if (m_receiveBuffer.haveMessage()) {
-            size_t len = m_receiveBuffer.m_message->m_length;
-            // memmove() probably never necessary because receiving
-            // ends directly after complete message, but doesn't hurt
-            // either...
-            memmove(m_receiveBuffer.m_message.get(),
-                    (char *)m_receiveBuffer.m_message.get() + len,
-                    m_receiveBuffer.m_used - len);
-            m_receiveBuffer.m_used -= len;
-        }
-        writeMessage(m_messageFD, m_sendType, data, len);
-    }
     m_status = ACTIVE;
+    // first throw away old received message
+    if (m_receiveBuffer.haveMessage()) {
+        size_t len = m_receiveBuffer.m_message->m_length;
+        // memmove() probably never necessary because receiving
+        // ends directly after complete message, but doesn't hurt
+        // either...
+        memmove(m_receiveBuffer.m_message.get(),
+                (char *)m_receiveBuffer.m_message.get() + len,
+                m_receiveBuffer.m_used - len);
+        m_receiveBuffer.m_used -= len;
+    }
+    m_status = writeMessage(m_messageFD, m_sendType, data, len, deadline());
 }
 
-void LocalTransportAgent::writeMessage(int fd, Message::Type type, const char *data, size_t len)
+TransportAgent::Status LocalTransportAgent::writeMessage(int fd, Message::Type type, const char *data, size_t len, Timespec deadline)
 {
     Message header;
     header.m_type = type;
@@ -418,35 +451,88 @@ void LocalTransportAgent::writeMessage(int fd, Message::Type type, const char *d
     vec[0].iov_len = offsetof(Message, m_data);
     vec[1].iov_base = (void *)data;
     vec[1].iov_len = len;
-    // TODO: handle timeouts and aborts while writing
     SE_LOG_DEBUG(NULL, NULL, "%s: sending %ld bytes via %s",
                  m_pid ? "parent" : "child",
                  (long)len,
                  fd == m_messageFD ? "message channel" : "other channel");
     do {
-        ssize_t sent = writev(fd, vec, 2);
-        if (sent == -1) {
-            SE_LOG_DEBUG(NULL, NULL, "%s: sending %ld bytes failed: %s",
+        // sleep, possibly with a deadline
+        int res = 0;
+        Timespec timeout;
+        if (deadline) {
+            Timespec now = Timespec::monotonic();
+            if (now >= deadline) {
+                return TIME_OUT;
+            } else {
+                timeout = deadline - now;
+            }
+        }
+        SE_LOG_DEBUG(NULL, NULL, "%s: write select on %s %ld.%09lds",
+                     m_pid ? "parent" : "child",
+                     fd == m_messageFD ? "message channel" : "other channel",
+                     (long)timeout.tv_sec,
+                     (long)timeout.tv_nsec);
+        if (m_loop) {
+            switch (GLibSelect(m_loop, fd, GLIB_SELECT_WRITE, timeout ? &timeout : NULL)) {
+            case GLIB_SELECT_TIMEOUT:
+                res = 0;
+                break;
+            case GLIB_SELECT_READY:
+                res = 1;
+                break;
+            case GLIB_SELECT_QUIT:
+                SE_LOG_DEBUG(NULL, NULL, "quit transport as requested as part of GLib event loop");
+                return FAILED;
+                break;
+            }
+        } else {
+            fd_set writefds;
+            FD_ZERO(&writefds);
+            FD_SET(fd, &writefds);
+            timeval tv = timeout;
+            res = select(fd + 1, NULL, &writefds, NULL,
+                         timeout ? &tv : NULL);
+        }
+        switch (res) {
+        case 0:
+            SE_LOG_DEBUG(NULL, NULL, "%s: select timeout",
+                         m_pid ? "parent" : "child");
+            return TIME_OUT;
+            break;
+        case 1: {
+            ssize_t sent = writev(fd, vec, 2);
+            if (sent == -1) {
+                SE_LOG_DEBUG(NULL, NULL, "%s: sending %ld bytes failed: %s",
+                             m_pid ? "parent" : "child",
+                             (long)len,
+                             strerror(errno));
+                SE_THROW_EXCEPTION(TransportException,
+                                   StringPrintf("writev(): %s", strerror(errno)));
+            }
+
+            // potential partial write, reduce byte counters by amount of bytes sent
+            ssize_t part1 = std::min((ssize_t)vec[0].iov_len, sent);
+            vec[0].iov_len -= part1;
+            sent -= part1;
+            ssize_t part2 = std::min((ssize_t)vec[1].iov_len, sent);
+            vec[1].iov_len -= part2;
+            sent -= part2;
+            break;
+        }
+        default:
+            SE_LOG_DEBUG(NULL, NULL, "%s: select errror: %s",
                          m_pid ? "parent" : "child",
-                         (long)len,
                          strerror(errno));
             SE_THROW_EXCEPTION(TransportException,
-                               StringPrintf("writev(): %s", strerror(errno)));
+                               StringPrintf("select(): %s", strerror(errno)));
+            break;
         }
-
-        // potential partial write, reduce byte counters by amount of bytes sent
-        ssize_t part1 = std::min((ssize_t)vec[0].iov_len, sent);
-        vec[0].iov_len -= part1;
-        sent -= part1;
-        ssize_t part2 = std::min((ssize_t)vec[1].iov_len, sent);
-        vec[1].iov_len -= part2;
-        sent -= part2;
-        // might be completely sent now, check
     } while (vec[1].iov_len);
 
     SE_LOG_DEBUG(NULL, NULL, "%s: sending %ld bytes done",
                  m_pid ? "parent" : "child",
                  (long)len);
+    return ACTIVE;
 }
 
 void LocalTransportAgent::cancel()
@@ -455,56 +541,78 @@ void LocalTransportAgent::cancel()
 
 TransportAgent::Status LocalTransportAgent::wait(bool noReply)
 {
-    switch (m_status) {
-    case ACTIVE:
+    if (m_status == ACTIVE) {
         // need next message; for noReply == true we are done
         if (noReply) {
             m_status = INACTIVE;
-            return m_status;
-        }
-        if (m_loop) {
-            SE_THROW("glib support not implemented");
         } else {
             if (!m_receiveBuffer.haveMessage()) {
-                readMessage(m_messageFD, m_receiveBuffer);
-            }
-
-            // complete message received, check if it is SyncML
-            switch (m_receiveBuffer.m_message->m_type) {
-            case Message::MSG_SYNCML_XML:
-            case Message::MSG_SYNCML_WBXML:
-                m_status = GOT_REPLY;
-                break;
-            default:
-                // TODO: handle other types
-                SE_THROW("unsupported message type");
-                break;
+                m_status = readMessage(m_messageFD, m_receiveBuffer, deadline());
+                if (m_status == ACTIVE) {
+                    // complete message received, check if it is SyncML
+                    switch (m_receiveBuffer.m_message->m_type) {
+                    case Message::MSG_SYNCML_XML:
+                    case Message::MSG_SYNCML_WBXML:
+                        m_status = GOT_REPLY;
+                        break;
+                    default:
+                        // TODO: handle other types
+                        SE_THROW("unsupported message type");
+                        break;
+                    }
+                }
             }
         }
-        break;
-    default:
-        return m_status;
     }
     return m_status;
 }
 
-void LocalTransportAgent::readMessage(int fd, Buffer &buffer)
+TransportAgent::Status LocalTransportAgent::readMessage(int fd, Buffer &buffer, Timespec deadline)
 {
     while (!buffer.haveMessage()) {
-        // use select to implement timeout (TODO)
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(fd, &readfds);
-        SE_LOG_DEBUG(NULL, NULL, "%s: waiting on %s",
+        int res = 0;
+        Timespec timeout;
+        if (deadline) {
+            Timespec now = Timespec::monotonic();
+            if (now >= deadline) {
+                // already too late
+                return TIME_OUT;
+            } else {
+                timeout = deadline - now;
+            }
+        }
+        SE_LOG_DEBUG(NULL, NULL, "%s: read select on %s %ld.%09lds",
                      m_pid ? "parent" : "child",
-                     fd == m_messageFD ? "message channel" : "other channel");
-        int res = select(fd + 1, &readfds, NULL, NULL, NULL);
+                     fd == m_messageFD ? "message channel" : "other channel",
+                     (long)timeout.tv_sec,
+                     (long)timeout.tv_nsec);
+        if (m_loop) {
+            switch (GLibSelect(m_loop, fd, GLIB_SELECT_READ, timeout ? &timeout : NULL)) {
+            case GLIB_SELECT_TIMEOUT:
+                res = 0;
+                break;
+            case GLIB_SELECT_READY:
+                res = 1;
+                break;
+            case GLIB_SELECT_QUIT:
+                SE_LOG_DEBUG(NULL, NULL, "quit transport as requested as part of GLib event loop");
+                return FAILED;
+                break;
+            }
+        } else {
+            // use select to implement timeout
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(fd, &readfds);
+            timeval tv = timeout;
+            res = select(fd + 1, &readfds, NULL, NULL,
+                         timeout ? &tv : NULL);
+        }
         switch (res) {
         case 0:
             SE_LOG_DEBUG(NULL, NULL, "%s: select timeout",
                          m_pid ? "parent" : "child");
-            // TODO: timeout
-            SE_THROW("internal error, unexpected timeout");
+            return TIME_OUT;
             break;
         case 1: {
             // data ready, ensure that buffer is available
@@ -560,6 +668,8 @@ void LocalTransportAgent::readMessage(int fd, Buffer &buffer)
             break;
         }
     }
+
+    return ACTIVE;
 }
 
 void LocalTransportAgent::getReply(const char *&data, size_t &len, std::string &contentType)
@@ -585,9 +695,9 @@ void LocalTransportAgent::getReply(const char *&data, size_t &len, std::string &
     }
 }
 
-void LocalTransportAgent::setCallback (TransportCallback cb, void * udata, int interval)
+void LocalTransportAgent::setTimeout(int seconds)
 {
-    // TODO: implement timeout mechanism
+    m_timeoutSeconds = seconds;
 }
 
 SE_END_CXX

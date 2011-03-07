@@ -35,7 +35,7 @@
 SE_BEGIN_CXX
 
 class SyncSource;
-class SDKInterface;
+struct SDKInterface;
 
 /**
  * This set of parameters always has to be passed when constructing
@@ -386,7 +386,21 @@ struct ClientTestConfig{
     bool (*compare)(ClientTest &client, const char *fileA, const char *fileB);
 
     /**
-     * a file with test cases in the format expected by import and compare
+     * A file with test cases in the format expected by import and compare.
+     * The file should contain data as supported by the local storage.
+     *
+     * It is used in "Source::*::testImport" test, which verifies that
+     * the backend can import and export that data.
+     *
+     * It is also used in "Sync::*::testItems", which verifies that
+     * the peer can store and export it. Often local extensions are
+     * not supported by peers. This can be handled in different ways:
+     * - Patch synccompare to ignore such changes on a per-peer basis.
+     * - Create a <testcases>.<peer>.tem file in the src/testcases
+     *   build directory where <testcases> is the string here ("ical20.ics"),
+     *   and <peer> the value of CLIENT_TEST_SERVER ("funambol").
+     *   That file then will be used in testItems instead of the base
+     *   version. See the src/Makefile.am for rules that maintain such files.
      */
     const char *testcases;
 
@@ -409,6 +423,16 @@ struct ClientTestConfig{
     bool retrySync;
     bool suspendSync;
     bool resendSync;
+
+    /**
+     * Set this to test if the source supports preserving local data extensions.
+     * Uses the "testcases" data. See Sync::*::testExtensions.
+     *
+     * The function must modify a single item such that re-importing
+     * it locally will be seen as updating it. ClientTest::update()
+     * works for vCard and iCalendar by updating FN, N, resp. SUMMARY.
+     */
+    void (*update)(std::string &item);
 };
 
 /**
@@ -607,6 +631,17 @@ class SyncSourceBase : public Logger {
      * @param action     a string describing what was attempted *and* how it failed
      */
     void throwError(const string &failure);
+
+    /**
+     * throw an exception with a specific status code after an operation failed and
+     * remember that this instance has failed
+     *
+     * output format: <source name>: <failure>
+     *
+     * @param status     a more specific status code; other throwError() variants use STATUS_FATAL
+     * @param action     a string describing what was attempted *and* how it failed
+     */
+    void throwError(SyncMLStatus status, const string &failure);
 
     /**
      * The Synthesis engine only counts items which are deleted by the
@@ -1831,7 +1866,20 @@ class SyncSourceBlob : public virtual SyncSourceBase
                               void **aBlkPtr, size_t *aBlkSize,
                               size_t *aTotSize,
                               bool aFirst, bool *aLast) {
-        return m_blob.ReadBlob(aID, aBlobID, aBlkPtr, aBlkSize, aTotSize, aFirst, aLast);
+        // Translate between sysync::memSize and size_t, which
+        // is different on s390 (or at least the compiler complains...).
+        sysync::memSize blksize, totsize;
+        sysync::TSyError err = m_blob.ReadBlob(aID, aBlobID, aBlkPtr,
+                                               aBlkSize ? &blksize : NULL,
+                                               aTotSize ? &totsize : NULL,
+                                               aFirst, aLast);
+        if (aBlkSize) {
+            *aBlkSize = blksize;
+        }
+        if (aTotSize) {
+            *aTotSize = totsize;
+        }
+        return err;
     }
     sysync::TSyError writeBlob(sysync::cItemID aID, const char *aBlobID,
                                void *aBlkPtr, size_t aBlkSize,

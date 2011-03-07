@@ -23,6 +23,13 @@
 #include "config.h"
 #endif
 
+struct DBusMessage;
+namespace SyncEvo {
+static DBusMessage *SyncEvoHandleException(DBusMessage *msg);
+}
+#define DBUS_CXX_EXCEPTION_HANDLER SyncEvo::SyncEvoHandleException
+#include "gdbus-cxx-bridge.h"
+
 #include <syncevo/Logging.h>
 #include <syncevo/LogStdout.h>
 #include <syncevo/LogRedirect.h>
@@ -67,12 +74,10 @@ extern "C" {
 #include <libnotify/notify.h>
 #endif
 
-class DBusMessage;
-static DBusMessage *SyncEvoHandleException(DBusMessage *msg);
-#define DBUS_CXX_EXCEPTION_HANDLER SyncEvoHandleException
-#include "gdbus-cxx-bridge.h"
-
+using namespace GDBusCXX;
 using namespace SyncEvo;
+
+SE_BEGIN_CXX
 
 static GMainLoop *loop = NULL;
 static bool shutdownRequested = false;
@@ -304,6 +309,9 @@ private:
     boost::shared_ptr<DBusUserInterface> getLocalConfig(const std::string &configName, bool mustExist = true);
 };
 
+SE_END_CXX
+namespace GDBusCXX {
+
 /**
  * dbus_traits for SourceDatabase. Put it here for 
  * avoiding polluting gxx-dbus-bridge.h
@@ -313,6 +321,9 @@ template<> struct dbus_traits<ReadOperations::SourceDatabase> :
                               dbus_member<ReadOperations::SourceDatabase, std::string, &ReadOperations::SourceDatabase::m_name,
                               dbus_member<ReadOperations::SourceDatabase, std::string, &ReadOperations::SourceDatabase::m_uri,
                               dbus_member_single<ReadOperations::SourceDatabase, bool, &ReadOperations::SourceDatabase::m_isDefault> > > >{}; 
+
+}
+SE_BEGIN_CXX
 
 /**
  * Automatic termination and track clients
@@ -1586,12 +1597,16 @@ struct SourceStatus
     uint32_t m_error;
 };
 
+SE_END_CXX
+namespace GDBusCXX {
 template<> struct dbus_traits<SourceStatus> :
     public dbus_struct_traits<SourceStatus,
                               dbus_member<SourceStatus, std::string, &SourceStatus::m_mode,
                               dbus_member<SourceStatus, std::string, &SourceStatus::m_status,
                               dbus_member_single<SourceStatus, uint32_t, &SourceStatus::m_error> > > >
 {};
+}
+SE_BEGIN_CXX
 
 struct SourceProgress
 {
@@ -1608,6 +1623,8 @@ struct SourceProgress
     int32_t m_receiveCount, m_receiveTotal;
 };
 
+SE_END_CXX
+namespace GDBusCXX {
 template<> struct dbus_traits<SourceProgress> :
     public dbus_struct_traits<SourceProgress,
                               dbus_member<SourceProgress, std::string, &SourceProgress::m_phase,
@@ -1618,6 +1635,8 @@ template<> struct dbus_traits<SourceProgress> :
                               dbus_member<SourceProgress, int32_t, &SourceProgress::m_receiveCount,
                               dbus_member_single<SourceProgress, int32_t, &SourceProgress::m_receiveTotal> > > > > > > >
 {};
+}
+SE_BEGIN_CXX
 
 /**
  * This class is mainly to implement two virtual functions 'askPassword'
@@ -1758,15 +1777,15 @@ public:
      * These ratios might be dynamicall changed in the future.
      */
     /** PRO_SYNC_PREPARE step ratio to standard unit */
-    static const float PRO_SYNC_PREPARE_RATIO = 0.2;
+    static const float PRO_SYNC_PREPARE_RATIO;
     /** data prepare for data items to standard unit. All are combined by profiling data */
-    static const float DATA_PREPARE_RATIO = 0.10;
+    static const float DATA_PREPARE_RATIO;
     /** one data item send's ratio to standard unit */
-    static const float ONEITEM_SEND_RATIO = 0.05;
+    static const float ONEITEM_SEND_RATIO;
     /** one data item receive&parse's ratio to standard unit */
-    static const float ONEITEM_RECEIVE_RATIO = 0.05;
+    static const float ONEITEM_RECEIVE_RATIO;
     /** connection setup to standard unit */
-    static const float CONN_SETUP_RATIO = 0.5;
+    static const float CONN_SETUP_RATIO;
     /** assume the number of data items */
     static const int DEFAULT_ITEMS = 5;
     /** default times of message send/receive in each step */
@@ -1841,6 +1860,12 @@ private:
     /** current sync source */
     string m_source;
 };
+
+const float ProgressData::PRO_SYNC_PREPARE_RATIO = 0.2;
+const float ProgressData::DATA_PREPARE_RATIO = 0.10;
+const float ProgressData::ONEITEM_SEND_RATIO = 0.05;
+const float ProgressData::ONEITEM_RECEIVE_RATIO = 0.05;
+const float ProgressData::CONN_SETUP_RATIO = 0.5;
 
 class CmdlineWrapper;
 
@@ -2416,16 +2441,14 @@ class DBusTransportAgent : public TransportAgent
     std::string m_type;
 
     /*
-     * When the callback is invoked, we always abort the current
+     * When the timeout occurs, we always abort the current
      * transmission.  If it is invoked while we are not in the wait()
      * of this transport, then we remember that in m_eventTriggered
      * and return from wait() right away. The main loop is only
      * quit when the transport is waiting in it. This is a precaution
      * to not interfere with other parts of the code.
      */
-    TransportCallback m_callback;
-    void *m_callbackData;
-    int m_callbackInterval;
+    int m_timeoutSeconds;
     GLibEvent m_eventSource;
     bool m_eventTriggered;
     bool m_waiting;
@@ -2448,11 +2471,9 @@ class DBusTransportAgent : public TransportAgent
     virtual void cancel() {}
     virtual void shutdown();
     virtual Status wait(bool noReply = false);
-    virtual void setCallback (TransportCallback cb, void * udata, int interval)
+    virtual void setTimeout(int seconds)
     {
-        m_callback = cb;
-        m_callbackData = udata;
-        m_callbackInterval = interval;
+        m_timeoutSeconds = seconds;
         m_eventSource = 0;
     }
     virtual void getReply(const char *&data, size_t &len, std::string &contentType);
@@ -3049,11 +3070,7 @@ boost::shared_ptr<TransportAgent> DBusSync::createTransportAgent()
         // client (API not designed for it), let's use the hard timeout
         // from RetryDuration here.
         int timeout = getRetryDuration();
-        if (timeout) {
-            agent->setCallback(transport_cb,
-                               reinterpret_cast<void *>(static_cast<uintptr_t>(timeout)),
-                               timeout);
-        }
+        agent->setTimeout(timeout);
         return agent;
     } else {
         // no connection, use HTTP via libsoup/GMainLoop
@@ -4627,7 +4644,7 @@ DBusTransportAgent::DBusTransportAgent(GMainLoop *loop,
     m_loop(loop),
     m_session(session),
     m_connection(connection),
-    m_callback(NULL),
+    m_timeoutSeconds(0),
     m_eventTriggered(false),
     m_waiting(false)
 {
@@ -4660,9 +4677,8 @@ void DBusTransportAgent::send(const char *data, size_t len)
     connection->m_state = Connection::WAITING;
     connection->m_incomingMsg = SharedBuffer();
 
-    // setup regular callback
-    if (m_callback) {
-        m_eventSource = g_timeout_add_seconds(m_callbackInterval, timeoutCallback, static_cast<gpointer>(this));
+    if (m_timeoutSeconds) {
+        m_eventSource = g_timeout_add_seconds(m_timeoutSeconds, timeoutCallback, static_cast<gpointer>(this));
     }
     m_eventTriggered = false;
 
@@ -4694,8 +4710,6 @@ void DBusTransportAgent::shutdown()
 gboolean DBusTransportAgent::timeoutCallback(gpointer transport)
 {
     DBusTransportAgent *me = static_cast<DBusTransportAgent *>(transport);
-    me->m_callback(me->m_callbackData);
-    // TODO: check or remove return code from callback?!
     me->m_eventTriggered = true;
     if (me->m_waiting) {
         g_main_loop_quit(me->m_loop);
@@ -6382,6 +6396,8 @@ static bool parseDuration(int &duration, const char* value)
     }
 }
 
+SE_END_CXX
+
 int main(int argc, char **argv)
 {
     int duration = 600;
@@ -6429,7 +6445,7 @@ int main(int argc, char **argv)
             err.throwFailure("b_dbus_setup_bus()", " failed - server already running?");
         }
 
-        DBusServer server(loop, conn, duration);
+        SyncEvo::DBusServer server(loop, conn, duration);
         server.activate();
 
         SE_LOG_INFO(NULL, NULL, "%s: ready to run",  argv[0]);

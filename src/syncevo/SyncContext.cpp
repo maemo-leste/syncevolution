@@ -1492,6 +1492,7 @@ boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainl
     if (m_localSync) {
         string peer = url.substr(strlen("local://"));
         boost::shared_ptr<LocalTransportAgent> agent(new LocalTransportAgent(this, peer, gmainloop));
+        agent->setTimeout(timeout);
         agent->start();
         return agent;
     } else if (boost::starts_with(url, "http://") ||
@@ -1500,22 +1501,13 @@ boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainl
         
         boost::shared_ptr<SoupTransportAgent> agent(new SoupTransportAgent(static_cast<GMainLoop *>(gmainloop)));
         agent->setConfig(*this);
-
-        if (timeout) {
-            agent->setCallback(transport_cb,
-                        reinterpret_cast<void *>(static_cast<uintptr_t>(timeout)),
-                        timeout);
-        }
+        agent->setTimeout(timeout);
         return agent;
 #elif defined(ENABLE_LIBCURL)
         if (!gmainloop) {
             boost::shared_ptr<CurlTransportAgent> agent(new CurlTransportAgent());
             agent->setConfig(*this);
-            if (timeout) {
-                agent->setCallback(transport_cb,
-                        reinterpret_cast<void *>(static_cast<uintptr_t>(timeout)),
-                        timeout);
-            }
+            agent->setTimeout(timeout);
             return agent;
         }
 #endif
@@ -1525,11 +1517,7 @@ boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainl
         boost::shared_ptr<ObexTransportAgent> agent(new ObexTransportAgent(ObexTransportAgent::OBEX_BLUETOOTH,
                                                                            static_cast<GMainLoop *>(gmainloop)));
         agent->setURL (btUrl);
-        if (timeout) {
-            agent->setCallback(transport_cb,
-                    reinterpret_cast<void *>(static_cast<uintptr_t>(timeout)),
-                    timeout);
-        }
+        agent->setTimeout(timeout);
         agent->connect();
         return agent;
 #endif
@@ -1826,6 +1814,11 @@ void SyncContext::displaySourceProgress(sysync::TProgressEventEnum type,
 
 void SyncContext::throwError(const string &error)
 {
+    throwError(STATUS_FATAL, error);
+}
+
+void SyncContext::throwError(SyncMLStatus status, const string &error)
+{
 #ifdef IPHONE
     /*
      * Catching the runtime_exception fails due to a toolchain problem,
@@ -1835,7 +1828,7 @@ void SyncContext::throwError(const string &error)
      */
     fatalError(NULL, error.c_str());
 #else
-    throw runtime_error(error);
+    SE_THROW_EXCEPTION_STATUS(StatusException, error, status);
 #endif
 }
 
@@ -2036,17 +2029,6 @@ void SyncContext::startSourceAccess(SyncSource *source)
     }
     // database dumping is delayed in both client and server
     m_sourceListPtr->syncPrepare(source->getName());
-}
-
-bool SyncContext::transport_cb (void *udata)
-{
-    unsigned int interval = reinterpret_cast<uintptr_t>(udata);
-    SE_LOG_INFO(NULL, NULL, "Transport timeout after %u:%02umin",
-                interval / 60,
-                interval % 60);
-    // never cancel the transport, the higher levels will deal
-    // with the timeout
-    return true;
 }
 
 // XML configuration converted to C string constants
@@ -2779,7 +2761,8 @@ void SyncContext::initMain(const char *appname)
         // because we don't call it directly and might not even be linked against
         // it. Therefore check for the relevant symbols via dlsym().
         void (*set_log_level)(int);
-        void (*set_log_function)(void (*func)(int level, const char *str));
+        typedef void (*LogFunc_t)(int level, const char *str);
+        void (*set_log_function)(LogFunc_t func);
         
         set_log_level = (typeof(set_log_level))dlsym(RTLD_DEFAULT, "gnutls_global_set_log_level");
         set_log_function = (typeof(set_log_function))dlsym(RTLD_DEFAULT, "gnutls_global_set_log_function");
@@ -2950,7 +2933,6 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
         // When a source or the overall sync was successful,
         // but some items failed, we report a "partial failure"
         // status.
-        sourceList.updateSyncReport(*report);
         BOOST_FOREACH(SyncSource *source, sourceList) {
             if (source->getStatus() == STATUS_OK &&
                 (source->getItemStat(SyncSource::ITEM_LOCAL,
@@ -2968,20 +2950,39 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
             }
         }
 
-        // also take into account result of client side in local sync,
-        // if any existed
+        // Also take into account result of client side in local sync,
+        // if any existed. A non-success status code in the client's report
+        // was already propagated to the parent via a TransportStatusException
+        // in LocalTransportAgent::checkChildReport(). What we can do here
+        // is updating the individual's sources status.
         if (m_localSync && m_agent) {
             boost::shared_ptr<LocalTransportAgent> agent = boost::static_pointer_cast<LocalTransportAgent>(m_agent);
-
-            // TODO: check results from client and override
-            // inconclusive resuls on server side
+            SyncReport childReport;
+            agent->getClientSyncReport(childReport);
+            BOOST_FOREACH(SyncSource *source, sourceList) {
+                const SyncSourceReport *childSourceReport = childReport.findSyncSourceReport(source->getURI());
+                if (childSourceReport) {
+                    SyncMLStatus parentSourceStatus = source->getStatus();
+                    SyncMLStatus childSourceStatus = childSourceReport->getStatus();
+                    // child source had an error *and*
+                    // parent error is either unspecific (USERABORT) or
+                    // is a remote error (HTTP error range)
+                    if (childSourceStatus != STATUS_OK && childSourceStatus != STATUS_HTTP_OK &&
+                        (parentSourceStatus == SyncMLStatus(sysync::LOCERR_USERABORT) ||
+                         parentSourceStatus < SyncMLStatus(sysync::LOCAL_STATUS_CODE))) {
+                        source->recordStatus(childSourceStatus);
+                    }
+                }
+            }
         }
 
+        sourceList.updateSyncReport(*report);
         sourceList.syncDone(status, report);
     } catch(...) {
         Exception::handle(&status);
     }
 
+    m_agent.reset();
     m_sourceListPtr = NULL;
     return status;
 }
@@ -3492,6 +3493,11 @@ SyncMLStatus SyncContext::doSync()
                                             progressInfo.extra1,
                                             progressInfo.extra2,
                                             progressInfo.extra3);
+                        if (progressInfo.eventtype == sysync::PEV_SESSIONEND &&
+                            !status) {
+                            // remember sync result
+                            status = SyncMLStatus(progressInfo.extra1);
+                        }
                         break;
                     default: {
                         // specific for a certain sync source:
@@ -3562,6 +3568,10 @@ SyncMLStatus SyncContext::doSync()
                 break;
             }
             case sysync::STEPCMD_NEEDDATA:
+                if (!sendStart) {
+                    // no message sent yet, record start of wait for data
+                    sendStart = time(NULL);
+                }
                 switch (m_agent->wait()) {
                 case TransportAgent::ACTIVE:
                     // Still sending the data?! Don't change anything,
@@ -3625,6 +3635,18 @@ SyncMLStatus SyncContext::doSync()
                  * message sending interval equals m_retryInterval.
                  */
                 case TransportAgent::FAILED: {
+                    // Send might have failed because of abort or
+                    // suspend request.
+                    if (checkForSuspend()) {
+                        SE_LOG_DEBUG(NULL, NULL, "suspending after TransportAgent::FAILED as requested by user");
+                        stepCmd = sysync::STEPCMD_SUSPEND;
+                        break;
+                    } else if (checkForAbort()) {
+                        SE_LOG_DEBUG(NULL, NULL, "aborting after TransportAgent::FAILED as requested by user");
+                        stepCmd = sysync::STEPCMD_ABORT;
+                        break;
+                    }
+
                     time_t curTime = time(NULL);
                     time_t duration = curTime - sendStart;
                     // same if() as above for TIME_OUT
@@ -3637,18 +3659,6 @@ SyncMLStatus SyncContext::doSync()
                                     (long)(duration % 60));
                         SE_THROW_EXCEPTION(TransportException, "transport failed, retry period exceeded");
                     } else {
-                        // Send might have failed because of abort or
-                        // suspend request.
-                        if (checkForSuspend()) {
-                            SE_LOG_DEBUG(NULL, NULL, "suspending after TransportAgent::FAILED as requested by user");
-                            stepCmd = sysync::STEPCMD_SUSPEND;
-                            break;
-                        } else if (checkForAbort()) {
-                            SE_LOG_DEBUG(NULL, NULL, "aborting after TransportAgent::FAILED as requested by user");
-                            stepCmd = sysync::STEPCMD_ABORT;
-                            break;
-                        }
-
                         // retry send
                         int leftTime = m_retryInterval - (curTime - resendStart);
                         if (leftTime >0 ) {
@@ -3716,7 +3726,6 @@ SyncMLStatus SyncContext::doSync()
         }
     }
 
-    m_agent.reset();
     if (catchSignals) {
         sigaction (SIGINT, &old_action, NULL);
         sigaction (SIGTERM, &old_term_action, NULL);

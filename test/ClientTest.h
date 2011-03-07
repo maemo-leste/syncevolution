@@ -140,6 +140,12 @@ struct SyncOptions {
      */
     Callback_t m_startCallback;
 
+    /**
+     * called while configuration is prepared for sync, see
+     * SyncContext::prepare()
+     */
+    Callback_t m_prepareCallback;
+
     boost::shared_ptr<TransportAgent> m_transport;
 
     SyncOptions(SyncMode syncMode = SYNC_NONE,
@@ -174,6 +180,7 @@ struct SyncOptions {
     SyncOptions &setRetryDuration(int retryDuration) { m_retryDuration = retryDuration; return *this; }
     SyncOptions &setRetryInterval(int retryInterval) { m_retryInterval = retryInterval; return *this; }
     SyncOptions &setStartCallback(const Callback_t &callback) { m_startCallback = callback; return *this; }
+    SyncOptions &setPrepareCallback(const Callback_t &callback) { m_prepareCallback = callback; return *this; }
     SyncOptions &setTransportAgent(const boost::shared_ptr<TransportAgent> transport)
                                   {m_transport = transport; return *this;}
 
@@ -302,6 +309,12 @@ class ClientTest {
      * synccompare.pl Perl script
      */
     static bool compare(ClientTest &client, const char *fileA, const char *fileB);
+
+    /**
+     * utility function: update a vCard or iCalendar item by inserting "MOD-" into
+     * FN, N, resp. SUMMARY; used for ClientTestConfig::update
+     */
+    static void update(std::string &item);
 
     struct ClientTestConfig config;
 
@@ -531,6 +544,11 @@ public:
     virtual std::list<std::string> insertManyItems(CreateSource createSource, int startIndex = 1, int numItems = 0, int size = -1);
 
     /**
+     * update every single item, using config.update
+     */
+    virtual void updateData(CreateSource createSource);
+
+    /**
      * create an artificial item for the current database
      *
      * @param item      item number: items with different number should be
@@ -590,8 +608,13 @@ public:
     SyncTests(const std::string &name, ClientTest &cl, std::vector<int> sourceIndices, bool isClientA = true);
     ~SyncTests();
 
-    /** adds the supported tests to the instance itself */
-    virtual void addTests();
+    /**
+     * adds the supported tests to the instance itself
+     * @param isFirstSource     the tests are getting generated for a single source,
+     *                          the one which was listed first; some tests are the
+     *                          same for all sources and should only be run once
+     */
+    virtual void addTests(bool isFirstSource = false);
 
     /** set up before running a test */
     virtual void setUp() { client.setup(); }
@@ -711,6 +734,7 @@ protected:
     virtual void testConversion();
     virtual void testItems();
     virtual void testItemsXML();
+    virtual void testExtensions();
     virtual void testAddUpdate();
 
     // test copying with maxMsg and no large object support
@@ -789,6 +813,8 @@ protected:
     virtual void testResendProxyServerUpdate();
     virtual void testResendProxyFull();
 
+    virtual void testTimeout();
+
     /**
      * implements testMaxMsg(), testLargeObject(), testLargeObjectEncoded()
      * using a sequence of items with varying sizes
@@ -858,8 +884,7 @@ public:
         m_wrappedAgent.reset();
     }
     virtual Status wait(bool noReply = false) { return m_status; }
-    virtual void setCallback (TransportCallback cb, void *udata, int interval) 
-    { return m_wrappedAgent->setCallback(cb, udata, interval);}
+    virtual void setTimeout(int seconds) { m_wrappedAgent->setTimeout(seconds); }
 };
 
 /** assert equality, include string in message if unequal */

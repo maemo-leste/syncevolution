@@ -30,3 +30,10 @@ override_dh_strip:
 
 get-orig-source: 
 	git archive --format=tar ${UPSTREAMTAG} | gzip -9 > ../${ORIG}
+
+PATCH_EXPORT_SCRIPT=/usr/share/gitpkg/hooks/quilt-patches-deb-export-hook
+export-patches:
+	[ ! -r debian/patches ] || \
+	grep "^\#*$(notdir $(PATCH_EXPORT_SCRIPT))" debian/patches/series
+	rm -rf debian/patches
+	sh $(PATCH_EXPORT_SCRIPT)

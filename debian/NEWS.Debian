@@ -1,0 +1,11 @@
+syncevolution (1.1.99.3+ds1-1) unstable; urgency=low
+
+  * This version of syncevolution introduces an irreversible change to the
+    config layout, see the --migrate option in the syncevolution man page.
+
+  * This version is only know to work with version 2.32.2 of evolution.
+    In particular, it probably won't work with the version of evolution in 
+    squeeze.
+       
+ -- David Bremner <bremner@debian.org>  Tue, 08 Mar 2011 17:01:37 -0400
+

@@ -4,7 +4,7 @@ syncevolution (1.1.99.3+ds1-1) experimental; urgency=low
   * Remove two s390 related patches, now contained in upstream 
     commit 63d76f874270cbafb2.
 
- -- David Bremner <bremner@debian.org>  Sat, 19 Feb 2011 15:02:33 -0400
+ -- David Bremner <bremner@debian.org>  Tue, 08 Mar 2011 16:05:30 -0400
 
 syncevolution (1.1+ds1-5) unstable; urgency=low
 

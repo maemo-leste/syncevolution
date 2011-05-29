@@ -2,12 +2,16 @@
  * Copyright (C) 2010 Intel Corporation
  */
 
+#include "WebDAVSource.h"
 #include "CalDAVSource.h"
 #include "CardDAVSource.h"
 #include <syncevo/SyncSource.h>
 #ifdef ENABLE_UNIT_TESTS
 #include "test.h"
 #endif
+
+#include <boost/bind.hpp>
+#include <boost/tokenizer.hpp>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -50,20 +54,32 @@ static SyncSource *createSource(const SyncSourceParams &params)
     return NULL;
 }
 
-static RegisterSyncSource registerMe("DAV",
+static class RegisterWebDAVSyncSource : public RegisterSyncSource
+{
+public:
+    RegisterWebDAVSyncSource() :
+        RegisterSyncSource("DAV",
 #ifdef ENABLE_DAV
-                                     true,
+                           true,
 #else
-                                     false,
+                           false,
 #endif
-                                     createSource,
-                                     "CalDAV\n"
-                                     "CardDAV\n"
-                                     ,
-                                     Values() +
-                                     Aliases("CalDAV")
-                                     + Aliases("CardDAV")
-                                     );
+                           createSource,
+                           "CalDAV\n"
+                           "CardDAV\n"
+                           ,
+                           Values() +
+                           Aliases("CalDAV")
+                           + Aliases("CardDAV")
+                           )
+    {
+        // configure and register our own property;
+        // do this regardless whether the backend is enabled,
+        // so that config migration always includes this property
+        WebDAVCredentialsOkay.setHidden(true);
+        SyncConfig::getRegistry().push_back(&WebDAVCredentialsOkay);
+    }
+} registerMe;
 
 #ifdef ENABLE_DAV
 #ifdef ENABLE_UNIT_TESTS
@@ -150,25 +166,122 @@ namespace {
 }
 #endif
 
-static class CalDAVTest : public RegisterSyncSourceTest {
+/**
+ * implements one specific source for local testing;
+ * creates "source-config@client-test-<server>" peer config
+ * and <type> source inside it before instantiating the
+ * source
+ */
+class WebDAVTest : public RegisterSyncSourceTest {
+    std::string m_server;
+    std::string m_type;
+    ConfigProps m_syncProps;
+
 public:
-    CalDAVTest() : RegisterSyncSourceTest("caldav_ical20", "ical20") {}
+    /**
+     * @param server      for example, "yahoo", "google"
+     * @param type        "caldav" or "carddav"
+     * @param syncProps   sync properties (username, password, syncURL, ...)
+     */
+    WebDAVTest(const std::string &server,
+               const std::string &type,
+               const ConfigProps &syncProps) :
+        RegisterSyncSourceTest(server + "_" + type, // for example, google_caldav
+                               type == "caldav" ? "ical20" :
+                               type == "carddav" ? "vcard30" :
+                               type),
+        m_server(server),
+        m_type(type),
+        m_syncProps(syncProps)
+    {}
 
     virtual void updateConfig(ClientTestConfig &config) const
     {
-        config.type = "CalDAV";
+        config.type = m_type.c_str();
+        config.createSourceA = boost::bind(&WebDAVTest::createSource, this, _3);
+        config.createSourceB = boost::bind(&WebDAVTest::createSource, this, _3);
     }
-} CalDAVTest;
 
-static class CardDAVTest : public RegisterSyncSourceTest {
-public:
-    CardDAVTest() : RegisterSyncSourceTest("carddav_vcard30", "vcard30") {}
-
-    virtual void updateConfig(ClientTestConfig &config) const
+    TestingSyncSource *createSource(bool isSourceA) const
     {
-        config.type = "CardDAV";
+        boost::shared_ptr<SyncConfig> context(new SyncConfig(string("source-config@client-test-") + m_server));
+        SyncSourceNodes nodes = context->getSyncSourceNodes(m_type,
+                                                            /* string("_") m_clientID + */
+                                                            string("_") + (isSourceA ? "A" : "B"));
+
+        // always set properties taken from the environment;
+        // TODO: "database" property (currently always uses the default)
+        nodes.getProperties()->setProperty("backend", m_type);
+        BOOST_FOREACH(const StringPair &propval, m_syncProps) {
+            boost::shared_ptr<FilterConfigNode> node = context->getNode(propval.first);
+            if (!node) {
+                SE_THROW(StringPrintf("invalid property %s=%s set in CLIENT_TEST_WEBDAV for %s %s",
+                                      propval.first.c_str(), propval.second.c_str(),
+                                      m_server.c_str(), m_type.c_str()));
+            }
+            node->setProperty(propval.first, propval.second);
+        }
+        context->flush();
+
+        SyncSourceParams params(m_type,
+                                nodes,
+                                context);
+        SyncSource *ss = SyncSource::createSource(params);
+        return static_cast<TestingSyncSource *>(ss);
     }
-} CardDAVTest;
+};
+
+
+/**
+ * creates WebDAV sources by parsing
+ * CLIENT_TEST_WEBDAV=<server> [caldav] [carddav] <prop>=<val> ...; ...
+ */
+static class WebDAVTestSingleton {
+    list< boost::shared_ptr<WebDAVTest> > m_sources;
+
+public:
+    WebDAVTestSingleton()
+    {
+        const char *env = getenv("CLIENT_TEST_WEBDAV");
+        if (!env) {
+            return;
+        }
+
+        std::string settings(env);
+        boost::char_separator<char> sep1(";");
+        boost::char_separator<char> sep2("\t ");
+        BOOST_FOREACH(const std::string &entry,
+                      boost::tokenizer< boost::char_separator<char> >(settings, boost::char_separator<char>(";"))) {
+            std::string server;
+            bool caldav = false, carddav = false;
+            ConfigProps props;
+            BOOST_FOREACH(const std::string &token,
+                          boost::tokenizer< boost::char_separator<char> >(entry, boost::char_separator<char>("\t "))) {
+                if (server.empty()) {
+                    server = token;
+                } else if (token == "caldav") {
+                    caldav = true;
+                } else if (token == "carddav") {
+                    carddav = true;
+                } else {
+                    size_t pos = token.find('=');
+                    if (pos == token.npos) {
+                        SE_THROW(StringPrintf("CLIENT_TEST_WEBDAV: unknown keyword %s", token.c_str()));
+                    }
+                    props[token.substr(0,pos)] = token.substr(pos + 1);
+                }
+            }
+            if (caldav) {
+                boost::shared_ptr<WebDAVTest> ptr(new WebDAVTest(server, "caldav", props));
+                m_sources.push_back(ptr);
+            }
+            if (carddav) {
+                boost::shared_ptr<WebDAVTest> ptr(new WebDAVTest(server, "carddav", props));
+                m_sources.push_back(ptr);
+            }
+        }
+    }
+} WebDAVTestSingleton;
 
 }
 

@@ -64,19 +64,27 @@ void CalDAVSource::listAllSubItems(SubRevisionMap_t &revisions)
         "</C:comp-filter>\n"
         "</C:filter>\n"
         "</C:calendar-query>\n";
-    string result;
-    string href, etag, data;
-    Neon::XMLParser parser;
-    parser.initReportParser(href, etag);
-    parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
-                       boost::bind(Neon::XMLParser::append, boost::ref(data), _2, _3),
-                       boost::bind(&CalDAVSource::appendItem, this,
-                                   boost::ref(revisions),
-                                   boost::ref(href), boost::ref(etag), boost::ref(data)));
-    Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
-    report.addHeader("Depth", "1");
-    report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
-    report.run();
+    Timespec deadline = createDeadline();
+    getSession()->startOperation("REPORT 'meta data'", deadline);
+    while (true) {
+        string result;
+        string href, etag, data;
+        Neon::XMLParser parser;
+        parser.initReportParser(href, etag);
+        m_cache.clear();
+        parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
+                           boost::bind(Neon::XMLParser::append, boost::ref(data), _2, _3),
+                           boost::bind(&CalDAVSource::appendItem, this,
+                                       boost::ref(revisions),
+                                       boost::ref(href), boost::ref(etag), boost::ref(data)));
+        Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
+        report.addHeader("Depth", "1");
+        report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
+        if (report.run()) {
+            break;
+        }
+    }
+
     m_cache.m_initialized = true;
 }
 
@@ -600,17 +608,23 @@ CalDAVSource::Event &CalDAVSource::loadItem(Event &event)
                                  "</C:filter>\n"
                                  "</C:calendar-query>\n",
                                  event.m_UID.c_str());
-                string result;
-                string href, etag;
-                Neon::XMLParser parser;
-                parser.initReportParser(href, etag);
-                item = "";
-                parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
-                                   boost::bind(Neon::XMLParser::append, boost::ref(item), _2, _3));
-                Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
-                report.addHeader("Depth", "1");
-                report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
-                report.run();
+                Timespec deadline = createDeadline();
+                getSession()->startOperation("REPORT 'single item'", deadline);
+                while (true) {
+                    string result;
+                    string href, etag;
+                    Neon::XMLParser parser;
+                    parser.initReportParser(href, etag);
+                    item = "";
+                    parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
+                                       boost::bind(Neon::XMLParser::append, boost::ref(item), _2, _3));
+                    Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
+                    report.addHeader("Depth", "1");
+                    report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
+                    if (report.run()) {
+                        break;
+                    }
+                }
 #endif
             } else {
                 throw;
@@ -759,10 +773,17 @@ void CalDAVSource::backupData(const SyncSource::Operations::ConstBackupInfo &old
                        boost::bind(&CalDAVSource::backupItem, this,
                                    boost::ref(cache),
                                    boost::ref(href), boost::ref(etag), boost::ref(data)));
-    Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
-    report.addHeader("Depth", "1");
-    report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
-    report.run();
+    Timespec deadline = createDeadline();
+    getSession()->startOperation("REPORT 'full calendar'", deadline);
+    while (true) {
+        Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
+        report.addHeader("Depth", "1");
+        report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
+        if (report.run()) {
+            break;
+        }
+        cache.reset();
+    }
     cache.finalize(backupReport);
 }
 

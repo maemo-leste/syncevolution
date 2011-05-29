@@ -22,6 +22,7 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/function.hpp>
 
+#include <syncevo/util.h>
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
@@ -66,6 +67,17 @@ class Settings {
                                 std::string &password) = 0;
 
     /**
+     * Google returns a 401 error even if the credentials
+     * are valid. It seems to use that to throttle request
+     * rates. This read/write setting remembers whether the
+     * credentials were used successfully in the past,
+     * in which case we try harder to get a failed request
+     * executed. Otherwise we give up immediately.
+     */
+    virtual bool getCredentialsOkay() = 0;
+    virtual void setCredentialsOkay(bool okay) = 0;
+
+    /**
      * standard SyncEvolution log level, see
      * Session::Session() how that is mapped to neon debugging
      */
@@ -95,6 +107,12 @@ class Settings {
      * fails with a timeout error; <= 0 picks a large default value
      */
     virtual int timeoutSeconds() const = 0;
+
+    /**
+     * for network operations which fail before reaching timeoutSeconds()
+     * and can/should be retried: try again if > 0
+     */
+    virtual int retrySeconds() const = 0;
 
     /**
      * use this to create a boost_shared pointer for a
@@ -170,6 +188,28 @@ class Session {
     Session(const boost::shared_ptr<Settings> &settings);
     static boost::shared_ptr<Session> m_cachedSession;
 
+    bool m_forceAuthorizationOnce;
+    std::string m_forceUsername, m_forcePassword;
+
+    /**
+     * Remember whether a request was sent with credentials.
+     * If the request succeeds, we assume that the credentials
+     * were okay. A bit fuzzy because forcing authorization
+     * might succeed despite invalid credentials if the
+     * server doesn't check them.
+     */
+    bool m_credentialsSent;
+
+    /**
+     * current operation; used for debugging output
+     */
+    string m_operation;
+
+    /**
+     * current deadline for operation
+     */
+    Timespec m_deadline;
+
  public:
     /**
      * Create or reuse Session instance.
@@ -199,13 +239,21 @@ class Session {
 
     /** ne_simple_propfind(): invoke callback for each URI */
     void propfindURI(const std::string &path, int depth,
-                  const ne_propname *props,
-                  const PropfindURICallback_t &callback);
+                     const ne_propname *props,
+                     const PropfindURICallback_t &callback,
+                     const Timespec &deadline);
 
-    /** ne_simple_propfind(): invoke callback for each property of each URI */
+    /**
+     * ne_simple_propfind(): invoke callback for each property of each URI
+     * @param deadline      stop resending after that point in time,
+     *                      zero disables resending
+     * @param retrySeconds  number of seconds to wait between resending,
+     *                      must not be negative
+     */
     void propfindProp(const std::string &path, int depth,
                       const ne_propname *props,
-                      const PropfindPropCallback_t &callback);
+                      const PropfindPropCallback_t &callback,
+                      const Timespec &deadline);
 
     /** URL which is in use */
     std::string getURL() const { return m_uri.toURL(); }
@@ -214,21 +262,48 @@ class Session {
     const URI &getURI() const { return m_uri; }
 
     /**
+     * to be called *once* before executing a request
+     * or retrying it
+     *
+     * call sequence is this:
+     * - startOperation()
+     * - repeat until success or final failure: create request, run(), check()
+     *
+     * @param operation    internal descriptor for debugging (for example, PROPFIND)
+     * @param deadline     time at which the operation must be completed, otherwise it'll be considered failed;
+     *                     empty if the operation is only meant to be attempted once
+     */
+    void startOperation(const string &operation, const Timespec &deadline);
+
+    /**
      * to be called after each operation which might have produced debugging output by neon;
      * automatically called by check()
      */
     void flush();
 
-    /** throw error if error code indicates failure */
-    void check(int error);
+    /**
+     * throw error if error code indicates failure;
+     * pass additional status code from a request whenever possible
+     *
+     * @param error      return code from Neon API call
+     * @param code       HTTP status code
+     * @param status     optional ne_status pointer, non-NULL for all requests
+     * @param location   optional "Location" header value
+     *
+     * @return true for success, false if retry needed (only if deadline not empty);
+     *         errors reported via exceptions
+     */ 
+    bool check(int error, int code = 0, const ne_status *status = NULL,
+               const string &location = "");
 
     ne_session *getSession() const { return m_session; }
 
     /**
-     * time when last successul request completed, must be maintained by Request::run()
+     * force next request in this session to have Basic authorization
+     * with the given username/password (which may be invalid to
+     * trigger real authorization)
      */
-    time_t getLastRequestEnd() const { return m_lastRequestEnd; }
-    void setLastRequestEnd(time_t end) { m_lastRequestEnd = end; }
+    void forceAuthorization(const std::string &username, const std::string &password);
 
  private:
     boost::shared_ptr<Settings> m_settings;
@@ -236,7 +311,10 @@ class Session {
     ne_session *m_session;
     URI m_uri;
     std::string m_proxyURL;
-    time_t m_lastRequestEnd;
+    /** time when last successul request completed, maintained by check() */
+    Timespec m_lastRequestEnd;
+    /** number of times a request was sent, maintained by startOperation(), the credentials callback, and check() */
+    int m_attempt;
 
     /** ne_set_server_auth() callback */
     static int getCredentials(void *userdata, const char *realm, int attempt, char *username, char *password) throw();
@@ -260,6 +338,11 @@ class Session {
 
     // use pointers here, g++ 4.2.3 has issues with references (which was used before)
     typedef std::pair<const URI *, const PropfindPropCallback_t *> PropIteratorUserdata_t;
+
+    /** Neon callback for preSend() */
+    static void preSendHook(ne_request *req, void *userdata, ne_buffer *header) throw();
+    /** implements forced Basic authentication, if requested */
+    void preSend(ne_request *req, ne_buffer *header);
 };
 
 /**
@@ -389,7 +472,16 @@ class Request
     void addHeader(const std::string &name, const std::string &value) {
         ne_add_request_header(m_req, name.c_str(), value.c_str());
     }
-    void run();
+
+    /**
+     * Execute the request. May only be called once per request. Uses
+     * Session::check() underneath to detect fatal errors and throw
+     * exceptions.
+     *
+     * @return result of Session::check()
+     */
+    bool run();
+
     std::string getResponseHeader(const std::string &name) {
         const char *value = ne_get_response_header(m_req, name.c_str());
         return value ? value : "";
@@ -398,6 +490,11 @@ class Request
     const ne_status *getStatus() { return ne_get_status(m_req); }
 
  private:
+    // buffers for string (copied by ne_request_create(),
+    // but due to a bug in neon, our method string is still used
+    // for credentials)
+    std::string m_method;
+
     Session &m_session;
     ne_request *m_req;
     std::string *m_result;
@@ -407,7 +504,32 @@ class Request
     static int addResultData(void *userdata, const char *buf, size_t len);
 
     /** throw error if error code *or* current status indicates failure */
-    void check(int error);
+    bool check(int error);
+};
+
+/** thrown for 301 HTTP status */
+class RedirectException : public TransportException
+{
+    const int m_code;
+    const std::string m_url;
+
+ public:
+    RedirectException(const std::string &file,
+                      int line,
+                      const std::string &what,
+                      int code,
+                      const std::string &url) :
+    TransportException(file, line, what),
+    m_code(code),
+    m_url(url)
+    {}
+    ~RedirectException() throw() {}
+
+    /** returns exact HTTP status code (301, 302, ...) */
+    int getCode() const { return m_code; }
+
+    /** returns URL to where the request was redirected */
+    std::string getLocation() const { return m_url; }
 };
 
 }

@@ -7,13 +7,19 @@
 
 #include <config.h>
 
+#include <syncevo/SyncConfig.h>
+
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
+extern BoolConfigProperty WebDAVCredentialsOkay;
+SE_END_CXX
+
 #ifdef ENABLE_DAV
 
 #include <syncevo/TrackingSyncSource.h>
 #include <boost/noncopyable.hpp>
 #include "NeonCXX.h"
 
-#include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
 class ContextSettings;
@@ -76,7 +82,14 @@ class WebDAVSource : public TrackingSyncSource, private boost::noncopyable
      */
     std::string ETag2Rev(const std::string &etag);
 
- protected:
+    /**
+     * Calculates the time after which the next operation is
+     * expected to complete before giving up, based on
+     * current time and retry settings.
+     * @return absolute time, empty if no retrying allowed
+     */
+    Timespec createDeadline() const;
+
     // access to neon session and calendar, valid between open() and close()
     boost::shared_ptr<Neon::Session> getSession() { return m_session; }
     Neon::URI &getCalendar() { return m_calendar; }
@@ -140,6 +153,9 @@ class WebDAVSource : public TrackingSyncSource, private boost::noncopyable
     /** information about certain paths (path->property->value)*/
     typedef std::map<std::string, std::map<std::string, std::string> > Props_t;
     Props_t m_davProps;
+
+    /** extract value from first <DAV:href>value</DAV:href>, empty string if not inside propval */
+    std::string extractHREF(const std::string &propval);
 
     void openPropCallback(const Neon::URI &uri,
                           const ne_propname *prop,

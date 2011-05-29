@@ -103,6 +103,9 @@ class Action:
         """
         raise Exception("not implemented")
 
+    def nop(self):
+         pass
+
     def tryexecution(self, step, logs):
         """wrapper around execute which handles exceptions, directories and stdout"""
         if logs:
@@ -176,10 +179,10 @@ class Context:
     def runCommand(self, cmd):
         """Log and run the given command, throwing an exception if it fails."""
         if "valgrindcheck.sh" in cmd:
-            print "*** ( cd %s; env VALGRIND_LOG='%s' VALGRIND_ARGS='%s' %s )" % \
-                (os.getcwd(), os.getenv("VALGRIND_LOG", ""), os.getenv("VALGRIND_ARGS", ""), cmd)
+            print "*** ( cd %s; env VALGRIND_LOG='%s' VALGRIND_ARGS='%s' CLIENT_TEST_WEBDAV='%s' %s )" % \
+                (os.getcwd(), os.getenv("VALGRIND_LOG", ""), os.getenv("VALGRIND_ARGS", ""), os.getenv("CLIENT_TEST_WEBDAV", ""), cmd)
         else:
-            print "*** ( cd %s; %s )" % (os.getcwd(), cmd)
+            print "*** ( cd %s; env CLIENT_TEST_WEBDAV='%s' %s )" % (os.getcwd(), os.getenv("CLIENT_TEST_WEBDAV", ""), cmd)
         sys.stdout.flush()
         result = os.system(cmd)
         if result != 0:
@@ -444,19 +447,25 @@ class SyncEvolutionTest(Action):
         resdir = os.getcwd()
         os.chdir(self.srcdir)
         # clear previous test results
-        context.runCommand("%s testclean" % context.make)
+        context.runCommand("%s %s testclean" % (self.runner, context.make))
         try:
             if context.setupcmd:
                 cmd = "%s %s %s %s ./syncevolution" % (self.testenv, self.runner, context.setupcmd, self.name)
-                context.runCommand("%s || sleep 5 && %s" % (cmd, cmd))
+                context.runCommand("%s || ( sleep 5 && %s )" % (cmd, cmd))
             backenddir = os.path.join(context.tmpdir, "install/usr/lib/syncevolution/backends")
+            confdir = os.path.join(context.workdir, "syncevolution/src/syncevo/configs")
+            templatedir = os.path.join(context.workdir, "syncevolution/src/templates")
             if not os.access(backenddir, os.F_OK):
                 # try relative to client-test inside the current directory
                 backenddir = "backends"
-            basecmd = "CLIENT_TEST_SERVER=%s CLIENT_TEST_SOURCES=%s %s SYNCEVOLUTION_BACKEND_DIR=%s SYNC_EVOLUTION_EVO_CALENDAR_DELAY=1 CLIENT_TEST_ALARM=1200 CLIENT_TEST_LOG=%s CLIENT_TEST_EVOLUTION_PREFIX=file://%s/databases %s env LD_LIBRARY_PATH=build-synthesis/src/.libs %s ./client-test" % (self.serverName, ",".join(self.sources), self.testenv, backenddir, self.serverlogs, context.workdir, self.runner, self.testPrefix);
-            if self.tests:
+            basecmd = "http_proxy= CLIENT_TEST_SERVER=%s CLIENT_TEST_SOURCES=%s %s SYNCEVOLUTION_TEMPLATE_DIR=%s SYNCEVOLUTION_XML_CONFIG_DIR=%s SYNCEVOLUTION_BACKEND_DIR=%s SYNC_EVOLUTION_EVO_CALENDAR_DELAY=1 CLIENT_TEST_ALARM=1200 CLIENT_TEST_LOG=%s CLIENT_TEST_EVOLUTION_PREFIX=file://%s/databases %s env LD_LIBRARY_PATH=build-synthesis/src/.libs PATH=backends/webdav:$PATH %s ./client-test" % (self.serverName, ",".join(self.sources), self.testenv, templatedir, confdir, backenddir, self.serverlogs, context.workdir, self.runner, self.testPrefix);
+            enabled = context.enabled.get(self.name)
+            if not enabled:
+                enabled = self.tests
+            enabled = re.split("[ ,]", enabled.strip()) 
+            if enabled:
                 tests = []
-                for test in self.tests:
+                for test in enabled:
                     if test == "Client::Sync" and context.sanitychecks:
                         # Replace with one simpler, faster testItems test, but be careful to
                         # pick an enabled source and the right mode (XML vs. WBXML).
@@ -482,8 +491,8 @@ class SyncEvolutionTest(Action):
 
 parser = optparse.OptionParser()
 parser.add_option("-e", "--enable",
-                  action="append", type="string", dest="enabled",
-                  help="use this to enable specific actions instead of executing all of them (can be used multiple times)")
+                  action="append", type="string", dest="enabled", default=[],
+                  help="use this to enable specific actions instead of executing all of them (can be used multiple times and accepts enable=test1,test2 test3,... test lists)")
 parser.add_option("-n", "--no-logs",
                   action="store_true", dest="nologs",
                   help="print to stdout/stderr directly instead of redirecting into log files")
@@ -561,8 +570,8 @@ parser.add_option("", "--evosvn",
                   action="append", type="string", dest="evosvn", default=[],
                   help="<name>=<path>: compiles Evolution from source under a short name, using Paul Smith's Makefile and config as found in <path>")
 parser.add_option("", "--prebuilt",
-                  action="append", type="string", dest="prebuilt", default=[],
-                  help="a directory where SyncEvolution was build before: enables testing using those binaries (can be used multiple times)")
+                  action="store", type="string", dest="prebuilt", default=None,
+                  help="a directory where SyncEvolution was build before: enables testing using those binaries (can be used once, instead of compiling)")
 parser.add_option("", "--setup-command",
                   type="string", dest="setupcmd",
                   help="invoked with <test name> <args to start syncevolution>, should setup local account for the test")
@@ -586,7 +595,6 @@ for option in options.enabled:
         enabled[l[0]] = l[1]
     else:
         enabled[option] = None
-localtests = enabled.get("evolution", "Client::Source SyncEvolution").split(" ")
 
 context = Context(options.tmpdir, options.resultdir, options.uri, options.workdir,
                   options.subject, options.sender, options.recipients, options.mailhost,
@@ -629,18 +637,6 @@ for evosvn in options.evosvn:
                     "SUDO=true")
     context.add(evosvn)
 
-for prebuilt in options.prebuilt:
-    pre = Action("")
-    pre.builddir = prebuilt
-    if prebuilt:
-        context.add(SyncEvolutionTest("evolution-prebuilt-" + os.path.basename(prebuilt), pre,
-                                      "", options.shell,
-                                      localtests,
-                                      [],
-                                      testPrefix=options.testprefix))
-        if "evolution" in enabled:
-            del enabled["evolution"]
-
 class SyncEvolutionCheckout(GitCheckout):
     def __init__(self, name, revision):
         """checkout SyncEvolution"""
@@ -674,11 +670,20 @@ if options.synthesistag:
     synthesis_source = "--with-synthesis-src=%s" % libsynthesis.basedir
 else:
     synthesis_source = ""
-compile = SyncEvolutionBuild("compile",
-                             sync.basedir,
-                             "%s %s" % (options.configure, synthesis_source),
-                             options.shell,
-                             [ libsynthesis.name, sync.name ])
+
+# determine where binaries come from:
+# either compile anew or prebuilt
+if options.prebuilt:
+    compile = Action("compile")
+    compile.builddir = options.prebuilt
+    compile.status = compile.DONE
+    compile.execute = compile.nop
+else:
+    compile = SyncEvolutionBuild("compile",
+                                 sync.basedir,
+                                 "%s %s" % (options.configure, synthesis_source),
+                                 options.shell,
+                                 [ libsynthesis.name, sync.name ])
 context.add(compile)
 
 class SyncEvolutionCross(AutotoolsBuild):
@@ -737,14 +742,51 @@ context.add(dist)
 
 evolutiontest = SyncEvolutionTest("evolution", compile,
                                   "", options.shell,
-                                  localtests,
+                                  "Client::Source SyncEvolution",
                                   [],
                                   testPrefix=options.testprefix)
 context.add(evolutiontest)
 
+test = SyncEvolutionTest("googlecalendar", compile,
+                         "", options.shell,
+                         "Client::Source::google_caldav Client::Sync::ical20::testItems",
+                         [ "google_caldav", "vcard30" ],
+                         "CLIENT_TEST_WEBDAV='google caldav' "
+                         "CLIENT_TEST_NUM_ITEMS=10 " # don't stress server
+                         "CLIENT_TEST_SIMPLE_UID=1 " # server gets confused by UID with special characters
+                         "CLIENT_TEST_UNIQUE_UID=1 " # server keeps backups and restores old data unless UID is unieque
+                         "CLIENT_TEST_MODE=server " # for Client::Sync
+                         ,
+                         testPrefix=options.testprefix)
+context.add(test)
+
+test = SyncEvolutionTest("yahoo", compile,
+                         "", options.shell,
+                         "Client::Source::yahoo_caldav Client::Source::yahoo_carddav Client::Sync::vcard30::testItems Client::Sync::ical20::testItems",
+                         [ "yahoo_caldav", "yahoo_carddav", "ical20", "vcard30" ],
+                         "CLIENT_TEST_WEBDAV='yahoo caldav carddav' "
+                         "CLIENT_TEST_NUM_ITEMS=10 " # don't stress server
+                         "CLIENT_TEST_SIMPLE_UID=1 " # server gets confused by UID with special characters
+                         "CLIENT_TEST_MODE=server " # for Client::Sync
+                         ,
+                         testPrefix=options.testprefix)
+context.add(test)
+
+test = SyncEvolutionTest("apple", compile,
+                         "", options.shell,
+                         "Client::Source::apple_caldav Client::Source::apple_carddav Client::Sync::ical20 Client::Sync::vcard30",
+                         [ "apple_caldav", "apple_carddav", "ical20", "vcard30" ],
+                         "CLIENT_TEST_WEBDAV='apple caldav carddav' "
+                         "CLIENT_TEST_NUM_ITEMS=1000 " # test is local, so we can afford a higher number
+                         "CLIENT_TEST_SIMPLE_UID=1 " # server gets confused by UID with special characters
+                         "CLIENT_TEST_MODE=server " # for Client::Sync
+                         ,
+                         testPrefix=options.testprefix)
+context.add(test)
+
 scheduleworldtest = SyncEvolutionTest("scheduleworld", compile,
                                       "", options.shell,
-                                      [ "Client::Sync" ],
+                                      "Client::Sync",
                                       [ "vcard30",
                                         "ical20",
                                         "itodo20",
@@ -780,16 +822,16 @@ context.add(scheduleworldtest)
 
 egroupwaretest = SyncEvolutionTest("egroupware", compile,
                                    "", options.shell,
-                                   [ "Client::Sync::vcard21",
-                                     "Client::Sync::ical20::testCopy",
-                                     "Client::Sync::ical20::testUpdate",
-                                     "Client::Sync::ical20::testDelete",
-                                     "Client::Sync::vcard21_ical20::testCopy",
-                                     "Client::Sync::vcard21_ical20::testUpdate",
-                                     "Client::Sync::vcard21_ical20::testDelete",
-                                     "Client::Sync::ical20_vcard21::testCopy",
-                                     "Client::Sync::ical20_vcard21::testUpdate",
-                                     "Client::Sync::ical20_vcard21::testDelete"  ],
+                                   "Client::Sync::vcard21 "
+                                   "Client::Sync::ical20::testCopy "
+                                   "Client::Sync::ical20::testUpdate "
+                                   "Client::Sync::ical20::testDelete "
+                                   "Client::Sync::vcard21_ical20::testCopy "
+                                   "Client::Sync::vcard21_ical20::testUpdate "
+                                   "Client::Sync::vcard21_ical20::testDelete "
+                                   "Client::Sync::ical20_vcard21::testCopy "
+                                   "Client::Sync::ical20_vcard21::testUpdate "
+                                   "Client::Sync::ical20_vcard21::testDelete ",
                                    [ "vcard21",
                                      "ical20" ],
                                    # ContactSync::testRefreshFromServerSync,ContactSync::testRefreshFromClientSync,ContactSync::testDeleteAllRefresh,ContactSync::testRefreshSemantic,ContactSync::testRefreshStatus - refresh-from-client not supported by server
@@ -824,7 +866,7 @@ class SynthesisTest(SyncEvolutionTest):
     def __init__(self, name, build, synthesisdir, runner, testPrefix):
         SyncEvolutionTest.__init__(self, name, build, "", # os.path.join(synthesisdir, "logs")
                                    runner,
-                                   [ "Client::Sync" ],
+                                   "Client::Sync",
                                    [ "vcard21",
                                      "text" ],
                                    "CLIENT_TEST_SKIP="
@@ -876,7 +918,7 @@ class FunambolTest(SyncEvolutionTest):
             serverlogs = ""
         SyncEvolutionTest.__init__(self, name, build, serverlogs,
                                    runner,
-                                   [ "Client::Sync" ],
+                                   "Client::Sync",
                                    [ "vcard21",
                                      "ical20",
                                      "itodo20",
@@ -934,7 +976,7 @@ context.add(funambol)
 
 zybtest = SyncEvolutionTest("zyb", compile,
                             "", options.shell,
-                            [ "Client::Sync" ],
+                            "Client::Sync",
                             [ "vcard21" ],
                             "CLIENT_TEST_NUM_ITEMS=10 "
                             "CLIENT_TEST_SKIP="
@@ -948,7 +990,7 @@ context.add(zybtest)
 
 googletest = SyncEvolutionTest("google", compile,
                                "", options.shell,
-                               [ "Client::Sync" ],
+                               "Client::Sync",
                                [ "vcard21" ],
                                "CLIENT_TEST_NUM_ITEMS=10 "
                                "CLIENT_TEST_XML=0 "
@@ -970,7 +1012,7 @@ context.add(googletest)
 
 mobicaltest = SyncEvolutionTest("mobical", compile,
                                 "", options.shell,
-                                [ "Client::Sync" ],
+                                "Client::Sync",
                                 [ "vcard21",
                                   "ical20",
                                   "itodo20",
@@ -1047,7 +1089,7 @@ context.add(mobicaltest)
 
 memotootest = SyncEvolutionTest("memotoo", compile,
                                 "", options.shell,
-                                [ "Client::Sync" ],
+                                "Client::Sync",
                                 [ "vcard30",
                                   "ical20",
                                   "itodo20",
@@ -1105,7 +1147,7 @@ context.add(memotootest)
 
 ovitest = SyncEvolutionTest("ovi", compile,
                                 "", options.shell,
-                                [ "Client::Sync" ],
+                                "Client::Sync",
                                 [ "vcard30",
                                   "calendar+todo" ],
                                 "CLIENT_TEST_DELETE_REFRESH=1 "

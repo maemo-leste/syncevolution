@@ -186,6 +186,8 @@ void SyncContext::init()
     m_dryrun = false;
     m_localSync = false;
     m_serverMode = false;
+    m_serverAlerted = false;
+    m_configNeeded = true;
     m_firstSourceAccess = true;
     m_remoteInitiated = false;
     m_sourceListPtr = NULL;
@@ -1594,6 +1596,17 @@ void SyncContext::displaySourceProgress(sysync::TProgressEventEnum type,
                 switch (extra3) {
                 case 0:
                     mode = SYNC_TWO_WAY;
+                    if (m_serverMode &&
+                        m_serverAlerted &&
+                        source.getSync() == "one-way-from-server") {
+                        // As in the slow/refresh-from-server case below,
+                        // pretending to do a two-way incremental sync
+                        // is a correct way of executing the requested
+                        // one-way sync, as long as the client doesn't
+                        // send any of its own changes. The Synthesis
+                        // engine does that.
+                        mode = SYNC_ONE_WAY_FROM_SERVER;
+                    }
                     break;
                 case 1:
                     mode = SYNC_ONE_WAY_FROM_SERVER;
@@ -1608,6 +1621,16 @@ void SyncContext::displaySourceProgress(sysync::TProgressEventEnum type,
                 switch (extra3) {
                 case 0:
                     mode = SYNC_SLOW;
+                    if (m_serverMode &&
+                        m_serverAlerted &&
+                        source.getSync() == "refresh-from-server") {
+                        // We run as server and told the client to refresh
+                        // its data. A slow sync is how some clients (the
+                        // Synthesis engine included) execute that sync mode;
+                        // let's be optimistic and assume that the client
+                        // did as it was told and deleted its data.
+                        mode = SYNC_REFRESH_FROM_SERVER;
+                    }
                     break;
                 case 1:
                     mode = SYNC_REFRESH_FROM_SERVER;
@@ -1689,7 +1712,7 @@ void SyncContext::displaySourceProgress(sysync::TProgressEventEnum type,
         switch (extra1) {
         case 401:
             // TODO: reset cached password
-            SE_LOG_INFO(NULL, NULL, "authorization failed, check username '%s' and password", getUsername().c_str());
+            SE_LOG_INFO(NULL, NULL, "authorization failed, check username '%s' and password", getSyncUsername().c_str());
             break;
         case 403:
             SE_LOG_INFO(&source, NULL, "log in succeeded, but server refuses access - contact server operator");
@@ -1698,7 +1721,7 @@ void SyncContext::displaySourceProgress(sysync::TProgressEventEnum type,
             SE_LOG_INFO(NULL, NULL, "proxy authorization failed, check proxy username and password");
             break;
         case 404:
-            SE_LOG_INFO(&source, NULL, "server database not found, check URI '%s'", source.getURI().c_str());
+            SE_LOG_INFO(&source, NULL, "server database not found, check URI '%s'", source.getURINonEmpty().c_str());
             break;
         case 0:
             break;
@@ -1733,10 +1756,10 @@ void SyncContext::displaySourceProgress(sysync::TProgressEventEnum type,
                            SyncSource::ITEM_TOTAL,
                            // Synthesis engine doesn't count locally
                            // deleted items during
-                           // refresh-from-server. That's a matter of
+                           // refresh-from-server/client. That's a matter of
                            // taste. In SyncEvolution we'd like these
                            // items to show up, so add it here.
-                           source.getFinalSyncMode() == SYNC_REFRESH_FROM_SERVER ? 
+                           source.getFinalSyncMode() == (m_serverMode ? SYNC_REFRESH_FROM_CLIENT : SYNC_REFRESH_FROM_SERVER) ? 
                            source.getNumDeleted() :
                            extra3);
         break;
@@ -1958,7 +1981,7 @@ void SyncContext::initSources(SourceList &sourceList)
                     // must set special URI for clients so that
                     // engine knows about superdatastore and its
                     // URI
-                    vFilter["uri"] = string("<") + vSource->getName() + ">" + vSource->getURI();
+                    vFilter["uri"] = string("<") + vSource->getName() + ">" + vSource->getURINonEmpty();
                 }
                 BOOST_FOREACH (std::string source, mappedSources) {
                     setConfigFilter (false, source, vFilter);
@@ -2580,8 +2603,8 @@ void SyncContext::getConfigXML(string &xml, string &configname)
     substTag(xml, "maxmsgsize", std::max(getMaxMsgSize(), 10000ul));
     substTag(xml, "maxobjsize", std::max(getMaxObjSize(), 1024u));
     if (m_serverMode) {
-        const string user = getUsername();
-        const string password = getPassword();
+        const string user = getSyncUsername();
+        const string password = getSyncPassword();
 
         /*
          * Do not check username/pwd if this local sync or over
@@ -2792,14 +2815,20 @@ void SyncContext::setStableRelease(bool isStableRelease)
     IsStableRelease = isStableRelease;
 }
 
+void SyncContext::checkConfig() const
+{
+    if (isConfigNeeded() &&
+        !exists()) {
+        SE_LOG_ERROR(NULL, NULL, "No configuration for server \"%s\" found.", m_server.c_str());
+        throwError("cannot proceed without configuration");
+    }
+}
+
 SyncMLStatus SyncContext::sync(SyncReport *report)
 {
     SyncMLStatus status = STATUS_OK;
 
-    if (!exists()) {
-        SE_LOG_ERROR(NULL, NULL, "No configuration for server \"%s\" found.", m_server.c_str());
-        throwError("cannot proceed without configuration");
-    }
+    checkConfig();
 
     // redirect logging as soon as possible
     SourceList sourceList(*this, m_doLogging);
@@ -2853,7 +2882,7 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
 
         try {
             // dump some summary information at the beginning of the log
-            SE_LOG_DEV(NULL, NULL, "SyncML server account: %s", getUsername().c_str());
+            SE_LOG_DEV(NULL, NULL, "SyncML server account: %s", getSyncUsername().c_str());
             SE_LOG_DEV(NULL, NULL, "client: SyncEvolution %s for %s", getSwv().c_str(), getDevType().c_str());
             SE_LOG_DEV(NULL, NULL, "device ID: %s", getDevID().c_str());
             SE_LOG_DEV(NULL, NULL, "%s", EDSAbiWrapperDebug());
@@ -2960,7 +2989,7 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
             SyncReport childReport;
             agent->getClientSyncReport(childReport);
             BOOST_FOREACH(SyncSource *source, sourceList) {
-                const SyncSourceReport *childSourceReport = childReport.findSyncSourceReport(source->getURI());
+                const SyncSourceReport *childSourceReport = childReport.findSyncSourceReport(source->getURINonEmpty());
                 if (childSourceReport) {
                     SyncMLStatus parentSourceStatus = source->getStatus();
                     SyncMLStatus childSourceStatus = childSourceReport->getStatus();
@@ -2993,7 +3022,7 @@ bool SyncContext::sendSAN(uint16_t version)
     bool legacy = version < 12;
     /* Should be nonce sent by the server in the preceeding sync session */
     string nonce = "SyncEvolution";
-    string uauthb64 = san.B64_H (getUsername(), getPassword());
+    string uauthb64 = san.B64_H (getSyncUsername(), getSyncPassword());
     /* Client is expected to conduct the sync in the backgroud */
     sysync::UI_Mode mode = sysync::UI_not_specified;
 
@@ -3002,6 +3031,12 @@ bool SyncContext::sendSAN(uint16_t version)
     if(serverId.empty()) {
         serverId = getDevID();
     }
+    SE_LOG_DEBUG(NULL, NULL, "starting SAN %u auth %s nonce %s session %u server %s",
+                 version,
+                 uauthb64.c_str(),
+                 nonce.c_str(),
+                 sessionId,
+                 serverId.c_str());
     san.PreparePackage( uauthb64, nonce, version, mode, 
             sysync::Initiator_Server, sessionId, serverId);
 
@@ -3046,7 +3081,7 @@ bool SyncContext::sendSAN(uint16_t version)
         }
         syncMode = mode;
         hasSource = true;
-        string uri = sc->getURI();
+        string uri = sc->getURINonEmpty();
 
         SourceType sourceType = sc->getSourceType();
         /*If the type is not set by user explictly, let's use backend default
@@ -3062,11 +3097,21 @@ bool SyncContext::sendSAN(uint16_t version)
                 contentTypeB = 0;
                 SE_LOG_DEBUG (NULL, NULL, "Unknown datasource mimetype, use 0 as default");
             }
+            SE_LOG_DEBUG(NULL, NULL, "SAN source %s uri %s type %u mode %d",
+                         name.c_str(),
+                         uri.c_str(),
+                         contentTypeB,
+                         mode);
             if ( san.AddSync(mode, (uInt32) contentTypeB, uri.c_str())) {
                 SE_LOG_ERROR(NULL, NULL, "SAN: adding server alerted sync element failed");
             };
         } else {
-            alertedSources.push_back (std::make_pair (GetLegacyMIMEType (sourceType.m_format, sourceType.m_forceFormat), uri));
+            string mimetype = GetLegacyMIMEType(sourceType.m_format, sourceType.m_forceFormat);
+            SE_LOG_DEBUG(NULL, NULL, "SAN source %s uri %s type %s",
+                         name.c_str(),
+                         uri.c_str(),
+                         mimetype.c_str());
+            alertedSources.push_back(std::make_pair(mimetype, uri));
         }
     }
 
@@ -3084,6 +3129,7 @@ bool SyncContext::sendSAN(uint16_t version)
         }
         //TODO log the binary SAN content
     } else {
+        SE_LOG_DEBUG(NULL, NULL, "SAN with overall sync mode %d", syncMode);
         if (san.GetPackageLegacy(buffer, sanSize, alertedSources, syncMode, getWBXML())){
             SE_LOG_ERROR (NULL, NULL, "SAN package generating failed");
             return false;
@@ -3093,6 +3139,7 @@ bool SyncContext::sendSAN(uint16_t version)
 
     m_agent = createTransportAgent();
     SE_LOG_INFO (NULL, NULL, "Server sending SAN");
+    m_serverAlerted = true;
     m_agent->setContentType(!legacy ? 
                            TransportAgent::m_contentTypeServerAlertedNotificationDS
                            : (getWBXML() ? TransportAgent::m_contentTypeSyncWBXML :
@@ -3245,8 +3292,8 @@ SyncMLStatus SyncContext::doSync()
         }
          
         m_engine.SetStrValue(profile, "serverURI", getUsedSyncURL());
-        m_engine.SetStrValue(profile, "serverUser", getUsername());
-        m_engine.SetStrValue(profile, "serverPassword", getPassword());
+        m_engine.SetStrValue(profile, "serverUser", getSyncUsername());
+        m_engine.SetStrValue(profile, "serverPassword", getSyncPassword());
         m_engine.SetInt32Value(profile, "encoding",
                                getWBXML() ? 1 /* WBXML */ : 2 /* XML */);
 
@@ -3290,10 +3337,7 @@ SyncMLStatus SyncContext::doSync()
                 m_engine.SetInt32Value(target, "forceslow", slow);
                 m_engine.SetInt32Value(target, "syncmode", direction);
 
-                string uri = source->getURI();
-                if (uri.empty()) {
-                    source->throwError("uri not configured");
-                }
+                string uri = source->getURINonEmpty();
                 m_engine.SetStrValue(target, "remotepath", uri);
             } else {
                 m_engine.SetInt32Value(target, "enabled", 0);
@@ -3320,6 +3364,11 @@ SyncMLStatus SyncContext::doSync()
     //Create the transport agent if not already created
     if(!m_agent) {
         m_agent = createTransportAgent();
+    }
+
+    // server in local sync initiates sync by passing data to forked process
+    if (m_serverMode && m_localSync) {
+        m_serverAlerted = true;
     }
 
     sysync::TEngineProgressInfo progressInfo;
@@ -3750,10 +3799,7 @@ SyncMLStatus SyncContext::handleException()
 
 void SyncContext::status()
 {
-    if (!exists()) {
-        SE_LOG_ERROR(NULL, NULL, "No configuration for server \"%s\" found.", m_server.c_str());
-        throwError("cannot proceed without configuration");
-    }
+    checkConfig();
 
     SourceList sourceList(*this, false);
     initSources(sourceList);
@@ -3806,10 +3852,7 @@ void SyncContext::status()
 
 void SyncContext::checkStatus(SyncReport &report)
 {
-    if (!exists()) {
-        SE_LOG_ERROR(NULL, NULL, "No configuration for server \"%s\" found.", m_server.c_str());
-        throwError("cannot proceed without configuration");
-    }
+    checkConfig();
 
     SourceList sourceList(*this, false);
     initSources(sourceList);
@@ -3899,10 +3942,7 @@ bool SyncContext::checkForScriptAbort(SharedSession session)
 
 void SyncContext::restore(const string &dirname, RestoreDatabase database)
 {
-    if (!exists()) {
-        SE_LOG_ERROR(NULL, NULL, "No configuration for server \"%s\" found.", m_server.c_str());
-        throwError("cannot proceed without configuration");
-    }
+    checkConfig();
 
     SourceList sourceList(*this, false);
     sourceList.accessSession(dirname.c_str());
@@ -4080,7 +4120,7 @@ public:
 private:
 
     string getLogData() { return "LogDirTest/data"; }
-    virtual const char *getLogDir() { return "LogDirTest/cache/syncevolution"; }
+    virtual std::string getLogDir() const { return "LogDirTest/cache/syncevolution"; }
     int m_maxLogDirs;
 
     ostringstream m_out;

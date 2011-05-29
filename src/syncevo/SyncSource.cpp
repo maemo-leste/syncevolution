@@ -347,12 +347,18 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
     }
 
     if (error) {
-        string problem = params.m_name + ": backend '" + sourceType.m_backend + "' not supported";
+        string backends;
         if (scannedModules.m_available.size()) {
-            problem += " by any of the backend modules (";
-            problem += boost::join(scannedModules.m_available, ", ");
-            problem += ")";
+            backends += "by any of the backend modules (";
+            backends += boost::join(scannedModules.m_available, ", ");
+            backends += ") ";
         }
+        string problem =
+            StringPrintf("%s: backend '%s' not supported %sor not fully configured (format '%s')",
+                         params.m_name.c_str(),
+                         sourceType.m_backend.c_str(),
+                         backends.c_str(),
+                         sourceType.m_localFormat.c_str());
         SyncContext::throwError(problem);
     }
 
@@ -377,11 +383,20 @@ VirtualSyncSource::VirtualSyncSource(const SyncSourceParams &params, SyncConfig 
     DummySyncSource(params)
 {
     if (config) {
+        std::string evoSyncSource = getDatabaseID();
         BOOST_FOREACH(std::string name, getMappedSources()) {
+            if (name.empty()) {
+                throwError(StringPrintf("configuration of underlying sources contains empty source name: database = '%s'",
+                                        evoSyncSource.c_str()));
+            }
             SyncSourceNodes source = config->getSyncSourceNodes(name);
             SyncSourceParams params(name, source, boost::shared_ptr<SyncConfig>(config, SyncConfigNOP()));
             boost::shared_ptr<SyncSource> syncSource(createSource(params, true, config));
             m_sources.push_back(syncSource);
+        }
+        if (m_sources.size() != 2) {
+            throwError(StringPrintf("configuration of underlying sources must contain exactly one calendar and one todo source (like calendar+todo): database = '%s'",
+                                    evoSyncSource.c_str()));
         }
     }
 }
@@ -670,6 +685,15 @@ void ItemCache::init(const SyncSource::Operations::ConstBackupInfo &oldBackup,
             m_hash2counter[hash] = counter;
         }
     }
+}
+
+void ItemCache::reset()
+{
+    // clean directory and start counting at 1 again
+    m_counter = 1;
+    rm_r(m_backup.m_dirname);
+    mkdir_p(m_backup.m_dirname);
+    m_backup.m_node->clear();
 }
 
 string ItemCache::getFilename(Hash_t hash)

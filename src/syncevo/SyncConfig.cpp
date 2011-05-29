@@ -100,7 +100,7 @@ PropertySpecifier PropertySpecifier::StringToPropSpec(const std::string &spec, i
             res.m_config = spec.substr(at);
         }
         if (flags & NORMALIZE_CONFIG) {
-            res.m_config = SyncConfig::normalizeConfigString(res.m_config, false);
+            res.m_config = SyncConfig::normalizeConfigString(res.m_config, SyncConfig::NORMALIZE_LONG_FORMAT);
         }
     } else {
         at = spec.size();
@@ -172,7 +172,7 @@ void ConfigProperty::throwValueError(const ConfigNode &node, const string &name,
     SyncContext::throwError(node.getName() + ": " + name + " = " + value + ": " + error);
 }
 
-string SyncConfig::normalizeConfigString(const string &config, bool noDefaultContext)
+string SyncConfig::normalizeConfigString(const string &config, NormalizeFlags flags)
 {
     string normal = config;
     boost::to_lower(normal);
@@ -185,14 +185,15 @@ string SyncConfig::normalizeConfigString(const string &config, bool noDefaultCon
         }
     }
     if (boost::ends_with(normal, "@default")) {
-        if (noDefaultContext) {
+        if (flags & NORMALIZE_SHORTHAND) {
             normal.resize(normal.size() - strlen("@default"));
         }
     } else if (boost::ends_with(normal, "@")) {
         normal.resize(normal.size() - 1);
     } else {
         size_t at = normal.rfind('@');
-        if (at == normal.npos) {
+        if (at == normal.npos &&
+            !(flags & NORMALIZE_IS_NEW)) {
             // No explicit context. Pick the first server which matches
             // when ignoring their context. Peer list is sorted by name,
             // therefore shorter config names (= without context) are
@@ -207,7 +208,7 @@ string SyncConfig::normalizeConfigString(const string &config, bool noDefaultCon
                 }
             }
         }
-        if (!noDefaultContext && normal.find('@') == normal.npos) {
+        if (!(flags & NORMALIZE_SHORTHAND) && normal.find('@') == normal.npos) {
             // explicitly include @default context specifier
             normal += "@default";
         }
@@ -691,6 +692,7 @@ SyncConfig::TemplateList SyncConfig::getBuiltInTemplates()
     result.addDefaultTemplate("Goosync", "http://www.goosync.com/");
     result.addDefaultTemplate("SyncEvolution", "http://www.syncevolution.org");
     result.addDefaultTemplate("Ovi", "http://www.ovi.com");
+    result.addDefaultTemplate("eGroupware", "http://www.egroupware.org");
 
     result.sort (TemplateDescription::compare_op);
     return result;
@@ -814,6 +816,11 @@ boost::shared_ptr<SyncConfig> SyncConfig::createPeerTemplate(const string &serve
 
     config->setDefaults(false);
     config->setDevID(string("syncevolution-") + UUID());
+
+    // leave the rest empty for special "none" template
+    if (server == "none") {
+        return config;
+    }
 
     // create sync source configs and set non-default values
     config->setSourceDefaults("addressbook", false);
@@ -947,6 +954,7 @@ boost::shared_ptr<SyncConfig> SyncConfig::createPeerTemplate(const string &serve
         config->setConsumerReady(true);
         source = config->getSyncSourceConfig("addressbook");
         source->setURI("con");
+        source->setSyncFormat("text/vcard"); // vCard 3.0 works better than vCard 2.1 (NICKNAME!)
         source = config->getSyncSourceConfig("calendar");
         source->setURI("cal");
         source = config->getSyncSourceConfig("todo");
@@ -1060,6 +1068,22 @@ boost::shared_ptr<SyncConfig> SyncConfig::createPeerTemplate(const string &serve
         source->setURI("todo");
         source = config->getSyncSourceConfig("memo");
         source->setURI("memo");
+    } else if (boost::iequals(server, "egroupware")) {
+        config->setSyncURL("http://set.your.domain.here/rpc.php");
+        config->setWebURL("http://www.egroupware.org");
+        // Not much testing is happening with eGroupware
+        // and users need to be aware of the special URL;
+        // but Ovi is not necessarily better and is visible.
+        // Let's show it.
+        config->setConsumerReady(true);
+        source = config->getSyncSourceConfig("addressbook");
+        source->setURI("./contacts");
+        source = config->getSyncSourceConfig("calendar");
+        source->setURI("calendar");
+        source = config->getSyncSourceConfig("todo");
+        source->setURI("./tasks");
+        source = config->getSyncSourceConfig("memo");
+        source->setURI("./notes");
     } else {
         config.reset();
     }
@@ -1499,8 +1523,8 @@ static BoolConfigProperty syncPropDumpData("dumpData",
                                            "before and after a sync session (always enabled if printChanges is enabled)",
                                            "1");
 static SecondsConfigProperty syncPropRetryDuration("RetryDuration",
-                                          "The total amount of time in seconds in which the client\n"
-                                          "tries to get a response from the server.\n"
+                                          "The total amount of time in seconds in which the SyncML\n"
+                                          "client tries to get a response from the server.\n"
                                           "During this time, the client will resend messages\n"
                                           "in regular intervals (RetryInterval) if no response\n"
                                           "is received or the message could not be delivered due\n"
@@ -1513,7 +1537,7 @@ static SecondsConfigProperty syncPropRetryDuration("RetryDuration",
                                           "synchronization is aborted."
                                           ,"5M");
 static SecondsConfigProperty syncPropRetryInterval("RetryInterval",
-                                          "The number of seconds between the start of message sending\n"
+                                          "The number of seconds between the start of SyncML message sending\n"
                                           "and the start of the retransmission. If the interval has\n"
                                           "already passed when a message send returns, the\n"
                                           "message is resent immediately. Resending without\n"
@@ -1521,7 +1545,13 @@ static SecondsConfigProperty syncPropRetryInterval("RetryInterval",
                                           "disables retries.\n"
                                           "\n"
                                           "Servers cannot resend messages, so this setting has no\n"
-                                          "effect in that case."
+                                          "effect in that case.\n"
+                                          "\n"
+                                          "The WebDAV backend also resends messages after a temporary\n"
+                                          "network error. It uses exponential backoff to determine when\n"
+                                          "the server is available again. This setting is divided by 24\n"
+                                          "to obtain the initial delay (default: 2m => 5s), which is then\n"
+                                          "doubled for each retry."
                                           ,"2M");
 static BoolConfigProperty syncPropPeerIsClient("PeerIsClient",
                                           "Indicates whether this configuration is about a\n"
@@ -1768,9 +1798,15 @@ ConfigPropertyRegistry &SyncConfig::getRegistry()
 #endif
 
         // obligatory sync properties
-        syncPropUsername.setObligatory(true);
-        syncPropPassword.setObligatory(true);
-        syncPropDevID.setObligatory(true);
+        //
+        // username/password used to be
+        // considered obligatory, but are not anymore because there are
+        // cases where they are not needed (local sync, Bluetooth)
+        // syncPropUsername.setObligatory(true);
+        // syncPropPassword.setObligatory(true);
+        //
+        // created if not given:
+        // syncPropDevID.setObligatory(true);
         syncPropSyncURL.setObligatory(true);
 
         // hidden sync properties
@@ -1803,15 +1839,15 @@ ConfigPropertyRegistry &SyncConfig::getRegistry()
     return registry;
 }
 
-std::string SyncConfig::getUsername() const { return syncPropUsername.getProperty(*getNode(syncPropUsername)); }
-void SyncConfig::setUsername(const string &value, bool temporarily) { syncPropUsername.setProperty(*getNode(syncPropUsername), value, temporarily); }
-std::string SyncConfig::getPassword() const {
+std::string SyncConfig::getSyncUsername() const { return syncPropUsername.getProperty(*getNode(syncPropUsername)); }
+void SyncConfig::setSyncUsername(const string &value, bool temporarily) { syncPropUsername.setProperty(*getNode(syncPropUsername), value, temporarily); }
+std::string SyncConfig::getSyncPassword() const {
     return syncPropPassword.getCachedProperty(*getNode(syncPropPassword), m_cachedPassword);
 }
-void SyncConfig::checkPassword(ConfigUserInterface &ui) {
+void SyncConfig::checkSyncPassword(ConfigUserInterface &ui) {
     syncPropPassword.checkPassword(ui, m_peer, *getProperties());
 }
-void SyncConfig::savePassword(ConfigUserInterface &ui) {
+void SyncConfig::saveSyncPassword(ConfigUserInterface &ui) {
     syncPropPassword.savePassword(ui, m_peer, *getProperties());
 }
 
@@ -1955,7 +1991,7 @@ ConfigPasswordKey ProxyPasswordConfigProperty::getPasswordKey(const string &desc
     return key;
 }
 
-void SyncConfig::setPassword(const string &value, bool temporarily) { m_cachedPassword = ""; syncPropPassword.setProperty(*getNode(syncPropPassword), value, temporarily); }
+void SyncConfig::setSyncPassword(const string &value, bool temporarily) { m_cachedPassword = ""; syncPropPassword.setProperty(*getNode(syncPropPassword), value, temporarily); }
 
 bool SyncConfig::getPreventSlowSync() const { return syncPropPreventSlowSync.getPropertyValue(*getNode(syncPropPreventSlowSync)); }
 void SyncConfig::setPreventSlowSync(bool value, bool temporarily) { syncPropPreventSlowSync.setProperty(*getNode(syncPropPreventSlowSync), value, temporarily); }
@@ -2160,6 +2196,18 @@ SyncConfig::getNode(const ConfigProperty &prop)
     }
     // should not be reached
     return boost::shared_ptr<FilterConfigNode>(new FilterConfigNode(boost::shared_ptr<ConfigNode>(new DevNullConfigNode("unknown sharing state of property"))));
+}
+
+boost::shared_ptr<FilterConfigNode>
+SyncConfig::getNode(const std::string &propName)
+{
+    ConfigPropertyRegistry &registry = getRegistry();
+    const ConfigProperty *prop = registry.find(propName);
+    if (prop) {
+        return getNode(*prop);
+    } else {
+        return boost::shared_ptr<FilterConfigNode>();
+    }
 }
 
 static void setDefaultProps(const ConfigPropertyRegistry &registry,
@@ -2499,7 +2547,8 @@ static StringConfigProperty sourcePropDatabaseFormat("databaseFormat",
 
 static ConfigProperty sourcePropURI("uri",
                                     "this is appended to the server's URL to identify the\n"
-                                    "server's database");
+                                    "server's database; if unset, the source name is used as\n"
+                                    "fallback");
 static bool SourcePropURIIsSet(boost::shared_ptr<SyncSourceConfig> source)
 {
     return source->isSet(sourcePropURI);
@@ -2636,6 +2685,13 @@ void SyncSourceConfig::savePassword(ConfigUserInterface &ui,
 }
 void SyncSourceConfig::setPassword(const string &value, bool temporarily) { m_cachedPassword = ""; sourcePropPassword.setProperty(*getNode(sourcePropPassword), value, temporarily); }
 std::string SyncSourceConfig::getURI() const { return sourcePropURI.getProperty(*getNode(sourcePropURI)); }
+std::string SyncSourceConfig::getURINonEmpty() const {
+    string uri = sourcePropURI.getProperty(*getNode(sourcePropURI));
+    if (uri.empty()) {
+        uri = m_name;
+    }
+    return uri;
+}
 void SyncSourceConfig::setURI(const string &value, bool temporarily) { sourcePropURI.setProperty(*getNode(sourcePropURI), value, temporarily); }
 std::string SyncSourceConfig::getSync() const { return m_sourcePropSync.getProperty(*getNode(m_sourcePropSync)); }
 void SyncSourceConfig::setSync(const string &value, bool temporarily) { m_sourcePropSync.setProperty(*getNode(m_sourcePropSync), value, temporarily); }
@@ -2797,8 +2853,8 @@ bool SyncConfig::TemplateDescription::compare_op (boost::shared_ptr<SyncConfig::
     if (right->m_rank != left->m_rank) {
         return (right->m_rank < left->m_rank);
     }
-    // sort against the template id
-    return (left->m_templateId < right->m_templateId);
+    // sort against the template id, case-insensitive (for eGroupware < Funambol)
+    return boost::ilexicographical_compare(left->m_templateId, right->m_templateId);
 }
 
 TemplateConfig::TemplateConfig(const string &path) :
@@ -2841,7 +2897,8 @@ int TemplateConfig::serverModeMatch (SyncConfig::MatchMode mode)
 }
 
 /**
- * The matching is based on Least common string algorithm
+ * The matching is based on Least common string algorithm,
+ * with space and underscore being treated as equal.
  * */
 int TemplateConfig::fingerprintMatch (const string &fingerprint)
 {
@@ -2854,6 +2911,7 @@ int TemplateConfig::fingerprintMatch (const string &fingerprint)
     std::vector <string> subfingerprints = unescapeJoinedString (fingerprintProp, ',');
     std::string input = fingerprint;
     boost::to_lower(input);
+    boost::replace_all(input, " ", "_");
     //return the largest match value
     int max = NO_MATCH;
     BOOST_FOREACH (std::string sub, subfingerprints){
@@ -2867,6 +2925,7 @@ int TemplateConfig::fingerprintMatch (const string &fingerprint)
         std::vector< LCS::Entry <char> > result;
         std::string match = sub;
         boost::to_lower(match);
+        boost::replace_all(match, " ", "_");
         LCS::lcs(match, input, std::back_inserter(result), LCS::accessor_sequence<std::string>());
         int score = result.size() *2 *BEST_MATCH /(sub.size() + fingerprint.size()) ;
         if (score > max) {
@@ -2900,7 +2959,8 @@ string TemplateConfig::getTemplateName() {
 
 /*
  * A unique identifier for this template, it must be unique and retrieveable.
- * We use the first entry in the "fingerprint" property for cmdline.
+ * We use the first entry in the "fingerprint" property for cmdline and
+ * replace spaces with underscores, to make it more command line friendly.
  **/
 string TemplateConfig::getTemplateId(){
     if (m_id.empty()){
@@ -2909,6 +2969,7 @@ string TemplateConfig::getTemplateId(){
             std::vector<std::string> subfingerprints = unescapeJoinedString (fingerprintProp, ',');
             m_id = subfingerprints[0];
         }
+        boost::replace_all(m_id, " ", "_");
     }
     return m_id;
 }
@@ -3025,7 +3086,7 @@ private:
 
         // keep @default if explicitly requested
         CPPUNIT_ASSERT_EQUAL(std::string("foobar@default"),
-                             SyncConfig::normalizeConfigString("FooBar", false));
+                             SyncConfig::normalizeConfigString("FooBar", SyncConfig::NORMALIZE_LONG_FORMAT));
 
         // test config lookup
         SyncConfig foo_default("foo"), foo_other("foo@other"), bar("bar@other");
@@ -3037,16 +3098,16 @@ private:
         CPPUNIT_ASSERT_EQUAL(std::string("foo"),
                              SyncConfig::normalizeConfigString("foo@default"));
         CPPUNIT_ASSERT_EQUAL(std::string("foo@default"),
-                             SyncConfig::normalizeConfigString("foo", false));
+                             SyncConfig::normalizeConfigString("foo", SyncConfig::NORMALIZE_LONG_FORMAT));
         CPPUNIT_ASSERT_EQUAL(std::string("foo@default"),
-                             SyncConfig::normalizeConfigString("foo@default", false));
+                             SyncConfig::normalizeConfigString("foo@default", SyncConfig::NORMALIZE_LONG_FORMAT));
         CPPUNIT_ASSERT_EQUAL(std::string("foo@other"),
                              SyncConfig::normalizeConfigString("foo@other"));
         foo_default.remove();
         CPPUNIT_ASSERT_EQUAL(std::string("foo@other"),
                              SyncConfig::normalizeConfigString("foo"));
         CPPUNIT_ASSERT_EQUAL(std::string("foo@other"),
-                             SyncConfig::normalizeConfigString("foo", false));
+                             SyncConfig::normalizeConfigString("foo", SyncConfig::NORMALIZE_LONG_FORMAT));
     }
 
     void parseDuration()

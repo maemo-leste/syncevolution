@@ -109,11 +109,11 @@ void LocalTransportAgent::start()
         // Also set them to non-blocking, needed for the
         // timeout handling.
         for (int *fd = &sockets[0][0];
-             fd < &sockets[2][2];
+             fd <= &sockets[1][1];
              ++fd) {
-            long flags = fcntl(*fd, F_GETFD);
+            long flags = fcntl(*fd, F_GETFD, 0l); // extra argument for valgrind
             fcntl(*fd, F_SETFD, flags | FD_CLOEXEC);
-            flags = fcntl(*fd, F_GETFL);
+            flags = fcntl(*fd, F_GETFL, 0l);
             fcntl(*fd, F_SETFL, flags | O_NONBLOCK);
         }
 
@@ -219,6 +219,11 @@ void LocalTransportAgent::run()
                            boost::shared_ptr<TransportAgent>(this, NoopAgentDestructor()),
                            doLogging);
 
+        // allow proceeding with sync even if no "source-config" was created,
+        // because information about username/password (for WebDAV) or the
+        // sources (for file backends) might be enough
+        client.setConfigNeeded(false);
+
         // Apply temporary config filters, stored for us in m_server by the
         // command line.
         const FullProps &props = m_server->getConfigProps();
@@ -231,13 +236,13 @@ void LocalTransportAgent::run()
         // that is where the GUI knows how to store them. A better
         // solution would be to require that credentials are in the
         // "source-config" config.
-        string tmp = m_server->getUsername();
+        string tmp = m_server->getSyncUsername();
         if (!tmp.empty()) {
-            client.setUsername(tmp, true);
+            client.setSyncUsername(tmp, true);
         }
-        tmp = m_server->getPassword();
+        tmp = m_server->getSyncPassword();
         if (!tmp.empty()) {
-            client.setPassword(tmp, true);
+            client.setSyncPassword(tmp, true);
         }
 
         // debugging mode: write logs inside sub-directory of parent,
@@ -260,15 +265,18 @@ void LocalTransportAgent::run()
             SyncSourceConfig source(sourceName, nodes);
             string sync = source.getSync();
             if (sync != "disabled") {
-                string targetName = source.getURI();
+                string targetName = source.getURINonEmpty();
                 SyncSourceNodes targetNodes = client.getSyncSourceNodes(targetName);
                 SyncSourceConfig targetSource(targetName, targetNodes);
                 string fullTargetName = m_clientContext + "/" + targetName;
 
                 if (!targetNodes.dataConfigExists()) {
-                    client.throwError(StringPrintf("%s: source not configured",
-                                                   fullTargetName.c_str()));
-
+                    if (targetName.empty()) {
+                        client.throwError("missing URI for one of the sources");
+                    } else {
+                        client.throwError(StringPrintf("%s: source not configured",
+                                                       fullTargetName.c_str()));
+                    }
                 }
 
                 // All of the config setting is done as volatile,
@@ -289,8 +297,13 @@ void LocalTransportAgent::run()
         client.sync(&m_clientReport);
     } catch(...) {
         SyncMLStatus status = m_clientReport.getStatus();
-        Exception::handle(&status, redirect);
+        string explanation;
+        Exception::handle(&status, redirect, &explanation);
         m_clientReport.setStatus(status);
+        if (!explanation.empty() &&
+            m_clientReport.getError().empty()) {
+            m_clientReport.setError(explanation);
+        }
     }
 
     // send final report
@@ -444,13 +457,16 @@ void LocalTransportAgent::send(const char *data, size_t len)
 TransportAgent::Status LocalTransportAgent::writeMessage(int fd, Message::Type type, const char *data, size_t len, Timespec deadline)
 {
     Message header;
+    memset(&header, 0, sizeof(header));
     header.m_type = type;
     header.m_length = sizeof(Message) + len;
     struct iovec vec[2];
+    memset(vec, 0, sizeof(vec));
     vec[0].iov_base = &header;
     vec[0].iov_len = offsetof(Message, m_data);
     vec[1].iov_base = (void *)data;
     vec[1].iov_len = len;
+
     SE_LOG_DEBUG(NULL, NULL, "%s: sending %ld bytes via %s",
                  m_pid ? "parent" : "child",
                  (long)len,
@@ -502,30 +518,41 @@ TransportAgent::Status LocalTransportAgent::writeMessage(int fd, Message::Type t
         case 1: {
             ssize_t sent = writev(fd, vec, 2);
             if (sent == -1) {
-                SE_LOG_DEBUG(NULL, NULL, "%s: sending %ld bytes failed: %s",
-                             m_pid ? "parent" : "child",
-                             (long)len,
-                             strerror(errno));
-                SE_THROW_EXCEPTION(TransportException,
-                                   StringPrintf("writev(): %s", strerror(errno)));
+                // man page doesn't say anything about these, but let's catch
+                // them anyway and retry
+                if (errno == EAGAIN ||
+                    errno == EWOULDBLOCK) {
+                    sent = 0;
+                } else {
+                    int err = errno;
+                    SE_LOG_DEBUG(NULL, NULL, "%s: sending %ld bytes failed: %s",
+                                 m_pid ? "parent" : "child",
+                                 (long)len,
+                                 strerror(err));
+                    SE_THROW_EXCEPTION(TransportException,
+                                       StringPrintf("writev(): %s", strerror(err)));
+                }
             }
 
             // potential partial write, reduce byte counters by amount of bytes sent
             ssize_t part1 = std::min((ssize_t)vec[0].iov_len, sent);
+            vec[0].iov_base = (char *)vec[0].iov_base + part1;
             vec[0].iov_len -= part1;
             sent -= part1;
             ssize_t part2 = std::min((ssize_t)vec[1].iov_len, sent);
+            vec[1].iov_base = (char *)vec[1].iov_base + part2;
             vec[1].iov_len -= part2;
-            sent -= part2;
             break;
         }
-        default:
+        default: {
+            int err = errno;
             SE_LOG_DEBUG(NULL, NULL, "%s: select errror: %s",
                          m_pid ? "parent" : "child",
-                         strerror(errno));
+                         strerror(err));
             SE_THROW_EXCEPTION(TransportException,
-                               StringPrintf("select(): %s", strerror(errno)));
+                               StringPrintf("select(): %s", strerror(err)));
             break;
+        }
         }
     } while (vec[1].iov_len);
 
@@ -625,9 +652,11 @@ TransportAgent::Status LocalTransportAgent::readMessage(int fd, Buffer &buffer, 
                                      "Message Buffer");
             } else if (buffer.m_used >= sizeof(Message) &&
                        buffer.m_message->m_length > buffer.m_size) {
-                buffer.m_message.set(static_cast<Message *>(realloc(buffer.m_message.release(), buffer.m_message->m_length)),
+                // copy before (temporarily) freeing memory
+                size_t newsize = buffer.m_message->m_length;
+                buffer.m_message.set(static_cast<Message *>(realloc(buffer.m_message.release(), newsize)),
                                      "Message Buffer");
-                buffer.m_size = buffer.m_message->m_length;
+                buffer.m_size = newsize;
             }
             SE_LOG_DEBUG(NULL, NULL, "%s: recv %ld bytes",
                          m_pid ? "parent" : "child",
@@ -636,13 +665,20 @@ TransportAgent::Status LocalTransportAgent::readMessage(int fd, Buffer &buffer, 
                                  (char *)buffer.m_message.get() + buffer.m_used,
                                  buffer.m_size - buffer.m_used,
                                  MSG_DONTWAIT);
+            int err = errno;
             SE_LOG_DEBUG(NULL, NULL, "%s: received %ld: %s",
                          m_pid ? "parent" : "child",
                          (long)recvd,
-                         recvd < 0 ? strerror(errno) : "okay");
+                         recvd < 0 ? strerror(err) : "okay");
             if (recvd < 0) {
-                SE_THROW_EXCEPTION(TransportException,
-                                   StringPrintf("message receive: %s", strerror(errno)));
+                if (err == EAGAIN ||
+                    err == EWOULDBLOCK) {
+                    // try again
+                    recvd = 0;
+                } else {
+                    SE_THROW_EXCEPTION(TransportException,
+                                       StringPrintf("message receive: %s", strerror(err)));
+                }
             } else if (!recvd) {
                 if (m_pid) {
                     // Child died. Try to get its sync report to find out why.
@@ -659,13 +695,15 @@ TransportAgent::Status LocalTransportAgent::readMessage(int fd, Buffer &buffer, 
             buffer.m_used += recvd;
             break;
         }
-        default:
+        default: {
+            int err = errno;
             SE_LOG_DEBUG(NULL, NULL, "%s: select errror: %s",
                          m_pid ? "parent" : "child",
-                         strerror(errno));
+                         strerror(err));
             SE_THROW_EXCEPTION(TransportException,
-                               StringPrintf("select(): %s", strerror(errno)));
+                               StringPrintf("select(): %s", strerror(err)));
             break;
+        }
         }
     }
 

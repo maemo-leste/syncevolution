@@ -627,6 +627,26 @@ std::list<std::string> LocalTests::insertManyItems(CreateSource createSource, in
     return luids;
 }
 
+std::list<std::string> LocalTests::insertManyItems(TestingSyncSource *source, int startIndex, int numItems, int size) {
+    std::list<std::string> luids;
+
+    CPPUNIT_ASSERT(config.templateItem);
+    CPPUNIT_ASSERT(config.uniqueProperties);
+
+    CPPUNIT_ASSERT(startIndex > 1 || !countItems(source));
+    int firstIndex = startIndex;
+    if (firstIndex < 0) {
+        firstIndex = 1;
+    }
+    int lastIndex = firstIndex + (numItems >= 1 ? numItems : config.numItems) - 1;
+    for (int item = firstIndex; item <= lastIndex; item++) {
+        std::string data = createItem(item, "", size);
+        luids.push_back(importItem(source, config, data));
+    }
+
+    return luids;
+}
+
 // update every single item in the database
 void LocalTests::updateData(CreateSource createSource) {
     // check additional requirements
@@ -2875,14 +2895,18 @@ void SyncTests::doVarSizes(bool withMaxMsgSize,
     source_it it;
     for (it = sources.begin(); it != sources.end(); ++it) {
         int item = 1;
+        restoreStorage(it->second->config, client);
+        TestingSyncSourcePtr source;
+        SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(it->second->createSourceA()));
         for (int i = 0; i < 2; i++ ) {
             int size = 1;
             while (size < 2 * maxMsgSize) {
-                it->second->insertManyItems(it->second->createSourceA, item, 1, (int)strlen(it->second->config.templateItem) + 10 + size);
+                it->second->insertManyItems(source.get(), item, 1, (int)strlen(it->second->config.templateItem) + 10 + size);
                 size *= 2;
                 item++;
             }
         }
+        backupStorage(it->second->config, client);
     }
 
     // transfer to server
@@ -3606,8 +3630,8 @@ static bool setDeadSyncURL(SyncContext &context,
 
     if (boost::starts_with(url, "http")) {
         context.setSyncURL(fakeURL, true);
-        context.setUsername("foo", true);
-        context.setPassword("bar", true);
+        context.setSyncUsername("foo", true);
+        context.setSyncPassword("bar", true);
         return false;
     } else if (boost::starts_with(url, "local://")) {
         FullProps props = context.getConfigProps();
@@ -3651,14 +3675,15 @@ void SyncTests::testTimeout()
                        CheckSyncReport(-1, -1, -1, -1, -1, -1,
                                        false).setReport(&report))
            .setPrepareCallback(boost::bind(setDeadSyncURL, _1, _2, ntohs(servaddr.sin_port), &skipped))
-           .setRetryDuration(10)
-           .setRetryInterval(10));
+           .setRetryDuration(20)
+           .setRetryInterval(20));
     time_t end = time(NULL);
     close(fd);
     if (!skipped) {
         CPPUNIT_ASSERT_EQUAL(STATUS_TRANSPORT_FAILURE, report.getStatus());
-        CPPUNIT_ASSERT(end - start >= 9);
-        CPPUNIT_ASSERT(end - start < 15);
+        CPPUNIT_ASSERT(end - start >= 19);
+        CPPUNIT_ASSERT(end - start < 30); // needs to be sufficiently larger than 20s timeout
+                                          // because under valgrind the startup time is considerable
     }
 }
 
@@ -4246,7 +4271,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VEVENT\n"
             "SUMMARY:phone meeting\n"
             "DTEND:20060406T163000Z\n"
@@ -4266,7 +4290,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VEVENT\n"
             "SUMMARY:meeting on site\n"
             "DTEND:20060406T163000Z\n"
@@ -4287,7 +4310,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VEVENT\n"
             "SUMMARY:phone meeting\n"
             "DTEND:20060406T163000Z\n"
@@ -4313,7 +4335,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VEVENT\n"
             "SUMMARY:phone meeting\n"
             "DTEND:20060406T163000Z\n"
@@ -4335,7 +4356,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VTIMEZONE\n"
             "TZID:/softwarestudio.org/Olson_20011030_5/Europe/Berlin\n"
             "X-LIC-LOCATION:Europe/Berlin\n"
@@ -4373,7 +4393,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VTIMEZONE\n"
             "TZID:/softwarestudio.org/Olson_20011030_5/Europe/Berlin\n"
             "X-LIC-LOCATION:Europe/Berlin\n"
@@ -4481,7 +4500,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VTIMEZONE\n"
             "TZID:Asia/Shanghai\n"
             "BEGIN:STANDARD\n"
@@ -4519,7 +4537,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VTIMEZONE\n"
             "TZID:Asia/Shanghai\n"
             "BEGIN:STANDARD\n"
@@ -4572,7 +4589,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VTODO\n"
             "UID:20060417T173712Z-4360-727-1-2730@gollum\n"
             "DTSTAMP:20060417T173712Z\n"
@@ -4588,7 +4604,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VTODO\n"
             "UID:20060417T173712Z-4360-727-1-2730@gollum\n"
             "DTSTAMP:20060417T173712Z\n"
@@ -4605,7 +4620,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VTODO\n"
             "UID:20060417T173712Z-4360-727-1-2730@gollum\n"
             "DTSTAMP:20060417T173712Z\n"
@@ -4621,7 +4635,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VTODO\n"
             "UID:20060417T173712Z-4360-727-1-2730@gollum\n"
             "DTSTAMP:20060417T173712Z\n"
@@ -4653,7 +4666,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VJOURNAL\n"
             "SUMMARY:Summary\n"
             "DESCRIPTION:Summary\\nBody text\n"
@@ -4663,7 +4675,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VJOURNAL\n"
             "SUMMARY:Summary Modified\n"
             "DESCRIPTION:Summary Modified\\nBody text\n"
@@ -4675,7 +4686,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VJOURNAL\n"
             "SUMMARY:Summary\n"
             "DESCRIPTION:Summary\\nBody modified\n"
@@ -4685,7 +4695,6 @@ void ClientTest::getTestData(const char *type, Config &config)
             "BEGIN:VCALENDAR\n"
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
-            "METHOD:PUBLISH\n"
             "BEGIN:VJOURNAL\n"
             "SUMMARY:Summary\n"
             "DESCRIPTION:Summary\\nBody text <<REVISION>>\n"

@@ -547,6 +547,20 @@ void Cmdline::migratePeer(const std::string &fromPeer, const std::string &toPeer
     // hack: move to different target config for createSyncClient()
     m_server = toPeer;
     boost::shared_ptr<SyncContext> to(createSyncClient());
+
+    // Special case for Memotoo: explicitly set preferred sync format
+    // to vCard 3.0 as part of the SyncEvolution 1.1.x -> 1.2 migration,
+    // because it works better. Template was also updated in 1.2, but
+    // that alone wouldn't improve existing configs.
+    if (from->getConfigVersion(CONFIG_LEVEL_PEER, CONFIG_CUR_VERSION) == 0) {
+        vector<string> urls = from->getSyncURL();
+        if (urls.size() == 1 &&
+            urls[0] == "http://sync.memotoo.com/syncML") {
+            boost::shared_ptr<SyncContext> to(createSyncClient());
+            m_props[to->getContextName()].m_sourceProps["addressbook"].insert(make_pair("syncFormat", "text/vcard"));
+        }
+    }
+
     copyConfig(from, to, set<string>());
     finishCopy(from, to);
 }
@@ -610,12 +624,12 @@ bool Cmdline::run() {
     } else if (m_printTemplates) {
         SyncConfig::DeviceList devices;
         if (m_template.empty()){
-            dumpConfigTemplates("Available configuration templates:",
+            dumpConfigTemplates("Available configuration templates (servers):",
                     SyncConfig::getPeerTemplates(devices), false);
         } else {
             //limiting at templates for syncml clients only.
             devices.push_back (SyncConfig::DeviceDescription("", m_template, SyncConfig::MATCH_FOR_SERVER_MODE));
-            dumpConfigTemplates("Available configuration templates:",
+            dumpConfigTemplates("Available configuration templates (clients):",
                     SyncConfig::matchPeerTemplates(devices), true);
         }
     } else if (m_dontrun) {
@@ -629,7 +643,7 @@ bool Cmdline::run() {
         boost::shared_ptr<FilterConfigNode> trackingNode(new VolatileConfigNode());
         boost::shared_ptr<FilterConfigNode> serverNode(new VolatileConfigNode());
         SyncSourceNodes nodes(true, sharedNode, configNode, hiddenNode, trackingNode, serverNode, "");
-        SyncSourceParams params("list", nodes, boost::shared_ptr<const SyncConfig>());
+        SyncSourceParams params("list", nodes, boost::shared_ptr<SyncConfig>());
         
         BOOST_FOREACH(const RegisterSyncSource *source, registry) {
             BOOST_FOREACH(const Values::value_type &alias, source->m_typeValues) {
@@ -669,8 +683,9 @@ bool Cmdline::run() {
             m_props.createFilters("", m_server, NULL, syncFilter, sourceFilters);
         } else {
             string peer, context;
-            SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_template), peer, context);
-
+            SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_template,
+                                                                            SyncConfig::NormalizeFlags(SyncConfig::NORMALIZE_SHORTHAND|SyncConfig::NORMALIZE_IS_NEW)),
+                                          peer, context);
             config = SyncConfig::createPeerTemplate(peer);
             if (!config.get()) {
                 m_err << "ERROR: no configuration template for '" << m_template << "' available." << endl;
@@ -732,6 +747,13 @@ bool Cmdline::run() {
                      "files or enter them interactively on each program run." << endl;
             return false;
 #endif
+#ifndef USE_KDE_KWALLET
+            m_err << "Error: this syncevolution binary was compiled without support for storing "
+                     "passwords in a wallet. Either store passwords in your configuration "
+                     "files or enter them interactively on each program run." << endl;
+            return false;
+#endif
+
         }
 
         // name of renamed config ("foo.old") after migration
@@ -763,8 +785,10 @@ bool Cmdline::run() {
 
         // Both config changes and migration are implemented as copying from
         // another config (template resp. old one). Migration also moves
-        // the old config.
+        // the old config. The target configuration is determined by m_server,
+        // but the exact semantic of it depends on the operation.
         boost::shared_ptr<SyncConfig> from;
+        boost::shared_ptr<SyncContext> to;
         string origPeer;
         if (m_migrate) {
             if (!m_sources.empty()) {
@@ -820,8 +844,14 @@ bool Cmdline::run() {
 
             // rename on disk and point "from" to it
             makeObsolete(from);
+
+            // modify the config referenced by the (possibly modified) m_server
+            to.reset(createSyncClient());
         } else {
             from.reset(new SyncConfig(m_server));
+            // m_server known, modify it
+            to.reset(createSyncClient());
+
             if (!from->exists()) {
                 // creating from scratch, look for template
                 fromScratch = true;
@@ -839,7 +869,9 @@ bool Cmdline::run() {
                     // Template is specified explicitly. It must not contain a context,
                     // because the context comes from the config name.
                     configTemplate = m_template;
-                    if (SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configTemplate), peer, context)) {
+                    if (SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configTemplate,
+                                                                                        SyncConfig::NormalizeFlags(SyncConfig::NORMALIZE_SHORTHAND|SyncConfig::NORMALIZE_IS_NEW)),
+                                                      peer, context)) {
                         m_err << "ERROR: template " << configTemplate << " must not specify a context." << endl;
                         return false;
                     }
@@ -847,33 +879,39 @@ bool Cmdline::run() {
                     SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(m_server), tmp, context);
                 }
                 from = SyncConfig::createPeerTemplate(peer);
-                if (!from.get()) {
-                    m_err << "ERROR: no configuration template for '" << configTemplate << "' available." << endl;
-                    dumpConfigTemplates("Available configuration templates:",
-                                SyncConfig::getPeerTemplates(SyncConfig::DeviceList()));
-                    return false;
+                list<string> missing;
+                if (!from.get() &&
+                    m_template.empty()) {
+                    // check if all obligatory sync properties are specified, if so, allow user
+                    // to proceed with "none" template; if a template was specified, we skip
+                    // this and go directly to the code below which prints an error message
+                    ConfigProps syncProps = m_props.createSyncFilter(to->getContextName());
+                    bool complete = true;
+                    BOOST_FOREACH(const ConfigProperty *prop, SyncConfig::getRegistry()) {
+                        if (prop->isObligatory() &&
+                            syncProps.find(prop->getMainName()) == syncProps.end()) {
+                            missing.push_back(prop->getMainName());
+                            complete = false;
+                        }
+                    }
+                    if (complete) {
+                        from = SyncConfig::createPeerTemplate("none");
+                    }
                 }
-
-                if (!from->getPeerIsClient()) {
-                    // Templates no longer contain these strings, because
-                    // GUIs would have to localize them. For configs created
-                    // via the command line, the extra hint that these
-                    // properties need to be set is useful, so set these
-                    // strings here. They'll get copied into the new
-                    // config only if no other value was given on the
-                    // command line.
-                    if (!from->getUsername()[0]) {
-                        from->setUsername("your SyncML server account name");
+                if (!from.get()) {
+                    m_err << "ERROR: no configuration template for '" << configTemplate << "' available.";
+                    if (m_template.empty()) {
+                        m_err <<
+                            " Use '--template none' and/or specify relevant properties on the command line to create a configuration without a template. Need values for: " << boost::join(missing, ", ");
+                    } else if (missing.empty()) {
+                        m_err << " All relevant properties seem to be set, omit the --template parameter to proceed.";
                     }
-                    if (!from->getPassword()[0]) {
-                        from->setPassword("your SyncML server password");
-                    }
-                } else {
-                    // uncomment SyncURL, so that it can be shown by
-                    // sync-ui
-                    if (from->getSyncURL().size() == 0) {
-                        from->setSyncURL ("input your peer address here");
-                    }
+                    m_err << endl;
+                    SyncConfig::DeviceList devices;
+                    devices.push_back(SyncConfig::DeviceDescription("", "", SyncConfig::MATCH_ALL));
+                    dumpConfigTemplates("Available configuration templates (clients and servers):",
+                                        SyncConfig::getPeerTemplates(devices));
+                    return false;
                 }
             }
         }
@@ -899,6 +937,21 @@ bool Cmdline::run() {
             sources = m_sources;
         }
 
+        // Also copy (aka create) sources listed on the command line if
+        // creating from scratch and
+        // - "--template none" enables the "do what I want" mode or
+        // - source properties apply to it.
+        // Creating from scratch with other sources is a possible typo
+        // and will trigger an error below.
+        if (fromScratch) {
+            BOOST_FOREACH(const string &source, m_sources) {
+                if (m_template == "none" ||
+                    !m_props.createSourceFilter(to->getContextName(), source).empty()) {
+                    sources.insert(source);
+                }
+            }
+        }
+
         // Special case for migration away from "type": older
         // SyncEvolution could cope with "type" only set correctly for
         // peers. Real-world case: Memotoo config, context had "type =
@@ -915,7 +968,6 @@ bool Cmdline::run() {
             from->getConfigVersion(CONFIG_LEVEL_CONTEXT, CONFIG_CUR_VERSION) == 0) {
             list<string> peers = from->getPeers();
             peers.sort(); // make code below deterministic
-            boost::shared_ptr<SyncContext> to(createSyncClient());
 
             BOOST_FOREACH(const std::string source, from->getSyncSources()) {
                 BOOST_FOREACH(const string &peer, peers) {
@@ -961,7 +1013,6 @@ bool Cmdline::run() {
         // creates a SyncContext for m_server, with propert
         // implementation of the password handling methods in derived
         // classes (D-Bus server, real command line)
-        boost::shared_ptr<SyncContext> to(createSyncClient());
         copyConfig(from, to, sources);
 
         // Sources are active now according to the server default.
@@ -988,7 +1039,7 @@ bool Cmdline::run() {
                     }
 
                     // check whether the sync source works
-                    SyncSourceParams params("list", to->getSyncSourceNodes(source), to);
+                    SyncSourceParams params(source, to->getSyncSourceNodes(source), to);
                     auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false, to.get()));
                     if (syncSource.get() == NULL) {
                         disable = "no backend available";
@@ -1936,18 +1987,45 @@ static string filterConfig(const string &buffer)
     return res.str();
 }
 
+// remove comment lines from scanFiles() output
+static string filterFiles(const string &buffer)
+{
+    ostringstream res;
+
+    typedef boost::split_iterator<string::const_iterator> string_split_iterator;
+    for (string_split_iterator it =
+             boost::make_split_iterator(buffer, boost::first_finder("\n", boost::is_iequal()));
+         it != string_split_iterator();
+         ++it) {
+        string line = boost::copy_range<string>(*it);
+        if (line.find(":#") == line.npos) {
+            res << line;
+            // do not add extra newline after last newline
+            if (!line.empty() || it->end() < buffer.end()) {
+                res << endl;
+            }
+        }
+    }
+
+    return res.str();
+}
+
+
 static string injectValues(const string &buffer)
 {
     string res = buffer;
 
-    // username/password not set in templates, only in configs created via
-    // the command line
+#if 0
+    // username/password not set in templates, only in configs created
+    // via the command line - not anymore, but if it ever comes back,
+    // here's the place for it
     boost::replace_first(res,
                          "# username = ",
                          "username = your SyncML server account name");
     boost::replace_first(res,
                          "# password = ",
                          "password = your SyncML server password");
+#endif
     return res;
 }
 
@@ -2102,6 +2180,7 @@ class CmdlineTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testAddSource);
     CPPUNIT_TEST(testSync);
     CPPUNIT_TEST(testConfigure);
+    CPPUNIT_TEST(testConfigureTemplates);
     CPPUNIT_TEST(testConfigureSources);
     CPPUNIT_TEST(testOldConfigure);
     CPPUNIT_TEST(testListSources);
@@ -2527,8 +2606,9 @@ protected:
 
         TestCmdline help("--template", "? ", NULL);
         help.doit();
-        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates (servers):\n"
                                   "   template name = template description\n"
+                                  "   eGroupware = http://www.egroupware.org\n"
                                   "   Funambol = http://my.funambol.com\n"
                                   "   Google = http://m.google.com/sync\n"
                                   "   Goosync = http://www.goosync.com/\n"
@@ -2549,34 +2629,34 @@ protected:
 
         TestCmdline help1("--template", "?nokia 7210c", NULL);
         help1.doit();
-        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates (clients):\n"
                 "   template name = template description    matching score in percent (100% = exact match)\n"
-                "   Nokia 7210c = Template for Nokia S40 series Phone    100%\n"
-                "   SyncEvolution Client = SyncEvolution server side template    40%\n",
+                "   Nokia_7210c = Template for Nokia S40 series Phone    100%\n"
+                "   SyncEvolution_Client = SyncEvolution server side template    40%\n",
                 help1.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help1.m_err.str());
         TestCmdline help2("--template", "?nokia", NULL);
         help2.doit();
-        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates (clients):\n"
                 "   template name = template description    matching score in percent (100% = exact match)\n"
-                "   Nokia 7210c = Template for Nokia S40 series Phone    100%\n"
-                "   SyncEvolution Client = SyncEvolution server side template    40%\n",
+                "   Nokia_7210c = Template for Nokia S40 series Phone    100%\n"
+                "   SyncEvolution_Client = SyncEvolution server side template    40%\n",
                 help2.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help2.m_err.str());
         TestCmdline help3("--template", "?7210c", NULL);
         help3.doit();
-        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates (clients):\n"
                 "   template name = template description    matching score in percent (100% = exact match)\n"
-                "   Nokia 7210c = Template for Nokia S40 series Phone    60%\n"
-                "   SyncEvolution Client = SyncEvolution server side template    20%\n",
+                "   Nokia_7210c = Template for Nokia S40 series Phone    60%\n"
+                "   SyncEvolution_Client = SyncEvolution server side template    20%\n",
                 help3.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help3.m_err.str());
         TestCmdline help4("--template", "?syncevolution client", NULL);
         help4.doit();
-        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates:\n"
+        CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates (clients):\n"
                 "   template name = template description    matching score in percent (100% = exact match)\n"
-                "   SyncEvolution Client = SyncEvolution server side template    100%\n"
-                "   Nokia 7210c = Template for Nokia S40 series Phone    40%\n",
+                "   SyncEvolution_Client = SyncEvolution server side template    100%\n"
+                "   Nokia_7210c = Template for Nokia S40 series Phone    40%\n",
                 help4.m_out.str());
         CPPUNIT_ASSERT_EQUAL_DIFF("", help4.m_err.str());
     }
@@ -3143,6 +3223,210 @@ protected:
         }
     }
 
+    /**
+     * Test semantic of config creation (instead of updating) with and without
+     * templates. See BMC #14805.
+     */
+    void testConfigureTemplates() {
+        ScopedEnvChange templates("SYNCEVOLUTION_TEMPLATE_DIR", "/dev/null");
+        ScopedEnvChange xdg("XDG_CONFIG_HOME", m_testDir);
+        ScopedEnvChange home("HOME", m_testDir);
+
+        rm_r(m_testDir);
+        {
+            // catch possible typos like "sheduleworld"
+            TestCmdline failure("--configure", "foo", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(!failure.m_cmdline->run());
+            CPPUNIT_ASSERT(boost::starts_with(failure.m_out.str(), "Available configuration templates (clients and servers):\n"));
+            CPPUNIT_ASSERT_EQUAL(string("ERROR: no configuration template for 'foo@default' available. Use '--template none' and/or specify relevant properties on the command line to create a configuration without a template. Need values for: syncURL\n"),
+                                 lastLine(failure.m_err.str()));
+        }
+
+        rm_r(m_testDir);
+        {
+            // catch possible typos like "sheduleworld" when
+            // enough properties are specified to continue without
+            // a template
+            TestCmdline failure("--configure", "syncURL=http://foo.com", "--template", "foo", "bar", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(!failure.m_cmdline->run());
+            CPPUNIT_ASSERT(boost::starts_with(failure.m_out.str(), "Available configuration templates (clients and servers):\n"));
+            CPPUNIT_ASSERT_EQUAL(string("ERROR: no configuration template for 'foo' available. All relevant properties seem to be set, omit the --template parameter to proceed.\n"),
+                                 lastLine(failure.m_err.str()));
+        }
+
+        string fooconfig =
+            StringPrintf("syncevolution/.internal.ini:rootMinVersion = %d\n"
+                         "syncevolution/.internal.ini:rootCurVersion = %d\n"
+                         "syncevolution/default/.internal.ini:contextMinVersion = %d\n"
+                         "syncevolution/default/.internal.ini:contextCurVersion = %d\n"
+                         "syncevolution/default/config.ini:deviceId = fixed-devid\n"
+                         "syncevolution/default/peers/foo/.internal.ini:peerMinVersion = %d\n"
+                         "syncevolution/default/peers/foo/.internal.ini:peerCurVersion = %d\n",
+                         CONFIG_ROOT_MIN_VERSION, CONFIG_ROOT_CUR_VERSION,
+                         CONFIG_CONTEXT_MIN_VERSION, CONFIG_CONTEXT_CUR_VERSION,
+                         CONFIG_PEER_MIN_VERSION, CONFIG_PEER_CUR_VERSION);
+
+        string syncurl =
+            "syncevolution/default/peers/foo/config.ini:syncURL = local://@bar\n";
+
+        string configsource =
+            "syncevolution/default/peers/foo/sources/ical20/config.ini:sync = two-way\n"
+            "syncevolution/default/sources/ical20/config.ini:backend = calendar\n";
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they wish: should result in no sources configured
+            TestCmdline failure("--configure", "--template", "none", "foo", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(failure.m_cmdline->run());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_out.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_err.str());
+            string res = scanFiles(m_testDir);
+            removeRandomUUID(res);
+            CPPUNIT_ASSERT_EQUAL_DIFF(fooconfig, filterFiles(res));
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they wish: should result in no sources configured,
+            // even if general source properties are specified
+            TestCmdline failure("--configure", "--template", "none", "backend=calendar", "foo", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(failure.m_cmdline->run());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_out.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_err.str());
+            string res = scanFiles(m_testDir);
+            removeRandomUUID(res);
+            CPPUNIT_ASSERT_EQUAL_DIFF(fooconfig, filterFiles(res));
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they wish: should result in no sources configured,
+            // even if specific source properties are specified
+            TestCmdline failure("--configure", "--template", "none", "ical20/backend=calendar", "foo", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(failure.m_cmdline->run());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_out.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_err.str());
+            string res = scanFiles(m_testDir);
+            removeRandomUUID(res);
+            CPPUNIT_ASSERT_EQUAL_DIFF(fooconfig, filterFiles(res));
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they wish and possible: here ical20 is not usable
+            TestCmdline failure("--configure", "--template", "none", "foo", "ical20", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            bool caught = false;
+            try {
+                CPPUNIT_ASSERT(failure.m_cmdline->run());
+            } catch (const StatusException &ex) {
+                if (!strcmp(ex.what(), "ical20: no backend available")) {
+                    caught = true;
+                } else {
+                    throw;
+                }
+            }
+            CPPUNIT_ASSERT(caught);
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they wish and possible: here ical20 is not configurable
+            TestCmdline failure("--configure", "syncURL=local://@bar", "foo", "ical20", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            bool caught = false;
+            try {
+                CPPUNIT_ASSERT(failure.m_cmdline->run());
+            } catch (const StatusException &ex) {
+                if (!strcmp(ex.what(), "no such source(s): ical20")) {
+                    caught = true;
+                } else {
+                    throw;
+                }
+            }
+            CPPUNIT_ASSERT(caught);
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they wish and possible: here ical20 is not configurable (wrong context)
+            TestCmdline failure("--configure", "syncURL=local://@bar", "ical20/backend@xyz=calendar", "foo", "ical20", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            bool caught = false;
+            try {
+                CPPUNIT_ASSERT(failure.m_cmdline->run());
+            } catch (const StatusException &ex) {
+                if (!strcmp(ex.what(), "no such source(s): ical20")) {
+                    caught = true;
+                } else {
+                    throw;
+                }
+            }
+            CPPUNIT_ASSERT(caught);
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they wish: configure exactly the specified sources
+            TestCmdline failure("--configure", "--template", "none", "backend=calendar", "foo", "ical20", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(failure.m_cmdline->run());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_out.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_err.str());
+
+            string res = scanFiles(m_testDir);
+            removeRandomUUID(res);
+            CPPUNIT_ASSERT_EQUAL_DIFF(fooconfig + configsource, filterFiles(res));
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they provide enough information: should result in no sources configured
+            TestCmdline failure("--configure", "syncURL=local://@bar", "foo", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(failure.m_cmdline->run());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_out.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_err.str());
+            string res = scanFiles(m_testDir);
+            removeRandomUUID(res);
+            CPPUNIT_ASSERT_EQUAL_DIFF(fooconfig + syncurl, filterFiles(res));
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they provide enough information;
+            // source created because listed and usable
+            TestCmdline failure("--configure", "syncURL=local://@bar", "backend=calendar", "foo", "ical20", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(failure.m_cmdline->run());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_out.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_err.str());
+            string res = scanFiles(m_testDir);
+            removeRandomUUID(res);
+            CPPUNIT_ASSERT_EQUAL_DIFF(fooconfig + syncurl + configsource, filterFiles(res));
+        }
+
+        rm_r(m_testDir);
+        {
+            // allow user to proceed if they provide enough information;
+            // source created because listed and usable
+            TestCmdline failure("--configure", "syncURL=local://@bar", "ical20/backend@default=calendar", "foo", "ical20", NULL);
+            CPPUNIT_ASSERT(failure.m_cmdline->parse());
+            CPPUNIT_ASSERT(failure.m_cmdline->run());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_out.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", failure.m_err.str());
+            string res = scanFiles(m_testDir);
+            removeRandomUUID(res);
+            CPPUNIT_ASSERT_EQUAL_DIFF(fooconfig + syncurl + configsource, filterFiles(res));
+        }
+    }
+
+
     void testConfigureSources() {
         ScopedEnvChange templates("SYNCEVOLUTION_TEMPLATE_DIR", "/dev/null");
         ScopedEnvChange xdg("XDG_CONFIG_HOME", m_testDir);
@@ -3637,8 +3921,8 @@ protected:
         string oldConfig =
             "config.ini:logDir = none\n"
             "peers/scheduleworld/config.ini:syncURL = http://sync.scheduleworld.com/funambol/ds\n"
-            "peers/scheduleworld/config.ini:username = your SyncML server account name\n"
-            "peers/scheduleworld/config.ini:password = your SyncML server password\n"
+            "peers/scheduleworld/config.ini:# username = \n"
+            "peers/scheduleworld/config.ini:# password = \n"
 
             "peers/scheduleworld/sources/addressbook/config.ini:sync = two-way\n"
             "peers/scheduleworld/sources/addressbook/config.ini:uri = card3\n"
@@ -3646,8 +3930,8 @@ protected:
             "sources/addressbook/config.ini:type = calendar\n" // wrong!
 
             "peers/funambol/config.ini:syncURL = http://sync.funambol.com/funambol/ds\n"
-            "peers/funambol/config.ini:username = your SyncML server account name\n"
-            "peers/funambol/config.ini:password = your SyncML server password\n"
+            "peers/funambol/config.ini:# username = \n"
+            "peers/funambol/config.ini:# password = \n"
 
             "peers/funambol/sources/calendar/config.ini:sync = refresh-from-server\n"
             "peers/funambol/sources/calendar/config.ini:uri = cal\n"
@@ -3657,8 +3941,8 @@ protected:
             "sources/calendar/config.ini:type = memos\n" // wrong!
 
             "peers/memotoo/config.ini:syncURL = http://sync.memotoo.com/memotoo/ds\n"
-            "peers/memotoo/config.ini:username = your SyncML server account name\n"
-            "peers/memotoo/config.ini:password = your SyncML server password\n"
+            "peers/memotoo/config.ini:# username = \n"
+            "peers/memotoo/config.ini:# password = \n"
 
             "peers/memotoo/sources/memo/config.ini:sync = refresh-from-client\n"
             "peers/memotoo/sources/memo/config.ini:uri = cal\n"
@@ -3772,9 +4056,10 @@ private:
                          "peers/scheduleworld/.internal.ini:# ConfigDate = \n"
                          "peers/scheduleworld/.internal.ini:# lastNonce = \n"
                          "peers/scheduleworld/.internal.ini:# deviceData = \n"
+                         "peers/scheduleworld/.internal.ini:# webDAVCredentialsOkay = 0\n"
                          "peers/scheduleworld/config.ini:syncURL = http://sync.scheduleworld.com/funambol/ds\n"
-                         "peers/scheduleworld/config.ini:username = your SyncML server account name\n"
-                         "peers/scheduleworld/config.ini:password = your SyncML server password\n"
+                         "peers/scheduleworld/config.ini:# username = \n"
+                         "peers/scheduleworld/config.ini:# password = \n"
                          ".internal.ini:contextMinVersion = %d\n"
                          ".internal.ini:contextCurVersion = %d\n"
                          "config.ini:# logdir = \n"
@@ -3889,8 +4174,8 @@ private:
         // old style paths
         string oldConfig =
             "spds/syncml/config.txt:syncURL = http://sync.scheduleworld.com/funambol/ds\n"
-            "spds/syncml/config.txt:username = your SyncML server account name\n"
-            "spds/syncml/config.txt:password = your SyncML server password\n"
+            "spds/syncml/config.txt:# username = \n"
+            "spds/syncml/config.txt:# password = \n"
             "spds/syncml/config.txt:# logdir = \n"
             "spds/syncml/config.txt:# loglevel = 0\n"
             "spds/syncml/config.txt:# printChanges = 1\n"

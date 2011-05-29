@@ -59,7 +59,7 @@ struct SyncSourceParams {
      */
     SyncSourceParams(const string &name,
                      const SyncSourceNodes &nodes,
-                     const boost::shared_ptr<const SyncConfig> &context,
+                     const boost::shared_ptr<SyncConfig> &context,
                      const string &contextName = "") :
         m_name(name),
         m_nodes(nodes),
@@ -71,7 +71,7 @@ struct SyncSourceParams {
 
     string m_name;
     SyncSourceNodes m_nodes;
-    boost::shared_ptr<const SyncConfig> m_context;
+    boost::shared_ptr<SyncConfig> m_context;
     string m_contextName;
 };
 
@@ -203,7 +203,7 @@ struct ClientTestConfig{
      * @param isSourceA true if the requested SyncSource is the first one accessing that
      *                  data, otherwise the second
      */
-    typedef TestingSyncSource *(*createsource_t)(ClientTest &client, int source, bool isSourceA);
+    typedef boost::function<TestingSyncSource *(ClientTest &, int, bool)> createsource_t;
 
     /**
      * Creates a sync source which references the primary database;
@@ -1223,7 +1223,7 @@ class DummySyncSource : public SyncSource
        SyncSource(params) {}
 
      DummySyncSource(const std::string &name, const std::string &contextName) :
-       SyncSource(SyncSourceParams(name, SyncSourceNodes(), boost::shared_ptr<const SyncConfig>(), contextName)) {}
+       SyncSource(SyncSourceParams(name, SyncSourceNodes(), boost::shared_ptr<SyncConfig>(), contextName)) {}
 
     virtual Databases getDatabases() { return Databases(); }
     virtual void open() {}
@@ -1593,6 +1593,9 @@ public:
 
     /** to be called after init() and all backupItem() calls */
     void finalize(BackupReport &report);
+
+    /** can be used to restart creating the backup after an intermediate failure */
+    void reset();
 
 private:
     typedef std::map<Hash_t, Counter_t> Map_t;

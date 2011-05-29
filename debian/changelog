@@ -4,6 +4,7 @@ syncevolution (1.1.99.4+ds1-1) unstable; urgency=low
   * Rebuilt against new libsynthesis (Closes: #615263)
   * Removed icalstrdup patch, now upstream.
   * Enable CalDAV/CardDAV (Closes: #624642)
+  * Bump Standards-Version to 3.9.2 (no changes)
 
  -- David Bremner <bremner@debian.org>  Sun, 29 May 2011 08:03:22 -0300
 

@@ -10,7 +10,7 @@ Build-Depends: debhelper (>= 7.0.50~), autotools-dev, libedataserver1.2-dev,
  libgconf2-dev, libgnome-keyring-dev, xsltproc, 
  libopenobex1-dev [!kfreebsd-i386 !kfreebsd-amd64 !hurd-i386], libnotify-dev,
  python-docutils, libical-dev, libneon27-gnutls-dev
-Standards-Version: 3.9.1
+Standards-Version: 3.9.2
 Homepage: http://www.syncevolution.org
 Vcs-Git: git://git.debian.org/git/collab-maint/syncevolution
 Vcs-Browser: http://git.debian.org/?p=collab-maint/syncevolution.git

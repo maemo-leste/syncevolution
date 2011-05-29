@@ -102,3 +102,18 @@ Description: Evolution data synchronization program using SyncML (debugging)
  items are supported.
  .
  This package provides debugging symbols
+
+Package: libsyncevolution0
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version}), dbus
+Description: Evolution data synchronization program using SyncML (shared library)
+ .
+ This package provides a shared library.
+
+Package: libsyncevo-dbus0
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version}), dbus
+Description: Evolution data synchronization program using SyncML (shared library)
+ .
+ This package provides a shared library.
+

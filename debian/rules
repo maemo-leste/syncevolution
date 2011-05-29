@@ -36,4 +36,4 @@ export-patches:
 	[ ! -r debian/patches ] || \
 	grep "^\#*$(notdir $(PATCH_EXPORT_SCRIPT))" debian/patches/series
 	rm -rf debian/patches
-	sh $(PATCH_EXPORT_SCRIPT)
+	bash $(PATCH_EXPORT_SCRIPT)

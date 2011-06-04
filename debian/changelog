@@ -5,9 +5,10 @@ syncevolution (1.1.99.4+ds1-1) experimental; urgency=low
   * Removed icalstrdup patch, now upstream.
   * Enable CalDAV/CardDAV (Closes: #624642)
   * Bump Standards-Version to 3.9.2 (no changes)
-  * New binary package: libsyncevolution0
+  * New binary packages: libsyncevolution0, libsyncevo-dbus0
+    syncevolution-libs
 
- -- David Bremner <bremner@debian.org>  Fri, 03 Jun 2011 07:36:36 -0300
+ -- David Bremner <bremner@debian.org>  Fri, 03 Jun 2011 21:56:26 -0300
 
 syncevolution (1.1.99.3+ds1-1) experimental; urgency=low
 

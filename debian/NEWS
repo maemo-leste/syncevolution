@@ -1,4 +1,4 @@
-syncevolution (1.1.99.4+ds1-1) unstable; urgency=low
+syncevolution (1.1.99.5-1) unstable; urgency=low
 
   * This version of syncevolution introduces an irreversible change to the
     config layout, see the --migrate option in the syncevolution man page.

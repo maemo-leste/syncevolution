@@ -33,7 +33,7 @@ override_dh_makeshlibs:
 	dh_makeshlibs -Nsyncevolution-libs
 
 get-orig-source: 
-	git archive --format=tar ${UPSTREAMTAG} | gzip -9 > ../${ORIG}
+	git archive --format=tar ${UPSTREAMTAG} --prefix=${SOURCEPKG}_${UPSTREAM}/ | gzip -9 > ../${ORIG}
 
 PATCH_EXPORT_SCRIPT=/usr/share/gitpkg/hooks/quilt-patches-deb-export-hook
 export-patches:

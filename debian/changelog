@@ -3,8 +3,9 @@ syncevolution (1.1.99.5a-1) experimental; urgency=low
   * New upstream version 1.1.99.5a, first release candiate for 1.2
   * Added python-openssl dependency, the HTTP server needs it for HTTPS support
   * Added versioned dependency on libsynthesis0 to get required features
+  * Fixed .orig.tar.gz generation in get-orig-source target
 
- -- Tino Keitel <tino+debian@tikei.de>  Sat, 16 Jul 2011 19:57:45 +0200
+ -- Tino Keitel <tino+debian@tikei.de>  Tue, 19 Jul 2011 11:45:01 +0200
 
 syncevolution (1.1.99.4+ds1-1) experimental; urgency=low
 

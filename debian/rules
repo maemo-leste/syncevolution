@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
-UPSTREAMTAG=upstream/1.1.99.4+ds1
+UPSTREAMTAG=upstream/1.1.99.5a
 
 SOURCEPKG=$(shell dpkg-parsechangelog | sed  -n 's/^Source: \(.*\)/\1/p')
 UPSTREAM=$(shell dpkg-parsechangelog |  sed -n 's/^Version: \(.*\)-[^-]*/\1/p')

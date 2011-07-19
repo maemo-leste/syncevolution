@@ -5,6 +5,7 @@ syncevolution (1.1.99.5a-1) experimental; urgency=low
   * Added versioned dependency on libsynthesis0 to get required features
   * Fixed .orig.tar.gz generation in get-orig-source target
   * Added myself to Uploaders:, thanks to David for sponsoring
+  * Use updated upstream tag for source package generation
 
  -- Tino Keitel <tino+debian@tikei.de>  Tue, 19 Jul 2011 11:59:54 +0200
 

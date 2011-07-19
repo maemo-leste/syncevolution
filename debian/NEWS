@@ -1,7 +1,8 @@
-syncevolution (1.1.99.5-1) unstable; urgency=low
+syncevolution (1.1.99.5a-1) experimental; urgency=low
 
   * This version of syncevolution introduces an irreversible change to the
     config layout, see the --migrate option in the syncevolution man page.
+    Migration happens automatically at first invocation.
 
   * This version is only know to work with version 2.32.2 of evolution.
     In particular, it probably won't work with the version of evolution in 

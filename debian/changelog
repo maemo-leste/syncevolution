@@ -6,9 +6,11 @@ syncevolution (1.1.99.5a-1) experimental; urgency=low
   * Fixed .orig.tar.gz generation in get-orig-source target
   * Added myself to Uploaders:, thanks to David for sponsoring
   * Use updated upstream tag for source package generation
-  * Updated NEWS.Debian
+  * Removed 0001-Replace-with-in-call-to-PKG_CHECK_MODULES.patch, fixed upstream
+  * Renamed NEWS.Debian to NEWS so that it is actually used
+  * Updated NEWS for 1.1.99.5a
 
- -- Tino Keitel <tino+debian@tikei.de>  Tue, 19 Jul 2011 11:59:54 +0200
+ -- Tino Keitel <tino+debian@tikei.de>  Wed, 20 Jul 2011 16:02:02 +0200
 
 syncevolution (1.1.99.4+ds1-1) experimental; urgency=low
 

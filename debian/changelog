@@ -1,3 +1,10 @@
+syncevolution (1.1.99.5b-1) experimental; urgency=low
+
+  * replace "!kfreebsd-*" and "!hurd-*" build depencendies with "linux-any"
+    as bluez is only available on Linux (Closes: #634747)
+
+ -- Tino Keitel <tino+debian@tikei.de>  Sun, 24 Jul 2011 22:46:52 +0200
+
 syncevolution (1.1.99.5a-1) experimental; urgency=low
 
   * New upstream version 1.1.99.5a, first release candiate for 1.2

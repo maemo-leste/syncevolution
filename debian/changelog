@@ -6,8 +6,9 @@ syncevolution (1.1.99.5a-2) unstable; urgency=low
   * Add 0001-README-crucial-syncURL-was-missing.patch which contains a
     small CalDAV/CardDAV documentation fix from upstream git
   * Rework package descriptions to mention new features
+  * Add README.Debian with some hints for HTTP server operation
 
- -- Tino Keitel <tino+debian@tikei.de>  Tue, 26 Jul 2011 19:21:22 +0200
+ -- Tino Keitel <tino+debian@tikei.de>  Tue, 26 Jul 2011 19:22:28 +0200
 
 syncevolution (1.1.99.5a-1) experimental; urgency=low
 

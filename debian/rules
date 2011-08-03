@@ -20,7 +20,7 @@ override_dh_auto_configure:
 	sh autogen.sh
 	/bin/bash ./configure --with-synthesis-src=none --prefix=/usr --sysconfdir=/etc \
 			--libexecdir=/usr/lib/syncevolution --enable-gui \
-			--with-rst2man --with-rst2html --with-dav
+			--with-rst2man --with-rst2html --enable-dav
 
 override_dh_install:
 	dh_install -X"*.pl"

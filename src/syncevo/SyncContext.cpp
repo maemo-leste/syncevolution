@@ -1857,7 +1857,15 @@ void SyncContext::throwError(SyncMLStatus status, const string &error)
 
 void SyncContext::throwError(const string &action, int error)
 {
-    throwError(action + ": " + strerror(error));
+    std::string what = action + ": " + strerror(error);
+    // be as specific if we can be: relevant for the file backend,
+    // which is expected to return STATUS_NOT_FOUND == 404 for "file
+    // not found"
+    if (error == ENOENT) {
+        throwError(STATUS_NOT_FOUND, what);
+    } else {
+        throwError(what);
+    }
 }
 
 void SyncContext::fatalError(void *object, const char *error)
@@ -1915,16 +1923,16 @@ void SyncContext::startLoopThread()
 #endif
 }
 
-SyncSource *SyncContext::findSource(const char *name)
+SyncSource *SyncContext::findSource(const std::string &name)
 {
     if (!m_activeContext || !m_activeContext->m_sourceListPtr) {
         return NULL;
     }
-    const char *realname = strrchr(name, m_findSourceSeparator);
+    const char *realname = strrchr(name.c_str(), m_findSourceSeparator);
     if (realname) {
         realname++;
     } else {
-        realname = name;
+        realname = name.c_str();
     }
     return (*m_activeContext->m_sourceListPtr)[realname];
 }
@@ -1950,11 +1958,11 @@ void SyncContext::initSources(SourceList &sourceList)
     BOOST_FOREACH(const string &name, configuredSources) {
         boost::shared_ptr<PersistentSyncSourceConfig> sc(getSyncSourceConfig(name));
         SyncSourceNodes source = getSyncSourceNodes (name);
-        SourceType sourceType = SyncSource::getSourceType(source);
         // is the source enabled?
         string sync = sc->getSync();
         bool enabled = sync != "disabled";
         if (enabled) {
+            SourceType sourceType = SyncSource::getSourceType(source);
             if (sourceType.m_backend == "virtual") {
                 //This is a virtual sync source, check and enable the referenced
                 //sub syncsources here
@@ -1995,12 +2003,12 @@ void SyncContext::initSources(SourceList &sourceList)
         boost::shared_ptr<PersistentSyncSourceConfig> sc(getSyncSourceConfig(name));
 
         SyncSourceNodes source = getSyncSourceNodes (name);
-        SourceType sourceType = SyncSource::getSourceType(source);
 
         // is the source enabled?
         string sync = sc->getSync();
         bool enabled = sync != "disabled";
         if (enabled) {
+            SourceType sourceType = SyncSource::getSourceType(source);
             if (sourceType.m_backend != "virtual") {
                 SyncSourceParams params(name,
                                         source,
@@ -2734,6 +2742,11 @@ void SyncContext::initMain(const char *appname)
     g_set_prgname(appname);
 #endif
 
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &sa, NULL);
+
     // Initializing a potential use of EDS early is necessary for
     // libsynthesis when compiled with
     // --enable-evolution-compatibility: in that mode libical will
@@ -3269,7 +3282,7 @@ SyncMLStatus SyncContext::doSync()
             target;
             target = m_engine.OpenSubkey(targets, sysync::KEYVAL_ID_NEXT, true)) {
             s = m_engine.GetStrValue(target, "dbname");
-            SyncSource *source = findSource(s.c_str());
+            SyncSource *source = findSource(s);
             if (source) {
                 m_engine.SetInt32Value(target, "enabled", 1);
                 int slow = 0;

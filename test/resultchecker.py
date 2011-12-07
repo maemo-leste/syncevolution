@@ -20,6 +20,7 @@
 '''
 import sys,os,glob,datetime,popen2
 import re
+import fnmatch
 
 """ 
 resultcheck.py: tranverse the test result directory, generate an XML
@@ -45,7 +46,7 @@ def check (resultdir, serverlist,resulturi, srcdir, shellprefix, backenddir):
     if(os.path.isfile(resultdir+"/output.txt")==False):
         print "main test output file not exist!"
     else:
-        indents,cont = step1(resultdir+"/output.txt",result,indents,resultdir,resulturi, shellprefix, srcdir)
+        indents,cont = step1(resultdir,result,indents,resultdir,resulturi, shellprefix, srcdir)
         if (cont):
             step2(resultdir,result,servers,indents,srcdir,shellprefix,backenddir)
         else:
@@ -55,12 +56,47 @@ def check (resultdir, serverlist,resulturi, srcdir, shellprefix, backenddir):
     result.write('''</nightly-test>\n''')
     result.close()
 
-def step1(input, result, indents, dir, resulturi, shellprefix, srcdir):
+patchsummary = re.compile('^Subject: (?:\[PATCH.*?\] )?(.*)\n')
+patchauthor = re.compile('^From: (.*?) <.*>\n')
+def extractPatchSummary(patchfile):
+    author = ""
+    for line in open(patchfile):
+        m = patchauthor.match(line)
+        if m:
+            author = m.group(1) + " - "
+        else:
+            m = patchsummary.match(line)
+            if m:
+                return author + m.group(1)
+    return os.path.basename(patchfile)
+
+def step1(resultdir, result, indents, dir, resulturi, shellprefix, srcdir):
     '''Step1 of the result checking, collect system information and 
     check the preparation steps (fetch, compile)'''
     cont = True
+    input = os.path.join(resultdir, "output.txt")
     indent =indents[-1]+space
     indents.append(indent)
+
+    # include information prepared by GitCopy in runtests.py
+    result.write(indent+'<source-info>\n')
+    files = os.listdir(resultdir)
+    files.sort()
+    for source in files:
+        m = re.match('(.*)-source.log', source)
+        if m:
+            name = m.group(1)
+            result.write('   <source name="%s"><description><![CDATA[%s]]></description>\n' %
+                         (name, open(os.path.join(resultdir, source)).read()))
+            result.write('       <patches>\n')
+            for patch in files:
+                if fnmatch.fnmatch(patch, name + '-*.patch'):
+                    result.write('          <patch><path>%s</path><summary><![CDATA[%s]]></summary></patch>\n' %
+                                 ( patch, extractPatchSummary(os.path.join(resultdir, patch)) ) )
+            result.write('       </patches>\n')
+            result.write('   </source>\n')
+    result.write(indent+'</source-info>\n')
+
     result.write(indent+'''<platform-info>\n''')
     indent =indents[-1]+space
     indents.append(indent)
@@ -171,6 +207,7 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
     sourceServers = ['evolution',
                      'evolution-prebuilt-build',
                      'yahoo',
+                     'davical',
                      'googlecalendar',
                      'apple',
                      'dbus']
@@ -216,13 +253,22 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
                 of test cases'''
                 templates=[]
                 oldpath = os.getcwd()
-                os.chdir (srcdir)
-                fout,fin=popen2.popen2(shellprefix + " env LD_LIBRARY_PATH=build-synthesis/src/.libs SYNCEVOLUTION_BACKEND_DIR="+backenddir +" CLIENT_TEST_SOURCES=file_contact ./client-test -h |grep 'Client::Sync::file_contact'|grep -v 'Retry' |grep -v 'Suspend' | grep -v 'Resend'")
-                os.chdir(oldpath)
-                for line in fout:
-                    l = line.partition('Client::Sync::file_contact::')[2].rpartition('\n')[0]
-                    if(l!=''):
-                        templates.append(l);
+                # Get list of Client::Sync tests one source at a time (because
+                # the result might depend on CLIENT_TEST_SOURCES and which source
+                # is listed there first) and combine the result for the common
+                # data types (because some tests are only enable for contacts, others
+                # only for events).
+                # The order of the tests matters, so don't use a hash and start with
+                # a source which has only the common tests enabled. Additional tests
+                # then get added at the end.
+                for source in ('file_task', 'file_event', 'file_contact', 'eds_contact', 'eds_event'):
+                    os.chdir (srcdir)
+                    fout,fin=popen2.popen2(shellprefix + " env LD_LIBRARY_PATH=build-synthesis/src/.libs SYNCEVOLUTION_BACKEND_DIR="+backenddir +" CLIENT_TEST_SOURCES="+source+" ./client-test -h")
+                    os.chdir(oldpath)
+                    for line in fout:
+                        l = line.partition('Client::Sync::'+source+'::')[2].rpartition('\n')[0]
+                        if l != '' and l not in templates:
+                            templates.append(l)
                 indent +=space
                 indents.append(indent)
                 result.write(indent+'<sync>\n')
@@ -264,11 +310,17 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
                 #======================================================================
                 # FAIL: TestDBusServer.testGetConfigsTemplates - Server.GetConfigsTemplates()
                 # ---------------------------------------------------------------------
+                #
+                # More recent Python 2.7 produces:
+                # FAIL: testSyncSecondSession (__main__.TestSessionAPIsReal)
 
                 # first build list of all tests, assuming that they pass
                 dbustests = {}
                 test_start = re.compile(r'''^Test(?P<cl>.*)\.test(?P<func>[^ ]*)''')
+                # FAIL/ERROR + description of test (old Python)
                 test_fail = re.compile(r'''(?P<type>FAIL|ERROR): Test(?P<cl>.*)\.test(?P<func>[^ ]*)''')
+                # FAIL/ERROR + function name of test (Python 2.7)
+                test_fail_27 = re.compile(r'''(?P<type>FAIL|ERROR): test(?P<func>[^ ]*) \(.*\.(?:Test(?P<cl>.*))\)''')
                 logfile = None
                 sepcount = 0
                 for line in open(rserver + "/output.txt"):
@@ -276,7 +328,7 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
                     if m:
                         is_okay = True
                     else:
-                        m = test_fail.search(line)
+                        m = test_fail.search(line) or test_fail_27.search(line)
                         is_okay = False
                     if m:
                         # create log file
@@ -331,14 +383,23 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
                     # <path>/Client_Sync_eds_contact_testItems.log
                     # <path>/SyncEvo_CmdlineTest_testConfigure.log
                     # <path>/N7SyncEvo11CmdlineTestE_testConfigure.log - C++ name mangling?
-                    m = re.match(r'.*/(Client_Source_|Client_Sync_|N7SyncEvo\d+|[^_]*_)(.*)_([^_]*)', log)
+                    m = re.match(r'.*/(Client_Source_|Client_Sync_|N7SyncEvo\d+|[^_]*_)(.*)_([^_]*)\.log', log)
                     # Client_Sync_, Client_Source_, SyncEvo_, ...
                     prefix = m.group(1)
                     # eds_contact, CmdlineTest, ...
                     format = m.group(2)
+                    # testImport
+                    casename = m.group(3)
+                    # special case grouping of some tests: include group inside casename instead of
+                    # format, example:
+                    # <path>/Client_Source_apple_caldav_LinkedItems_1_testLinkedItemsParent
+                    m = re.match(r'(.*)_(LinkedItems_\d+)', format)
+                    if m:
+                        format = m.group(1)
+                        casename = m.group(2) + '::' + casename
                     if(format not in logdic):
                         logdic[format]=[]
-                    logdic[format].append(log)
+                    logdic[format].append((casename, log))
                     logprefix[format]=prefix
             for format in logdic.keys():
                 indent +=space
@@ -350,23 +411,27 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
                 qformat = qformat.replace("_", "__");
                 qformat = qformat.replace("+", "_-");
                 result.write(indent+'<'+qformat+' prefix="'+prefix+'">\n')
-                for case in logdic[format]:
+                for casename, log in logdic[format]:
                     indent +=space
                     indents.append(indent)
-                    casename = case.rpartition('_')[2].partition('.')[0]
-                    result.write(indent+'<'+casename+'>')
+                    # must avoid :: in XML
+                    tag = casename.replace('::', '__')
+                    # special case LinkedItems_1::testLinkedItems...: shorten it
+                    # if tag.startswith('LinkedItems_'):
+                    #    tag = tag.split('_', 1)[1]
+                    result.write(indent+'<'+tag+'>')
                     match=format+'::'+casename
                     matchOk=match+": okay \*\*\*"
                     matchKnownFailure=match+": \*\*\* failure ignored \*\*\*"
-                    if not os.system("grep -q '" + matchKnownFailure + "' "+case):
+                    if not os.system("grep -q '" + matchKnownFailure + "' "+log):
                        result.write('knownfailure')
-                    elif not os.system("tail -10 %s | grep -q 'external transport failure (local, status 20043)'" % case):
+                    elif not os.system("tail -10 %s | grep -q 'external transport failure (local, status 20043)'" % log):
                         result.write('network')
-                    elif os.system("grep -q '" + matchOk + "' "+case):
+                    elif os.system("grep -q '" + matchOk + "' "+log):
                        result.write('failed')
                     else:
                         result.write('okay')
-                    result.write('</'+casename+'>\n')
+                    result.write('</'+tag+'>\n')
                     indents.pop()
                     indent = indents[-1]
                 result.write(indent+'</'+qformat+'>\n')

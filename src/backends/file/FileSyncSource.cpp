@@ -233,7 +233,7 @@ TrackingSyncSource::InsertItemResult FileSyncSource::insertItem(const string &ui
 
     return InsertItemResult(newuid,
                             getATimeString(filename),
-                            false /* true if adding item was turned into update */);
+                            ITEM_OKAY);
 }
 
 
@@ -241,8 +241,7 @@ void FileSyncSource::removeItem(const string &uid)
 {
     string filename = createFilename(uid);
 
-    if (unlink(filename.c_str()) &&
-        errno != ENOENT) {
+    if (unlink(filename.c_str())) {
         throwError(filename, errno);
     }
 }

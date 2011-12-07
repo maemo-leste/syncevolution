@@ -66,6 +66,7 @@ static DBusMessage *SyncEvoHandleException(DBusMessage *msg);
 #include <boost/noncopyable.hpp>
 
 #include <glib-object.h>
+#include <glib.h>
 #include <glib/gi18n.h>
 #ifdef USE_GNOME_KEYRING
 extern "C" {
@@ -1050,6 +1051,9 @@ public:
 
     void getPropCb(const std::map <std::string, boost::variant <std::vector <std::string> > >& props, const string &error);
 
+    /** TRUE if watching ConnMan status */
+    bool isAvailable() { return m_connmanConn; }
+
 private:
     DBusServer &m_server;
     DBusConnectionPtr m_connmanConn;
@@ -1102,6 +1106,9 @@ public:
     }
 
     void stateChanged(uint32_t uiState);
+
+    /** TRUE if watching Network Manager status */
+    bool isAvailable() { return m_networkManagerConn; }
 
 private:
 
@@ -5701,6 +5708,12 @@ DBusServer::DBusServer(GMainLoop *loop, const DBusConnectionPtr &conn, int durat
 
     LoggerBase::pushLogger(this);
     setLevel(LoggerBase::DEBUG);
+
+    if (!m_connman.isAvailable() &&
+        !m_networkManager.isAvailable()) {
+        // assume that we are online if no network manager was found at all
+        getPresenceStatus().updatePresenceStatus(true, true);
+    }
 }
 
 DBusServer::~DBusServer()
@@ -6507,13 +6520,16 @@ void AutoSyncManager::initConfig(const string &configName)
 
     //enable http and bt?
     bool http = false, bt = false;
+    bool any = false;
     if(autoSync.empty() || boost::iequals(autoSync, "0")
             || boost::iequals(autoSync, "f")) {
         http = false;
         bt = false;
+        any = false;
     } else if(boost::iequals(autoSync, "1") || boost::iequals(autoSync, "t")) {
         http = true;
         bt = true;
+        any = true;
     } else {
         vector<string> options;
         boost::split(options, autoSync, boost::is_any_of(",")); 
@@ -6549,7 +6565,7 @@ void AutoSyncManager::initConfig(const string &configName)
         }
         if((transport == AutoSyncTask::NEEDS_HTTP && http) ||
            (transport == AutoSyncTask::NEEDS_BT && bt) ||
-           (transport == AutoSyncTask::NEEDS_OTHER)) {
+           (transport == AutoSyncTask::NEEDS_OTHER && any)) {
             AutoSyncTask syncTask(configName, duration, transport, url);
             PeerMap::iterator it = m_peerMap.find(interval);
             if(it != m_peerMap.end()) {
@@ -6752,6 +6768,22 @@ void AutoSyncManager::syncSuccessStart()
     }
 }
 
+/**
+ * True if the error is likely to go away by itself when continuing
+ * with auto-syncing. This errs on the side of showing notifications
+ * too often rather than not often enough.
+ */
+static bool ErrorIsTemporary(SyncMLStatus status)
+{
+    switch (status) {
+    case STATUS_TRANSPORT_FAILURE:
+        return true;
+    default:
+        // pretty much everying this not temporary
+        return false;
+    }
+}
+
 void AutoSyncManager::syncDone(SyncMLStatus status)
 {
     SE_LOG_INFO(NULL, NULL,"Automatic sync for '%s' has been done.\n", m_activeTask->m_peer.c_str());
@@ -6764,8 +6796,9 @@ void AutoSyncManager::syncDone(SyncMLStatus status)
             body = StringPrintf(_("We have just finished syncing your computer with the %s sync service."), m_activeTask->m_peer.c_str());
             //TODO: set config information for 'sync-ui'
             m_notificationManager->publish(summary, body);
-        } else if(m_syncSuccessStart || (!m_syncSuccessStart && status == STATUS_FATAL)) {
-            //if sync is successfully started and has errors, or not started successful with a fatal problem
+        } else if (m_syncSuccessStart || !ErrorIsTemporary(status)) {
+            // if sync is successfully started and has errors, or not started successful with a permanent error
+            // that needs attention
             summary = StringPrintf(_("Sync problem."));
             body = StringPrintf(_("Sorry, there's a problem with your sync that you need to attend to."));
             //TODO: set config information for 'sync-ui'

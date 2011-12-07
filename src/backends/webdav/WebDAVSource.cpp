@@ -18,7 +18,11 @@
 
 SE_BEGIN_CXX
 
-BoolConfigProperty WebDAVCredentialsOkay("webDAVCredentialsOkay", "credentials were accepted before");
+BoolConfigProperty &WebDAVCredentialsOkay()
+{
+    static BoolConfigProperty okay("webDAVCredentialsOkay", "credentials were accepted before");
+    return okay;
+}
 
 #ifdef ENABLE_DAV
 
@@ -89,8 +93,8 @@ public:
                                           urlWithUsername.c_str()));
                 }
             }
-            boost::shared_ptr<FilterConfigNode> node = m_context->getNode(WebDAVCredentialsOkay);
-            m_credentialsOkay = WebDAVCredentialsOkay.getPropertyValue(*node);
+            boost::shared_ptr<FilterConfigNode> node = m_context->getNode(WebDAVCredentialsOkay());
+            m_credentialsOkay = WebDAVCredentialsOkay().getPropertyValue(*node);
         }
     }
 
@@ -143,9 +147,11 @@ public:
     virtual bool getCredentialsOkay() { return m_credentialsOkay; }
     virtual void setCredentialsOkay(bool okay) {
         if (m_credentialsOkay != okay && m_context) {
-            boost::shared_ptr<FilterConfigNode> node = m_context->getNode(WebDAVCredentialsOkay);
-            WebDAVCredentialsOkay.setProperty(*node, okay);
-            node->flush();
+            boost::shared_ptr<FilterConfigNode> node = m_context->getNode(WebDAVCredentialsOkay());
+            if (!node->isReadOnly()) {
+                WebDAVCredentialsOkay().setProperty(*node, okay);
+                node->flush();
+            }
             m_credentialsOkay = okay;
         }
     }
@@ -1014,7 +1020,7 @@ TrackingSyncSource::InsertItemResult WebDAVSource::insertItem(const string &uid,
 {
     std::string new_uid;
     std::string rev;
-    bool update = false;  /* true if adding item was turned into update */
+    InsertItemResultState state = ITEM_OKAY;
 
     Timespec deadline = createDeadline(); // no resending if left empty
     m_session->startOperation("PUT", deadline);
@@ -1081,7 +1087,7 @@ TrackingSyncSource::InsertItemResult WebDAVSource::insertItem(const string &uid,
             SE_LOG_DEBUG(NULL, NULL, "new item mapped to %s", real_luid.c_str());
             new_uid = real_luid;
             // TODO: find a better way of detecting unexpected updates.
-            // update = true;
+            // state = ...
         } else if (!rev.empty()) {
             // Yahoo Contacts returns an etag, but no href. For items
             // that were really created as requested, that's okay. But
@@ -1108,7 +1114,7 @@ TrackingSyncSource::InsertItemResult WebDAVSource::insertItem(const string &uid,
                              new_uid.c_str(),
                              revisions.begin()->first.c_str());
                 new_uid = revisions.begin()->first;
-                update = true;
+                state = ITEM_REPLACED;
             }
         }
     } else {
@@ -1176,7 +1182,7 @@ TrackingSyncSource::InsertItemResult WebDAVSource::insertItem(const string &uid,
         }
     }
 
-    return InsertItemResult(new_uid, rev, update);
+    return InsertItemResult(new_uid, rev, state);
 }
 
 std::string WebDAVSource::ETag2Rev(const std::string &etag)
@@ -1185,7 +1191,9 @@ std::string WebDAVSource::ETag2Rev(const std::string &etag)
     if (boost::starts_with(res, "W/")) {
         res.erase(0, 2);
     }
-    if (res.size() >= 2) {
+    if (res.size() >= 2 &&
+        res[0] == '"' &&
+        res[res.size() - 1] == '"') {
         res = res.substr(1, res.size() - 2);
     }
     return res;
@@ -1234,10 +1242,6 @@ void WebDAVSource::removeItem(const string &uid)
     switch (req->getStatusCode()) {
     case 204:
         // the expected outcome
-        break;
-    case 404:
-        // possibly already removed, ignore
-        SE_LOG_DEBUG(this, NULL, "404 - already removed?");
         break;
     default:
         SE_THROW_EXCEPTION_STATUS(TransportStatusException,

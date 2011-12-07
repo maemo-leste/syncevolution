@@ -49,7 +49,15 @@ SE_BEGIN_CXX
 
 void SyncSourceBase::throwError(const string &action, int error)
 {
-    throwError(action + ": " + strerror(error));
+    std::string what = action + ": " + strerror(error);
+    // be as specific if we can be: relevant for the file backend,
+    // which is expected to return STATUS_NOT_FOUND == 404 for "file
+    // not found"
+    if (error == ENOENT) {
+        throwError(STATUS_NOT_FOUND, what);
+    } else {
+        throwError(what);
+    }
 }
 
 void SyncSourceBase::throwError(const string &failure)
@@ -62,9 +70,9 @@ void SyncSourceBase::throwError(SyncMLStatus status, const string &failure)
     SyncContext::throwError(status, getDisplayName() + ": " + failure);
 }
 
-SyncMLStatus SyncSourceBase::handleException()
+SyncMLStatus SyncSourceBase::handleException(HandleExceptionFlags flags)
 {
-    SyncMLStatus res = Exception::handle(this);
+    SyncMLStatus res = Exception::handle(this, flags);
     return res == STATUS_FATAL ?
         STATUS_DATASTORE_FAILURE :
         res;
@@ -292,7 +300,10 @@ public:
                     // module!
                     string fullpath = dirpath + '/' + entry;
                     fullpath = normalizePath(fullpath);
-                    dlhandle = dlopen(fullpath.c_str(), RTLD_NOW|RTLD_GLOBAL);
+                    // RTLD_LAZY is needed for the WebDAV backend, which
+                    // needs to do an explicit dlopen() of libneon in compatibility
+                    // mode before any of the neon functions can be resolved.
+                    dlhandle = dlopen(fullpath.c_str(), RTLD_LAZY|RTLD_GLOBAL);
                     // remember which modules were found and which were not
                     if (dlhandle) {
                         debug<<"Loading backend library "<<entry<<endl;
@@ -357,11 +368,12 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
             backends += ") ";
         }
         string problem =
-            StringPrintf("%s: backend '%s' not supported %sor not fully configured (format '%s')",
+            StringPrintf("%s: backend '%s' not supported %sor not correctly configured (databaseFormat '%s', syncFormat '%s')",
                          params.m_name.c_str(),
                          sourceType.m_backend.c_str(),
                          backends.c_str(),
-                         sourceType.m_localFormat.c_str());
+                         sourceType.m_localFormat.c_str(),
+                         sourceType.m_format.c_str());
         SyncContext::throwError(problem);
     }
 
@@ -371,7 +383,13 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
 SyncSource *SyncSource::createTestingSource(const string &name, const string &type, bool error,
                                             const char *prefix)
 {
-    boost::shared_ptr<SyncConfig> context(new SyncConfig("target-config@client-test"));
+    std::string config = "target-config@client-test";
+    const char *server = getenv("CLIENT_TEST_SERVER");
+    if (server) {
+        config += "-";
+        config += server;
+    }
+    boost::shared_ptr<SyncConfig> context(new SyncConfig(config));
     SyncSourceNodes nodes = context->getSyncSourceNodes(name);
     SyncSourceParams params(name, nodes, context);
     PersistentSyncSourceConfig sourceconfig(name, nodes);
@@ -531,6 +549,9 @@ void SyncSourceSerialize::getSynthesisInfo(SynthesisInfo &info,
 {
     string type = getMimeType();
 
+    // default remote rule (local-storage.xml): suppresses empty properties
+    info.m_backendRule = "LOCALSTORAGE";
+
     if (type == "text/x-vcard") {
         info.m_native = "vCard21";
         info.m_fieldlist = "contacts";
@@ -545,6 +566,14 @@ void SyncSourceSerialize::getSynthesisInfo(SynthesisInfo &info,
         info.m_datatypes =
             "        <use datatype='vCard21' mode='rw'/>\n"
             "        <use datatype='vCard30' mode='rw' preferred='yes'/>\n";
+        // If a backend overwrites the m_beforeWriteScript, then it must
+        // include $VCARD_OUTGOING_PHOTO_VALUE_SCRIPT in its own script,
+        // otherwise it will be sent invalid, empty PHOTO;TYPE=unknown;VALUE=binary:
+        // properties.
+        info.m_beforeWriteScript = "$VCARD_OUTGOING_PHOTO_VALUE_SCRIPT;\n";
+        // Likewise for reading. This is needed to ensure proper merging
+        // of contact data.
+        info.m_afterReadScript = "$VCARD_INCOMING_PHOTO_VALUE_SCRIPT;\n";
     } else if (type == "text/x-calendar" || type == "text/x-vcalendar") {
         info.m_native = "vCalendar10";
         info.m_fieldlist = "calendar";
@@ -647,6 +676,19 @@ sysync::TSyError SyncSourceSerialize::insertItemAsKey(sysync::KeyH aItemKey, sys
         InsertItemResult inserted =
             insertItem(!aID ? "" : aID->item, data.get());
         newID->item = StrAlloc(inserted.m_luid.c_str());
+        switch (inserted.m_state) {
+        case ITEM_OKAY:
+            break;
+        case ITEM_REPLACED:
+            res = sysync::DB_DataReplaced;
+            break;
+        case ITEM_MERGED:
+            res = sysync::DB_DataMerged;
+            break;
+        case ITEM_NEEDS_MERGE:
+            res = sysync::DB_Conflict;
+            break;
+        }
     }
 
     return res;

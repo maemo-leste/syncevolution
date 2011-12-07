@@ -92,7 +92,14 @@ TYPE_rpm = -R
 # Dependency calculation is intentionally incomplete:
 # - don't force dependency on specific EDS libs via backends, their versions change too much (handled via --enable-evolution-compatibility and dynamic loading of the backends)
 # - ignore client-test dependencies (because users typically don't run it)
-REQUIRES_deb = --requires="'$(shell set -x; cd dist; LD_LIBRARY_PATH=$(distdir)/usr/lib:$(distdir)/usr/lib/syncevolution dpkg-shlibdeps -L$(srcdir)/src/shlibs.local --ignore-missing-info -O $$(for i in $$(find $(distdir) -type f -perm /u+x | grep -v -e client-test -e lib/syncevolution/sync); do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) | sed -e 's/[^=]*=//')'"
+REQUIRES_deb = --requires="'$(shell set -x; cd dist; LD_LIBRARY_PATH=$(distdir)/usr/lib:$(distdir)/usr/lib/syncevolution dpkg-shlibdeps -L$(srcdir)/src/shlibs.local --ignore-missing-info -O $$(for i in $$(find $(distdir) -type f -perm /u+x | grep -v -e client-test -e lib/syncevolution/sync); do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) | sed -e 's/[^=]*=//')$(REQUIRES_deb_neon)'"
+if NEON_COMPATIBILITY
+# --enable-neon-compatibility in src/backends/webdav:
+# replace dependencies from linking with hard-coded dlopen() dependencies
+REQUIRES_deb_neon = , libneon27 (>= 0.29.0) | libneon27-gnutls (>= 0.29.0)
+else
+REQUIRES_deb_neon =
+endif
 VERSION_deb = 1:$(STABLE_VERSION)$(VERSION)
 VERSION_rpm = `echo $(VERSION) | sed -e s/-/_/g`
 RELEASE = 2
@@ -207,32 +214,55 @@ dist-hook:
 	fi
 
 if ENABLE_EVOLUTION_COMPATIBILITY
+# check .so (relevant for modular builds) and main syncevolution binary
+# (relevant in that case and for static builds) for dependencies on
+# problematic libraries and symbols
+#
+# ical_strdup is an exception because it is in SyncEvolution.
 installcheck-local:
-	for i in `find . -name *.so`; do \
-		if ldd $$i | grep -e libecal -e libebook -e libedata -e libical -e libbluetooth; then \
+	for i in `find $(DESTDIR)/$(libdir)/syncevolution $(DESTDIR)/$(libdir)/libsyncevo* $(DESTDIR)/$(libdir)/libsynthesis* -name *.so` $(DESTDIR)/$(bindir)/syncevolution; do \
+		if objdump -T -C $$i | grep -v :: | grep '\*UND\*' | sort | grep -v -w ical_strdup | grep -e ical -e " e_"; then \
 			echo "$$i should not depend on EDS, libical or libbluetooth"; \
-			objdump -T -C $$i | grep -v :: | grep -e ical -e " e_"; \
 			exit 1; \
-		fi \
+		fi; \
+		if ldd $$i | grep -e libecal -e libebook -e libedata -e libical -e libbluetooth; then \
+			echo "$$i should not be linked against EDS, libical or libbluetooth"; \
+			exit 1; \
+		fi; \
 	done
 endif
 
-# patch README.rst properties on-the-fly with sed expressions
-PATCH_README = -e "s/^:Version: .*/:Version: $(VERSION)/" -e "s/:Date: .*/:Date: `date +%Y-%m-%d`/"
+
+# patch README.rst properties on-the-fly
+README.patched.rst: README.rst src/syncevolution
+	perl -e '$$syncfound=0; $$sourcefound=0; $$res=0;' \
+	                -e 'sub run { $$cmd = shift; $$buffer = `$$cmd`; die if $$?; return $$buffer; }' \
+	                -e 'while (<>) {' \
+	                -e 's/^:Version: .*/:Version: $(VERSION)/;' \
+	                -e 's/:Date: .*/":Date: " . `date +%Y-%m-%d`/e;' \
+	                -e 'if (s;<<insert sync-property>>\n;run("src/syncevolution --daemon=no --sync-property ?");e) { $$syncfound=1; }' \
+	                -e 'if (s;<<insert source-property>>\n;run("src/syncevolution --daemon=no --source-property ?");e) { $$sourcefound=1; }' \
+	                -e 'print;' \
+	                -e '}' \
+	                -e 'die "<<insert sync-property>> not in README.rst?!" unless $$syncfound;' \
+	                -e 'die "<<insert source-property>> not in README.rst?!" unless $$sourcefound;' \
+	                -e 'exit $$res;' \
+	                $< >$@
+CLEANFILES += README.patched.rst
 
 # produce man pages
-syncevolution.1: README.rst
-	sed $(PATCH_README) $< | $(RST2MAN) --exit-status=3 - >$@
+syncevolution.1: README.patched.rst
+	$(RST2MAN) --exit-status=3 $< >$@
 CLEANFILES += syncevolution.1
 
 # README is the traditional name in the distribution,
 # continue using it instead of README.rst.
-README: README.rst
-	sed $(PATCH_README) $< >$@
+README: README.patched.rst
+	cp $< $@
 CLEANFILES += README
 
 # The README.html is also used on syncevolution.org as "Usage" page,
 # therefore we must use <h3> headers and lower to fit into the page.
-README.html: README.rst
-	sed $(PATCH_README) $< | $(RST2HTML) --initial-header-level=3 --exit-status=3 - >$@
+README.html: README.patched.rst
+	$(RST2HTML) --initial-header-level=3 --exit-status=3 $< >$@
 CLEANFILES += README.html

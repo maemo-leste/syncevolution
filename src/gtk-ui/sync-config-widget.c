@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <glib.h>
 #include <glib/gi18n.h>
 #include <dbus/dbus-glib.h>
 
@@ -1969,6 +1970,7 @@ sync_config_widget_init (SyncConfigWidget *self)
     self->description_label = gtk_label_new ("");
     gtk_misc_set_alignment (GTK_MISC (self->description_label), 0.0, 0.5);
     gtk_widget_set_size_request (self->description_label, 700, -1);
+    gtk_label_set_line_wrap (GTK_LABEL (self->description_label), TRUE);
     gtk_box_pack_start (GTK_BOX (tmp_box), self->description_label, FALSE, FALSE, 0);
 
     tmp_box = gtk_hbox_new (FALSE, 0);

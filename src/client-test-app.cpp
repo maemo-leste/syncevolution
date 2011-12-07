@@ -65,46 +65,6 @@ public:
 
     virtual void addTests() {
         LocalTests::addTests();
-
-#ifdef ENABLE_MAEMO
-        if (config.createSourceA &&
-            config.createSourceB &&
-            config.templateItem &&
-            strstr(config.templateItem, "BEGIN:VCARD") &&
-            config.uniqueProperties) {
-            ADD_TEST(EvolutionLocalTests, testOssoDelete);
-        }
-#endif
-    }
-
-private:
-
-    // insert am item,
-    // overwrite it with an additional X-OSSO-CONTACT-STATE:DELETED as Maemoe address book does,
-    // iterate again and check that our own code deleted the item
-    void testOssoDelete() {
-        // get into clean state with one template item added
-        deleteAll(createSourceA);
-        insert(createSourceA, config.templateItem, config.itemType);
-
-        // add X-OSSO-CONTACT-STATE:DELETED
-        string item = config.templateItem;
-        const char *comma = strchr(config.uniqueProperties, ':');
-        size_t offset = item.find(config.uniqueProperties, 0,
-                                  comma ? comma - config.uniqueProperties : strlen(config.uniqueProperties));
-        CPPUNIT_ASSERT(offset != item.npos);
-        item.insert(offset, "X-OSSO-CONTACT-STATE:DELETED\n");
-        update(createSourceA, item.c_str(), false);
-
-        // opening and preparing the source should delete the item
-        std::auto_ptr<TestingSyncSource> source;
-        SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
-        SOURCE_ASSERT_NO_FAILURE(source.get(), source->open());
-        SOURCE_ASSERT_NO_FAILURE(source.get(), source->beginSync("", "") );
-        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), SyncSourceChanges::ANY));
-        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), SyncSourceChanges::NEW));
-        CPPUNIT_ASSERT_EQUAL(0, countItemsOfType(source.get(), SyncSourceChanges::UPDATED));
-        CPPUNIT_ASSERT_EQUAL(1, countItemsOfType(source.get(), SyncSourceChanges::DELETED));
     }
 };
 
@@ -169,12 +129,27 @@ public:
     TestEvolution(const string &id) :
         ClientTest(getenv("CLIENT_TEST_DELAY") ? atoi(getenv("CLIENT_TEST_DELAY")) : 0,
                    getenv("CLIENT_TEST_LOG") ? getenv("CLIENT_TEST_LOG") : ""),
+        m_initialized(false),
         m_clientID(id),
         m_configs(SyncSource::getTestRegistry())
     {
+    }
+
+    /**
+     * code depends on other global constructors to run first, execute it after constructor but before
+     * any other methods
+     */
+    void init()
+    {
+        if (m_initialized) {
+	    return;
+        } else {
+            m_initialized = true;
+        }
+
         const char *server = getenv("CLIENT_TEST_SERVER");
 
-        if (id == "1") {
+        if (m_clientID == "1") {
             m_clientB.reset(new TestEvolution("2"));
         }
 
@@ -218,9 +193,9 @@ public:
         ClientTest::Config conf;
         BOOST_FOREACH (string source, sources) {
             getSourceConfig (source, conf);
-            if (conf.subConfigs) {
+            if (!conf.m_subConfigs.empty()) {
                 vector<string> subs;
-                boost::split (subs, conf.subConfigs, boost::is_any_of(","));
+                boost::split (subs, conf.m_subConfigs, boost::is_any_of(","));
                 BOOST_FOREACH (string sub, subs) {
                     pushLocalSource2Config(sub);
                 }
@@ -230,36 +205,36 @@ public:
         }
         // get configuration and set obligatory fields
         LoggerBase::instance().setLevel(Logger::DEBUG);
-        std::string root = std::string("evolution/") + server + "_" + id;
-        boost::shared_ptr<SyncConfig> config(new SyncConfig(string(server) + "_" + id));
+        std::string root = std::string("evolution/") + server + "_" + m_clientID;
+        boost::shared_ptr<SyncConfig> config(new SyncConfig(string(server) + "_" + m_clientID));
         boost::shared_ptr<SyncConfig> from = boost::shared_ptr<SyncConfig> ();
 
         if (!config->exists()) {
             // no configuration yet, create in different contexts because
             // device ID is different
-            config.reset(new SyncConfig(string(server) + "_" + id + "@client-test-" + id));
+            config.reset(new SyncConfig(string(server) + "_" + m_clientID + "@client-test-" + m_clientID));
             config->setDefaults();
             from = SyncConfig::createPeerTemplate(server);
             if(from) {
                 set<string> filter;
                 config->copy(*from, &filter);
             }
-            config->setDevID(id == "1" ? "sc-api-nat" : "sc-pim-ppc");
+            config->setDevID(m_clientID == "1" ? "sc-api-nat" : "sc-pim-ppc");
         }
         BOOST_FOREACH(const RegisterSyncSourceTest *test, m_configs) {
             ClientTest::Config testconfig;
             getSourceConfig(test, testconfig);
-            CPPUNIT_ASSERT(testconfig.type);
+            CPPUNIT_ASSERT(!testconfig.m_type.empty());
 
-            boost::shared_ptr<SyncSourceConfig> sc = config->getSyncSourceConfig(testconfig.sourceName);
+            boost::shared_ptr<SyncSourceConfig> sc = config->getSyncSourceConfig(testconfig.m_sourceName);
             if (!sc || !sc->exists()) {
                 // no configuration yet
-                config->setSourceDefaults(testconfig.sourceName);
-                sc = config->getSyncSourceConfig(testconfig.sourceName);
+                config->setSourceDefaults(testconfig.m_sourceName);
+                sc = config->getSyncSourceConfig(testconfig.m_sourceName);
                 CPPUNIT_ASSERT(sc);
-                sc->setURI(testconfig.uri);
-                if(from && testconfig.sourceNameServerTemplate){
-                    boost::shared_ptr<SyncSourceConfig> scServerTemplate = from->getSyncSourceConfig(testconfig.sourceNameServerTemplate);
+                sc->setURI(testconfig.m_uri);
+                if(from && !testconfig.m_sourceNameServerTemplate.empty()) {
+                    boost::shared_ptr<SyncSourceConfig> scServerTemplate = from->getSyncSourceConfig(testconfig.m_sourceNameServerTemplate);
                     sc->setURI(scServerTemplate->getURI());
                 }
             }
@@ -269,28 +244,33 @@ public:
             sc->setDatabaseID(database);
             sc->setUser(m_evoUser);
             sc->setPassword(m_evoPassword);
-            sc->setBackend(SourceType(testconfig.type).m_backend);
+            sc->setBackend(SourceType(testconfig.m_type).m_backend);
         }
         config->flush();
     }
 
     virtual LocalTests *createLocalTests(const std::string &name, int sourceParam, ClientTest::Config &co) {
+        init();
         return new EvolutionLocalTests(name, *this, sourceParam, co);
     }
 
     virtual int getNumLocalSources() {
+        init();
         return m_localSource2Config.size();
     }
 
     virtual int getNumSyncSources() {
+        init();
         return m_syncSource2Config.size();
     }
 
     virtual void getLocalSourceConfig(int source, Config &config) {
+        init();
         getSourceConfig(m_configs[m_localSource2Config[source]], config);
     }
 
     virtual void getSyncSourceConfig(int source, Config &config) {
+        init();
         getSourceConfig(m_configs[m_syncSource2Config[source]], config);
     }
 
@@ -305,20 +285,21 @@ public:
     }
 
     virtual void getSourceConfig (const string &configName, Config &config) {
+        init();
         return getSourceConfig (m_configs[configName], config);
     }
 
     static void getSourceConfig(const RegisterSyncSourceTest *test, Config &config) {
-        memset(&config, 0, sizeof(config));
         ClientTest::getTestData(test->m_testCaseName.c_str(), config);
-        config.createSourceA = createSource;
-        config.createSourceB = createSource;
-        config.sourceName = test->m_configName.c_str();
+        config.m_createSourceA = createSource;
+        config.m_createSourceB = createSource;
+        config.m_sourceName = test->m_configName.c_str();
 
         test->updateConfig(config);
     }
 
     virtual ClientTest *getClientB() {
+        init();
         return m_clientB.get();
     }
 
@@ -336,6 +317,8 @@ public:
                                 const std::string &logbase,
                                 const SyncOptions &options)
     {
+        init();
+
         // check whether using buteo to do sync
         const char *buteo = getenv("CLIENT_TEST_BUTEO");
         bool useButeo = false;
@@ -451,6 +434,7 @@ public:
     }
   
 private:
+    bool m_initialized;
     string m_clientID;
     std::auto_ptr<TestEvolution> m_clientB;
     const TestRegistry &m_configs;
@@ -490,7 +474,13 @@ private:
     /** called internally in this class */
     TestingSyncSource *createNamedSource(const string &name, bool isSourceA) {
         string database = getDatabaseName(name);
-        boost::shared_ptr<SyncConfig> context(new SyncConfig("target-config@client-test"));
+        std::string config = "target-config@client-test";
+        const char *server = getenv("CLIENT_TEST_SERVER");
+        if (server) {
+            config += "-";
+            config += server;
+        }
+        boost::shared_ptr<SyncConfig> context(new SyncConfig(config));
         SyncSourceNodes nodes = context->getSyncSourceNodes(name,
                                                             string("_") + m_clientID +
                                                             "_" + (isSourceA ? "A" : "B"));
@@ -508,7 +498,7 @@ private:
         getSourceConfig(test, testConfig);
 
         PersistentSyncSourceConfig sourceConfig(params.m_name, params.m_nodes);
-        sourceConfig.setSourceType(SourceType(testConfig.type));
+        sourceConfig.setSourceType(SourceType(testConfig.m_type));
 
         // downcasting here: anyone who registers his sources for testing
         // must ensure that they are indeed TestingSyncSource instances

@@ -424,8 +424,7 @@ void Cmdline::makeObsolete(boost::shared_ptr<SyncConfig> &from)
 {
     string oldname = from->getRootPath();
     string newname, suffix;
-    int counter = 0;
-    while (true) {
+    for (int counter = 0; true; counter++) {
         ostringstream newsuffix;
         newsuffix << ".old";
         if (counter) {
@@ -433,6 +432,16 @@ void Cmdline::makeObsolete(boost::shared_ptr<SyncConfig> &from)
         }
         suffix = newsuffix.str();
         newname = oldname + suffix;
+        if (from->hasPeerProperties()) {
+            boost::shared_ptr<SyncConfig> renamed(new SyncConfig(from->getPeerName() + suffix));
+            if (renamed->exists()) {
+                // don't pick a config name which has the same peer name
+                // as some other, existing config
+                continue;
+            }
+        }
+
+        // now renaming should succeed, but let's check anyway
         if (!rename(oldname.c_str(),
                     newname.c_str())) {
             break;
@@ -442,7 +451,6 @@ void Cmdline::makeObsolete(boost::shared_ptr<SyncConfig> &from)
                                   newname.c_str(),
                                   strerror(errno)));
         }
-        counter++;
     }
 
     string newConfigName;
@@ -518,12 +526,28 @@ void Cmdline::finishCopy(const boost::shared_ptr<SyncConfig> &from,
         // config to hide that old config from normal UI users. Must
         // do this without going through SyncConfig, because that
         // would bump the version.
-        FileConfigNode node(from->getRootPath(), "config.ini", false);
         BoolConfigProperty ready("ConsumerReady", "", "0");
-        if (ready.getPropertyValue(node)) {
-            ready.setProperty(node, false);
+        // Also disable auto-syncing in the migrated config.
+        StringConfigProperty autosync("autoSync", "", "");
+        {
+            FileConfigNode node(from->getRootPath(), "config.ini", false);
+            if (ready.getPropertyValue(node)) {
+                ready.setProperty(node, false);
+            }
+            if (!autosync.getProperty(node).empty()) {
+                autosync.setProperty(node, "0");
+            }
+            node.flush();
         }
-        node.flush();
+
+        // same for very old configs
+        {
+            FileConfigNode node(from->getRootPath() + "/spds/syncml", "config.txt", false);
+            if (!autosync.getProperty(node).empty()) {
+                autosync.setProperty(node, "0");
+            }
+            node.flush();
+        }
 
         // Set ConsumerReady for migrated SyncEvolution < 1.2
         // configs, because in older releases all existing
@@ -742,19 +766,12 @@ bool Cmdline::run() {
             SyncContext::throwError("--dry-run not supported for configuration changes");
         }
         if (m_keyring) {
-#ifndef USE_GNOME_KEYRING
+#if (!defined USE_GNOME_KEYRING) and (!defined USE_KDE_KWALLET)
             m_err << "Error: this syncevolution binary was compiled without support for storing "
-                     "passwords in a keyring. Either store passwords in your configuration "
+                     "passwords in a keyring or wallet. Either store passwords in your configuration "
                      "files or enter them interactively on each program run." << endl;
             return false;
 #endif
-#ifndef USE_KDE_KWALLET
-            m_err << "Error: this syncevolution binary was compiled without support for storing "
-                     "passwords in a wallet. Either store passwords in your configuration "
-                     "files or enter them interactively on each program run." << endl;
-            return false;
-#endif
-
         }
 
         // name of renamed config ("foo.old") after migration
@@ -1148,6 +1165,22 @@ bool Cmdline::run() {
         sysync::TSyError err;
 #define CHECK_ERROR(_op) if (err) { SE_THROW_EXCEPTION_STATUS(StatusException, string(source->getName()) + ": " + (_op), SyncMLStatus(err)); }
 
+        // acquire passwords before doing anything (interactive password
+        // access not supported for the command line)
+        {
+            ConfigPropertyRegistry& registry = SyncConfig::getRegistry();
+            BOOST_FOREACH(const ConfigProperty *prop, registry) {
+                prop->checkPassword(*context, m_server, *context->getProperties());
+            }
+        }
+        {
+            ConfigPropertyRegistry &registry = SyncSourceConfig::getRegistry();
+            BOOST_FOREACH(const ConfigProperty *prop, registry) {
+                prop->checkPassword(*context, m_server, *context->getProperties(),
+                                    source->getName(), sourceNodes.getProperties());
+            }
+        }
+
         source->open();
         const SyncSource::Operations &ops = source->getOperations();
         if (m_printItems) {
@@ -1156,6 +1189,7 @@ bool Cmdline::run() {
                 !ops.m_readNextItem) {
                 source->throwError("reading items not supported");
             }
+
             err = ops.m_startDataRead("", "");
             CHECK_ERROR("reading items");
             list<string> luids;
@@ -1686,20 +1720,37 @@ bool Cmdline::listProperties(const ConfigPropertyRegistry &validProps,
     // Remember that comment and print it as late as possible,
     // that way related properties preceed their comment.
     string comment;
+    bool needComma = false;
     BOOST_FOREACH(const ConfigProperty *prop, validProps) {
         if (!prop->isHidden()) {
             string newComment = prop->getComment();
 
             if (newComment != "") {
                 if (!comment.empty()) {
+                    m_out << endl;
                     dumpComment(m_out, "   ", comment);
                     m_out << endl;
+                    needComma = false;
                 }
                 comment = newComment;
             }
-            m_out << prop->getMainName() << ":" << endl;
+            std::string def = prop->getDefValue();
+            if (def.empty()) {
+                def = "no default";
+            }
+            ConfigProperty::Sharing sharing = prop->getSharing();
+            if (needComma) {
+                m_out << ", ";
+            }
+            m_out << boost::join(prop->getNames(), " = ")
+                  << " (" << def << ", "
+                  << ConfigProperty::sharing2str(sharing)
+                  << (prop->isObligatory() ? ", required" : "")
+                  << ")";
+            needComma = true;
         }
     }
+    m_out << endl;
     dumpComment(m_out, "   ", comment);
     return true;
 }
@@ -2243,6 +2294,7 @@ class CmdlineTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testListSources);
     CPPUNIT_TEST(testMigrate);
     CPPUNIT_TEST(testMigrateContext);
+    CPPUNIT_TEST(testMigrateAutoSync);
     CPPUNIT_TEST_SUITE_END();
     
 public:
@@ -2565,9 +2617,9 @@ protected:
                             NULL);
         cmdline.doit();
         string res = scanFiles(root, "some-other-server");
-        string expected = ScheduleWorldConfig();
+        string expected = DefaultConfig();
         sortConfig(expected);
-        boost::replace_all(expected, "/scheduleworld/", "/some-other-server/");
+        boost::replace_all(expected, "/syncevolution/", "/some-other-server/");
         CPPUNIT_ASSERT_EQUAL_DIFF(expected, res);
     }
 
@@ -2815,7 +2867,7 @@ protected:
             CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
             string actual = injectValues(filterConfig(cmdline.m_out.str()));
             CPPUNIT_ASSERT(boost::contains(actual, "deviceId = fixed-devid"));
-            CPPUNIT_ASSERT_EQUAL_DIFF(filterConfig(internalToIni(ScheduleWorldConfig())),
+            CPPUNIT_ASSERT_EQUAL_DIFF(filterConfig(internalToIni(DefaultConfig())),
                                       actual);
         }
 
@@ -3066,15 +3118,25 @@ protected:
         help.doit();
         CPPUNIT_ASSERT_EQUAL_DIFF("--sync\n"
                                   "   Requests a certain synchronization mode when initiating a sync:\n"
-                                  "     two-way             = only send/receive changes since last sync\n"
-                                  "     slow                = exchange all items\n"
-                                  "     refresh-from-client = discard all remote items and replace with\n"
-                                  "                           the items on the client\n"
-                                  "     refresh-from-server = discard all local items and replace with\n"
-                                  "                           the items on the server\n"
-                                  "     one-way-from-client = transmit changes from client\n"
-                                  "     one-way-from-server = transmit changes from server\n"
-                                  "     disabled (or none)  = synchronization disabled\n"
+                                  "   \n"
+                                  "     two-way\n"
+                                  "       only send/receive changes since last sync\n"
+                                  "     slow\n"
+                                  "       exchange all items\n"
+                                  "     refresh-from-client\n"
+                                  "       discard all remote items and replace with the items on the client\n"
+                                  "     refresh-from-server\n"
+                                  "       discard all local items and replace with the items on the server\n"
+                                  "     one-way-from-client\n"
+                                  "       transmit changes from client\n"
+                                  "     one-way-from-server\n"
+                                  "       transmit changes from server\n"
+                                  "     disabled (or none)\n"
+                                  "       synchronization disabled\n"
+                                  "   \n"
+                                  "   **WARNING**: which side is `client` and which is `server` depends on\n"
+                                  "   the value of the ``peerIsClient`` property in the configuration.\n"
+                                  "   \n"
                                   "   When accepting a sync session in a SyncML server (HTTP server), only\n"
                                   "   sources with sync != disabled are made available to the client,\n"
                                   "   which chooses the final sync mode based on its own configuration.\n"
@@ -3215,94 +3277,93 @@ protected:
             CPPUNIT_ASSERT(shared.find("databaseFormat = text/x-vcard") != shared.npos);
         }
 
-        string syncProperties("syncURL:\n"
+        string syncProperties("syncURL (no default, unshared, required)\n"
                               "\n"
-                              "username:\n"
+                              "username (no default, unshared)\n"
                               "\n"
-                              "password:\n"
+                              "password (no default, unshared)\n"
                               "\n"
-                              "logdir:\n"
+                              "logdir (no default, shared)\n"
                               "\n"
-                              "loglevel:\n"
+                              "loglevel (0, unshared)\n"
                               "\n"
-                              "printChanges:\n"
+                              "printChanges (TRUE, unshared)\n"
                               "\n"
-                              "dumpData:\n"
+                              "dumpData (TRUE, unshared)\n"
                               "\n"
-                              "maxlogdirs:\n"
+                              "maxlogdirs (10, shared)\n"
                               "\n"
-                              "autoSync:\n"
+                              "autoSync (0, unshared)\n"
                               "\n"
-                              "autoSyncInterval:\n"
+                              "autoSyncInterval (30M, unshared)\n"
                               "\n"
-                              "autoSyncDelay:\n"
+                              "autoSyncDelay (5M, unshared)\n"
                               "\n"
-                              "preventSlowSync:\n"
+                              "preventSlowSync (TRUE, unshared)\n"
                               "\n"
-                              "useProxy:\n"
+                              "useProxy (FALSE, unshared)\n"
                               "\n"
-                              "proxyHost:\n"
+                              "proxyHost (no default, unshared)\n"
                               "\n"
-                              "proxyUsername:\n"
+                              "proxyUsername (no default, unshared)\n"
                               "\n"
-                              "proxyPassword:\n"
+                              "proxyPassword (no default, unshared)\n"
                               "\n"
-                              "clientAuthType:\n"
+                              "clientAuthType (md5, unshared)\n"
                               "\n"
-                              "RetryDuration:\n"
+                              "RetryDuration (5M, unshared)\n"
                               "\n"
-                              "RetryInterval:\n"
+                              "RetryInterval (2M, unshared)\n"
                               "\n"
-                              "remoteIdentifier:\n"
+                              "remoteIdentifier (no default, unshared)\n"
                               "\n"
-                              "PeerIsClient:\n"
+                              "PeerIsClient (FALSE, unshared)\n"
                               "\n"
-                              "SyncMLVersion:\n"
+                              "SyncMLVersion (no default, unshared)\n"
                               "\n"
-                              "PeerName:\n"
+                              "PeerName (no default, unshared)\n"
                               "\n"
-                              "deviceId:\n"
+                              "deviceId (no default, shared)\n"
                               "\n"
-                              "remoteDeviceId:\n"
+                              "remoteDeviceId (no default, unshared)\n"
                               "\n"
-                              "enableWBXML:\n"
+                              "enableWBXML (TRUE, unshared)\n"
                               "\n"
-                              "maxMsgSize:\n"
-                              "maxObjSize:\n"
+                              "maxMsgSize (150000, unshared), maxObjSize (4000000, unshared)\n"
                               "\n"
-                              "enableCompression:\n"
+                              "enableCompression (FALSE, unshared)\n"
                               "\n"
-                              "SSLServerCertificates:\n"
+                              "SSLServerCertificates (" SYNCEVOLUTION_SSL_SERVER_CERTIFICATES ", unshared)\n"
                               "\n"
-                              "SSLVerifyServer:\n"
+                              "SSLVerifyServer (TRUE, unshared)\n"
                               "\n"
-                              "SSLVerifyHost:\n"
+                              "SSLVerifyHost (TRUE, unshared)\n"
                               "\n"
-                              "WebURL:\n"
+                              "WebURL (no default, unshared)\n"
                               "\n"
-                              "IconURI:\n"
+                              "IconURI (no default, unshared)\n"
                               "\n"
-                              "ConsumerReady:\n"
+                              "ConsumerReady (FALSE, unshared)\n"
                               "\n"
-                              "peerType:\n"
+                              "peerType (no default, unshared)\n"
                               "\n"
-                              "defaultPeer:\n");
-        string sourceProperties("sync:\n"
+                              "defaultPeer (no default, global)\n");
+
+        string sourceProperties("sync (disabled, unshared, required)\n"
                                 "\n"
-                                "uri:\n"
+                                "uri (no default, unshared)\n"
                                 "\n"
-                                "backend:\n"
+                                "backend (select backend, shared)\n"
                                 "\n"
-                                "syncFormat:\n"
+                                "syncFormat (no default, unshared)\n"
                                 "\n"
-                                "forceSyncFormat:\n"
+                                "forceSyncFormat (FALSE, unshared)\n"
                                 "\n"
-                                "database:\n"
+                                "database = evolutionsource (no default, shared)\n"
                                 "\n"
-                                "databaseFormat:\n"
+                                "databaseFormat (no default, shared)\n"
                                 "\n"
-                                "databaseUser:\n"
-                                "databasePassword:\n");
+                                "databaseUser = evolutionuser (no default, shared), databasePassword = evolutionpassword (no default, shared)\n");
 
         {
             TestCmdline cmdline("--sync-property", "?",
@@ -3898,8 +3959,9 @@ protected:
             boost::replace_all(expected, "# forceSyncFormat = 0", "forceSyncFormat = 0");
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
-            string renamedConfig = scanFiles(newRoot, "scheduleworld.old");
-            boost::replace_all(createdConfig, "/scheduleworld/", "/scheduleworld.old/");
+            string renamedConfig = scanFiles(newRoot, "scheduleworld.old.1");
+            boost::replace_first(createdConfig, "ConsumerReady = 1", "ConsumerReady = 0");
+            boost::replace_all(createdConfig, "/scheduleworld/", "/scheduleworld.old.1/");
             CPPUNIT_ASSERT_EQUAL_DIFF(createdConfig, renamedConfig);
         }
 
@@ -3940,6 +4002,7 @@ protected:
                                  "peers/scheduleworld/config.ini");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
             string renamedConfig = scanFiles(oldRoot + ".old.1");
+            boost::replace_first(createdConfig, "ConsumerReady = 1", "ConsumerReady = 0");
             CPPUNIT_ASSERT_EQUAL_DIFF(createdConfig, renamedConfig);
         }
 
@@ -3997,8 +4060,8 @@ protected:
             boost::replace_all(expected, "# forceSyncFormat = 0", "forceSyncFormat = 0");
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
-            renamedConfig = scanFiles(otherRoot, "scheduleworld.old");
-            boost::replace_all(expected, "/scheduleworld/", "/scheduleworld.old/");
+            renamedConfig = scanFiles(otherRoot, "scheduleworld.old.3");
+            boost::replace_all(expected, "/scheduleworld/", "/scheduleworld.old.3/");
             boost::replace_all(expected, "ConsumerReady = 1", "ConsumerReady = 0");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, renamedConfig);
 
@@ -4013,11 +4076,11 @@ protected:
                 CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_out.str());
             }
             migratedConfig = scanFiles(otherRoot, "scheduleworld");
-            boost::replace_all(expected, "/scheduleworld.old/", "/scheduleworld/");
+            boost::replace_all(expected, "/scheduleworld.old.3/", "/scheduleworld/");
             boost::replace_all(expected, "ConsumerReady = 0", "ConsumerReady = 1");          
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
-            renamedConfig = scanFiles(otherRoot, "scheduleworld.old.1");
-            boost::replace_all(expected, "/scheduleworld/", "/scheduleworld.old.1/");
+            renamedConfig = scanFiles(otherRoot, "scheduleworld.old.4");
+            boost::replace_all(expected, "/scheduleworld/", "/scheduleworld.old.4/");
             boost::replace_all(expected, "ConsumerReady = 1", "ConsumerReady = 0");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, renamedConfig);
 
@@ -4043,10 +4106,10 @@ protected:
                 CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_out.str());
             }
             migratedConfig = scanFiles(otherRoot, "scheduleworld");
-            boost::replace_all(expected, "/scheduleworld.old.1/", "/scheduleworld/");
+            boost::replace_all(expected, "/scheduleworld.old.4/", "/scheduleworld/");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
-            renamedConfig = scanFiles(otherRoot, "scheduleworld.old.2");
-            boost::replace_all(expected, "/scheduleworld/", "/scheduleworld.old.2/");
+            renamedConfig = scanFiles(otherRoot, "scheduleworld.old.5");
+            boost::replace_all(expected, "/scheduleworld/", "/scheduleworld.old.5/");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, renamedConfig);
         }
     }
@@ -4127,6 +4190,82 @@ protected:
         }
     }
 
+    void testMigrateAutoSync() {
+        ScopedEnvChange templates("SYNCEVOLUTION_TEMPLATE_DIR", "templates");
+        ScopedEnvChange xdg("XDG_CONFIG_HOME", m_testDir);
+        ScopedEnvChange home("HOME", m_testDir);
+
+        string oldRoot = m_testDir + "/.sync4j/evolution/scheduleworld";
+        string newRoot = m_testDir + "/syncevolution/default";
+
+        string oldConfig = "spds/syncml/config.txt:autoSync = 1\n";
+        oldConfig += OldScheduleWorldConfig();
+
+        {
+            // migrate old config
+            createFiles(oldRoot, oldConfig);
+            string createdConfig = scanFiles(oldRoot);
+            TestCmdline cmdline("--migrate",
+                                "scheduleworld",
+                                NULL);
+            cmdline.doit();
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_out.str());
+
+            string migratedConfig = scanFiles(newRoot);
+            string expected = ScheduleWorldConfig();
+            boost::replace_first(expected, "# autoSync = 0", "autoSync = 1");
+            sortConfig(expected);
+            // migrating SyncEvolution < 1.2 configs sets
+            // ConsumerReady, to keep config visible in the updated
+            // sync-ui
+            boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
+            boost::replace_first(expected, "# database = ", "database = xyz");
+            boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
+            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            // migrating "type" sets forceSyncFormat (always)
+            // and databaseFormat (if format was part of type, as for addressbook)
+            boost::replace_all(expected, "# forceSyncFormat = 0", "forceSyncFormat = 0");
+            boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
+            CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
+            string renamedConfig = scanFiles(oldRoot + ".old");
+            // autoSync must have been unset
+            boost::replace_first(createdConfig, ":autoSync = 1", ":autoSync = 0");
+            CPPUNIT_ASSERT_EQUAL_DIFF(createdConfig, renamedConfig);
+        }
+
+        {
+            // rewrite existing config with autoSync set
+            string createdConfig = scanFiles(newRoot, "scheduleworld");
+
+            TestCmdline cmdline("--migrate",
+                                "scheduleworld",
+                                NULL);
+            cmdline.doit();
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
+            CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_out.str());
+
+            string migratedConfig = scanFiles(newRoot, "scheduleworld");
+            string expected = ScheduleWorldConfig();
+            boost::replace_first(expected, "# autoSync = 0", "autoSync = 1");
+            sortConfig(expected);
+            boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
+            boost::replace_first(expected, "# database = ", "database = xyz");
+            boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
+            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            boost::replace_all(expected, "# forceSyncFormat = 0", "forceSyncFormat = 0");
+            boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
+            CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
+            string renamedConfig = scanFiles(newRoot, "scheduleworld.old.1");
+            // autoSync must have been unset
+            boost::replace_first(createdConfig, ":autoSync = 1", ":autoSync = 0");
+            // the scheduleworld config was consumer ready, the migrated one isn't
+            boost::replace_all(createdConfig, "ConsumerReady = 1", "ConsumerReady = 0");
+            boost::replace_all(createdConfig, "/scheduleworld/", "/scheduleworld.old.1/");
+            CPPUNIT_ASSERT_EQUAL_DIFF(createdConfig, renamedConfig);
+        }
+    }
+
     const string m_testDir;        
 
 private:
@@ -4186,6 +4325,24 @@ private:
         vector<string> m_argvstr;
         boost::scoped_array<const char *> m_argv;
     };
+
+    string DefaultConfig() {
+        string config = ScheduleWorldConfig();
+        boost::replace_first(config,
+                             "syncURL = http://sync.scheduleworld.com/funambol/ds",
+                             "syncURL = http://yourserver:port");
+        boost::replace_first(config, "http://www.scheduleworld.com", "http://www.syncevolution.org");
+        boost::replace_all(config, "ScheduleWorld", "SyncEvolution");
+        boost::replace_all(config, "scheduleworld", "syncevolution");
+        boost::replace_first(config, "PeerName = SyncEvolution", "# PeerName = ");
+        boost::replace_first(config, "# ConsumerReady = 0", "ConsumerReady = 1");
+        boost::replace_first(config, "uri = card3", "uri = addressbook");
+        boost::replace_first(config, "uri = cal2", "uri = calendar");
+        boost::replace_first(config, "uri = task2", "uri = todo");
+        boost::replace_first(config, "uri = note", "uri = memo");
+        boost::replace_first(config, "syncFormat = text/vcard", "# syncFormat = ");
+        return config;
+    }
 
     string ScheduleWorldConfig(int contextMinVersion = CONFIG_CONTEXT_MIN_VERSION,
                                int contextCurVersion = CONFIG_CONTEXT_CUR_VERSION,
@@ -4519,7 +4676,7 @@ private:
                 size_t fileoff = fullpath.rfind('/');
                 mkdir_p(fullpath.substr(0, fileoff));
                 out.open(fullpath.c_str(),
-                         append ? ios_base::out : (ios_base::out|ios_base::trunc));
+                         append ? (ios_base::out|ios_base::ate|ios_base::app) : (ios_base::out|ios_base::trunc));
                 outname = newname;
             }
             out << line << endl;

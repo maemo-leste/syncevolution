@@ -179,7 +179,15 @@ class EvolutionCalendarSource : public EvolutionSyncSource,
      * implemented without the troublesome querying of the EDS
      * backend.
      */
-    set<string> m_allLUIDs;
+    class LUIDs : public map< string, set<string> > {
+    public:
+        bool containsUID(const std::string &uid) const { return findUID(uid) != end(); }
+        const_iterator findUID(const std::string &uid) const { return find(uid); }
+
+        bool containsLUID(const ItemID &id) const;
+        void insertLUID(const ItemID &id);
+        void eraseLUID(const ItemID &id);
+    } m_allLUIDs;
 
     /**
      * A list of ref-counted smart pointers to icalcomponents.
@@ -200,8 +208,10 @@ class EvolutionCalendarSource : public EvolutionSyncSource,
      * ensure that the calendar remains in a consistent state.
      *
      * @param returnOnlyChildren    only return children in list, even if parent is also removed
+     * @param ignoreNotFound        don't throw a STATUS_NOT_FOUND error when deleting fails with
+     *                              a NOT_FOUND error
      */
-    ICalComps_t removeEvents(const string &uid, bool returnOnlyChildren);
+    ICalComps_t removeEvents(const string &uid, bool returnOnlyChildren, bool ignoreNotFound = true);
 };
 
 #else

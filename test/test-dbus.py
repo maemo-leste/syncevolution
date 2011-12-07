@@ -1,4 +1,4 @@
-#! /usr/bin/python
+#! /usr/bin/python -u
 #
 # Copyright (C) 2009 Intel Corporation
 #
@@ -33,6 +33,7 @@ import dbus.service
 import gobject
 import sys
 import re
+import atexit
 
 # introduced in python-gobject 2.16, not available
 # on all Linux distros => make it optional
@@ -44,15 +45,56 @@ except ImportError:
 
 DBusGMainLoop(set_as_default=True)
 
-bus = dbus.SessionBus()
-loop = gobject.MainLoop()
-
 debugger = "" # "gdb"
 server = ["syncevo-dbus-server"]
 monitor = ["dbus-monitor"]
 # primarily for XDG files, but also other temporary files
 xdg_root = "temp-test-dbus"
 configName = "dbus_unittest"
+
+def GrepNotifications(dbuslog):
+    '''finds all Notify calls and returns their parameters as list of line lists'''
+    return re.findall(r'^method call .* dest=.* .*interface=org.freedesktop.Notifications; member=Notify\n((?:^   .*\n)*)',
+                      dbuslog,
+                      re.MULTILINE)
+
+# See notification-daemon.py for a stand-alone version.
+#
+# Embedded here to avoid issues with setting up the environment
+# in such a way that the stand-alone version can be run
+# properly.
+class Notifications (dbus.service.Object):
+    '''fake org.freedesktop.Notifications implementation,'''
+    '''used when there is none already registered on the session bus'''
+
+    @dbus.service.method(dbus_interface='org.freedesktop.Notifications', in_signature='', out_signature='ssss')
+    def GetServerInformation(self):
+        return ('test-dbus', 'SyncEvolution', '0.1', '1.1')
+
+    @dbus.service.method(dbus_interface='org.freedesktop.Notifications', in_signature='', out_signature='as')
+    def GetCapabilities(self):
+        return ['actions', 'body', 'body-hyperlinks', 'body-markup', 'icon-static', 'sound']
+
+    @dbus.service.method(dbus_interface='org.freedesktop.Notifications', in_signature='susssasa{sv}i', out_signature='u')
+    def Notify(self, app, replaces, icon, summary, body, actions, hints, expire):
+        return random.randint(1,100)
+
+# fork before connecting to the D-Bus daemon
+child = os.fork()
+if child == 0:
+    bus = dbus.SessionBus()
+    loop = gobject.MainLoop()
+    name = dbus.service.BusName("org.freedesktop.Notifications", bus)
+    # start dummy notification daemon, if possible;
+    # if it fails, ignore (probably already one running)
+    notifications = Notifications(bus, "/org/freedesktop/Notifications")
+    loop.run()
+    sys.exit(0)
+
+# testing continues in parent process
+atexit.register(os.kill, child, 9)
+bus = dbus.SessionBus()
+loop = gobject.MainLoop()
 
 def property(key, value):
     """Function decorator which sets an arbitrary property of a test.
@@ -226,6 +268,28 @@ class TimeoutTest:
         self.failIf(end - start < 5)
         self.failIf(end - start >= 6)
 
+def TryKill(pid, signal):
+    try:
+        os.kill(pid, signal)
+    except OSError, ex:
+        # might have quit in the meantime, deal with the race
+        # condition
+        if ex.errno != 3:
+            raise ex
+
+def ShutdownSubprocess(popen, timeout):
+    start = time.time()
+    if popen.poll() == None:
+        TryKill(popen.pid, signal.SIGTERM)
+    while popen.poll() == None and start + timeout >= time.time():
+        time.sleep(0.01)
+    if popen.poll() == None:
+        TryKill(popen.pid, signal.SIGKILL)
+        while popen.poll() == None and start + timeout + 1 >= time.time():
+            time.sleep(0.01)
+        return False
+    return True
+
 class DBusUtil(Timeout):
     """Contains the common run() method for all D-Bus test suites
     and some utility functions."""
@@ -291,8 +355,15 @@ class DBusUtil(Timeout):
         # and increase log level
         env["SYNCEVOLUTION_DEBUG"] = "1"
 
-        dbuslog = "dbus.log"
-        syncevolog = "syncevo.log"
+        # can be set by a test to run additional tests on the content
+        # of the D-Bus log
+        self.runTestDBusCheck = None
+
+        # testAutoSyncFailure (__main__.TestSessionAPIsDummy) => testAutoSyncFailure_TestSessionAPIsDummy
+        testname = str(self).replace(" ", "_").replace("__main__.", "").replace("(", "").replace(")", "")
+        dbuslog = testname + ".dbus.log"
+        syncevolog = testname + ".syncevo.log"
+
         pmonitor = subprocess.Popen(monitor,
                                     stdout=open(dbuslog, "w"),
                                     stderr=subprocess.STDOUT)
@@ -315,11 +386,17 @@ class DBusUtil(Timeout):
                     time.sleep(2)
                     break
         else:
+            logfile = open(syncevolog, "w")
+            logfile.write("env:\n%s\n\nargs:\n%s\n\n" % (env, server + serverArgs))
+            logfile.flush()
+            size = os.path.getsize(syncevolog)
             DBusUtil.pserver = subprocess.Popen(server + serverArgs,
                                                 env=env,
-                                                stdout=open(syncevolog, "w"),
+                                                stdout=logfile,
                                                 stderr=subprocess.STDOUT)
-            while os.path.getsize(syncevolog) == 0:
+            while (os.path.getsize(syncevolog) == size or \
+                    not ("syncevo-dbus-server: ready to run" in open(syncevolog).read())) and \
+                    self.isServerRunning():
                 time.sleep(1)
 
         numerrors = len(result.errors)
@@ -354,20 +431,35 @@ class DBusUtil(Timeout):
             print "\ndone, quit gdb now\n"
         hasfailed = numerrors + numfailures != len(result.errors) + len(result.failures)
 
-        if not debugger and DBusUtil.pserver.poll() == None:
-            os.kill(DBusUtil.pserver.pid, signal.SIGTERM)
-        DBusUtil.pserver.communicate()
+        if debugger:
+            # allow debugger to run as long as it is needed
+            DBusUtil.pserver.communicate()
+        else:
+            # force shutdown in 5 seconds
+            if not ShutdownSubprocess(DBusUtil.pserver, 5):
+                print "   syncevo-dbus-server had to be killed with SIGKILL"
+                result.errors.append((self,
+                                      "syncevo-dbus-server had to be killed with SIGKILL"))
         serverout = open(syncevolog).read()
         if DBusUtil.pserver is not None and DBusUtil.pserver.returncode != -15:
             hasfailed = True
         if hasfailed:
             # give D-Bus time to settle down
             time.sleep(1)
-        os.kill(pmonitor.pid, signal.SIGTERM)
-        pmonitor.communicate()
+        if not ShutdownSubprocess(pmonitor, 5):
+            print "   dbus-monitor had to be killed with SIGKILL"
+            result.errors.append((self,
+                                  "dbus-monitor had to be killed with SIGKILL"))
         monitorout = open(dbuslog).read()
         report = "\n\nD-Bus traffic:\n%s\n\nserver output:\n%s\n" % \
             (monitorout, serverout)
+        if self.runTestDBusCheck:
+            try:
+                self.runTestDBusCheck(self, monitorout)
+            except:
+                # only append report if not part of some other error below
+                result.errors.append((self,
+                                      "D-Bus log failed check: %s\n%s" % (sys.exc_info()[1], (not hasfailed and report) or "")))
         if DBusUtil.pserver.returncode and DBusUtil.pserver.returncode != -15:
             # create a new failure specifically for the server
             result.errors.append((self,
@@ -417,11 +509,11 @@ class DBusUtil(Timeout):
         signal = bus.add_signal_receiver(session_ready,
                                          'SessionChanged',
                                          'org.syncevolution.Server',
-                                         'org.syncevolution',
+                                         self.server.bus_name,
                                          None,
                                          byte_arrays=True,
                                          utf8_strings=True)
-        session = dbus.Interface(bus.get_object('org.syncevolution',
+        session = dbus.Interface(bus.get_object(self.server.bus_name,
                                                 sessionpath),
                                  'org.syncevolution.Session')
         status, error, sources = session.GetStatus(utf8_strings=True)
@@ -476,14 +568,14 @@ class DBusUtil(Timeout):
         bus.add_signal_receiver(progress,
                                 'ProgressChanged',
                                 'org.syncevolution.Session',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 sessionpath,
                                 byte_arrays=True, 
                                 utf8_strings=True)
         bus.add_signal_receiver(status,
                                 'StatusChanged',
                                 'org.syncevolution.Session',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 sessionpath,
                                 byte_arrays=True, 
                                 utf8_strings=True)
@@ -500,7 +592,7 @@ class DBusUtil(Timeout):
         bus.add_signal_receiver(config,
                                 'ConfigChanged',
                                 'org.syncevolution.Server',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 byte_arrays=True, 
                                 utf8_strings=True)
 
@@ -526,14 +618,14 @@ class DBusUtil(Timeout):
         bus.add_signal_receiver(abort,
                                 'Abort',
                                 'org.syncevolution.Connection',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 conpath,
                                 byte_arrays=True, 
                                 utf8_strings=True)
         bus.add_signal_receiver(reply,
                                 'Reply',
                                 'org.syncevolution.Connection',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 conpath,
                                 byte_arrays=True, 
                                 utf8_strings=True)
@@ -744,7 +836,7 @@ class TestDBusServerTerm(unittest.TestCase, DBusUtil):
         except dbus.DBusException:
             self.fail("dbus server should not terminate")
 
-        connection = dbus.Interface(bus.get_object('org.syncevolution',
+        connection = dbus.Interface(bus.get_object(self.server.bus_name,
                                                    conpath),
                                     'org.syncevolution.Connection')
         connection.Close(False, "good bye", utf8_strings=True)
@@ -931,6 +1023,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         self.conn.remove_from_connection()
         self.conf = None
 
+    @property("ENV", "DBUS_TEST_CONNMAN=session")
     @timeout(100)
     def testPresenceSignal(self):
         """TestDBusServerPresence.testPresenceSignal - check Server.Presence signal"""
@@ -948,7 +1041,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         match = bus.add_signal_receiver(cb_http_presence,
                                 'Presence',
                                 'org.syncevolution.Server',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 None,
                                 byte_arrays=True,
                                 utf8_strings=True)
@@ -967,7 +1060,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         match = bus.add_signal_receiver(cb_bt_presence,
                                 'Presence',
                                 'org.syncevolution.Server',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 None,
                                 byte_arrays=True,
                                 utf8_strings=True)
@@ -996,7 +1089,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         match = bus.add_signal_receiver(cb_bt_http_presence,
                                 'Presence',
                                 'org.syncevolution.Server',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 None,
                                 byte_arrays=True,
                                 utf8_strings=True)
@@ -1009,6 +1102,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         self.failUnlessEqual (self.bar, "")
         match.remove()
 
+    @property("ENV", "DBUS_TEST_CONNMAN=session")
     @timeout(100)
     def testServerCheckPresence(self):
         """TestDBusServerPresence.testServerCheckPresence - check Server.CheckPresence()"""
@@ -1052,6 +1146,7 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         self.failUnlessEqual (status, "")
         self.failUnlessEqual (transports, ["obex-bt://bt-client-mixed"])
 
+    @property("ENV", "DBUS_TEST_CONNMAN=session")
     @timeout(100)
     def testSessionCheckPresence(self):
         """TestDBusServerPresence.testSessionCheckPresence - check Session.CheckPresence()"""
@@ -1072,7 +1167,6 @@ class TestDBusServerPresence(unittest.TestCase, DBusUtil):
         self.failUnlessEqual (status, "no transport")
 
     def run(self, result):
-        os.environ["DBUS_TEST_CONNMAN"] = "session"
         self.runTest(result, True)
 
 class TestDBusSession(unittest.TestCase, DBusUtil):
@@ -1154,7 +1248,7 @@ class TestDBusSession(unittest.TestCase, DBusUtil):
         bus.add_signal_receiver(session_ready,
                                 'SessionChanged',
                                 'org.syncevolution.Server',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 None,
                                 byte_arrays=True,
                                 utf8_strings=True)
@@ -1169,12 +1263,12 @@ class TestDBusSession(unittest.TestCase, DBusUtil):
         bus.add_signal_receiver(status,
                                 'StatusChanged',
                                 'org.syncevolution.Session',
-                                'org.syncevolution',
+                                self.server.bus_name,
                                 sessionpath,
                                 byte_arrays=True, 
                                 utf8_strings=True)
 
-        session = dbus.Interface(bus.get_object('org.syncevolution',
+        session = dbus.Interface(bus.get_object(self.server.bus_name,
                                                 sessionpath),
                                  'org.syncevolution.Session')
         status, error, sources = session.GetStatus(utf8_strings=True)
@@ -1322,6 +1416,9 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
                                "source/addressbook" : { "sync" : "slow"}
                             }
         self.sources = ['addressbook', 'calendar', 'todo', 'memo']
+
+        # set by SessionReady signal handlers in some tests
+        self.auto_sync_session_path = None
 
     def run(self, result):
         self.runTest(result)
@@ -1847,7 +1944,7 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         signal = bus.add_signal_receiver(infoRequest,
                                          'InfoRequest',
                                          'org.syncevolution.Server',
-                                         'org.syncevolution',
+                                         self.server.bus_name,
                                          None,
                                          byte_arrays=True,
                                          utf8_strings=True)
@@ -1868,11 +1965,11 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         self.failUnlessEqual(self.lastState, "done")
 
     @timeout(60)
-    def testAutoSyncFailure(self):
-        """TestSessionAPIsDummy.testAutoSyncFailure - test that auto-sync is triggered, fails here"""
+    def testAutoSyncNetworkFailure(self):
+        """TestSessionAPIsDummy.testAutoSyncNetworkFailure - test that auto-sync is triggered, fails due to (temporary?!) network error here"""
         self.setupConfig()
         # enable auto-sync
-        config = self.config
+        config = copy.deepcopy(self.config)
         # Note that writing this config will modify the host's keyring!
         # Use a syncURL that is unlikely to conflict with the host
         # or any other D-Bus test.
@@ -1884,7 +1981,9 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         self.session.SetConfig(True, False, config, utf8_strings=True)
 
         def session_ready(object, ready):
-            if self.running and object != self.sessionpath:
+            if self.running and object != self.sessionpath and \
+                (self.auto_sync_session_path == None and ready or \
+                 self.auto_sync_session_path == object):
                 self.auto_sync_session_path = object
                 DBusUtil.quit_events.append("session " + object + (ready and " ready" or " done"))
                 loop.quit()
@@ -1892,7 +1991,7 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         signal = bus.add_signal_receiver(session_ready,
                                          'SessionChanged',
                                          'org.syncevolution.Server',
-                                         'org.syncevolution',
+                                         self.server.bus_name,
                                          None,
                                          byte_arrays=True,
                                          utf8_strings=True)
@@ -1910,7 +2009,7 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         # session must be around for a while after terminating, to allow
         # reading information about it by clients who didn't start it
         # and thus wouldn't know what the session was about otherwise
-        session = dbus.Interface(bus.get_object('org.syncevolution',
+        session = dbus.Interface(bus.get_object(self.server.bus_name,
                                                 self.auto_sync_session_path),
                                  'org.syncevolution.Session')
         reports = session.GetReports(0, 100, utf8_strings=True)
@@ -1921,6 +2020,7 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         flags = session.GetFlags()
         self.failUnlessEqual(flags, [])
         first_auto = self.auto_sync_session_path
+        self.auto_sync_session_path = None
 
         # check that interval between auto-sync sessions is right
         loop.run()
@@ -1933,12 +2033,23 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         self.failUnless(delta < 13)
         self.failUnless(delta > 7)
 
+        # check that org.freedesktop.Notifications.Notify was not called
+        # (network errors are considered temporary, can't tell in this case
+        # that the name lookup error is permanent)
+        def checkDBusLog(self, content):
+            notifications = GrepNotifications(content)
+            self.failUnlessEqual(notifications,
+                                 [])
+
+        # done as part of post-processing in runTest()
+        self.runTestDBusCheck = checkDBusLog
+
     @timeout(60)
-    def testAutoSyncLocal(self):
-        """TestSessionAPIsDummy.testAutoSyncLocal - test that auto-sync is triggered for local sync"""
+    def testAutoSyncLocalConfigError(self):
+        """TestSessionAPIsDummy.testAutoSyncLocalConfigError - test that auto-sync is triggered for local sync, fails due to permanent config error here"""
         self.setupConfig()
         # enable auto-sync
-        config = self.config
+        config = copy.deepcopy(self.config)
         config[""]["syncURL"] = "local://@foobar" # will fail
         config[""]["autoSync"] = "1"
         config[""]["autoSyncDelay"] = "0"
@@ -1947,7 +2058,9 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         self.session.SetConfig(True, False, config, utf8_strings=True)
 
         def session_ready(object, ready):
-            if self.running and object != self.sessionpath:
+            if self.running and object != self.sessionpath and \
+                (self.auto_sync_session_path == None and ready or \
+                 self.auto_sync_session_path == object):
                 self.auto_sync_session_path = object
                 DBusUtil.quit_events.append("session " + object + (ready and " ready" or " done"))
                 loop.quit()
@@ -1955,7 +2068,7 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         signal = bus.add_signal_receiver(session_ready,
                                          'SessionChanged',
                                          'org.syncevolution.Server',
-                                         'org.syncevolution',
+                                         self.server.bus_name,
                                          None,
                                          byte_arrays=True,
                                          utf8_strings=True)
@@ -1968,7 +2081,7 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         loop.run()
         self.failUnlessEqual(DBusUtil.quit_events, ["session " + self.auto_sync_session_path + " ready",
                                                     "session " + self.auto_sync_session_path + " done"])
-        session = dbus.Interface(bus.get_object('org.syncevolution',
+        session = dbus.Interface(bus.get_object(self.server.bus_name,
                                                 self.auto_sync_session_path),
                                  'org.syncevolution.Session')
         reports = session.GetReports(0, 100, utf8_strings=True)
@@ -1978,6 +2091,128 @@ class TestSessionAPIsDummy(unittest.TestCase, DBusUtil):
         self.failUnlessEqual(name, "dummy-test")
         flags = session.GetFlags()
         self.failUnlessEqual(flags, [])
+
+        # check that org.freedesktop.Notifications.Notify was called
+        # once to report the failed attempt to start the sync
+        def checkDBusLog(self, content):
+            notifications = GrepNotifications(content)
+            self.failUnlessEqual(notifications,
+                                 ['   string "SyncEvolution"\n'
+                                  '   uint32 0\n'
+                                  '   string ""\n'
+                                  '   string "Sync problem."\n'
+                                  '   string "Sorry, there\'s a problem with your sync that you need to attend to."\n'
+                                  '   array [\n'
+                                  '      string "view"\n'
+                                  '      string "View"\n'
+                                  '      string "default"\n'
+                                  '      string "Dismiss"\n'
+                                  '   ]\n'
+                                  '   array [\n'
+                                  '   ]\n'
+                                  '   int32 -1\n'])
+
+        # done as part of post-processing in runTest()
+        self.runTestDBusCheck = checkDBusLog
+
+    @timeout(60)
+    def testAutoSyncLocalSuccess(self):
+        """TestSessionAPIsDummy.testAutoSyncLocalSuccess - test that auto-sync is done successfully for local sync between file backends"""
+        # create @foobar config
+        self.session.Detach()
+        self.setUpSession("target-config@foobar")
+        config = copy.deepcopy(self.config)
+        config[""]["remoteDeviceId"] = "foo"
+        config[""]["deviceId"] = "bar"
+        for i in ("addressbook", "calendar", "todo", "memo"):
+            source = config["source/" + i]
+            source["database"] = source["database"] + ".server"
+        self.session.SetConfig(False, False, config, utf8_strings=True)
+        self.session.Detach()
+
+        # create dummy-test@default auto-sync config
+        self.setUpSession("dummy-test")
+        config = copy.deepcopy(self.config)
+        config[""]["syncURL"] = "local://@foobar"
+        config[""]["PeerIsClient"] = "1"
+        config[""]["autoSync"] = "1"
+        config[""]["autoSyncDelay"] = "0"
+        config[""]["autoSyncInterval"] = "10s"
+        config["source/addressbook"]["uri"] = "addressbook"
+        self.session.SetConfig(False, False, config, utf8_strings=True)
+
+        def session_ready(object, ready):
+            if self.running and object != self.sessionpath and \
+                (self.auto_sync_session_path == None and ready or \
+                 self.auto_sync_session_path == object):
+                self.auto_sync_session_path = object
+                DBusUtil.quit_events.append("session " + object + (ready and " ready" or " done"))
+                loop.quit()
+
+        signal = bus.add_signal_receiver(session_ready,
+                                         'SessionChanged',
+                                         'org.syncevolution.Server',
+                                         self.server.bus_name,
+                                         None,
+                                         byte_arrays=True,
+                                         utf8_strings=True)
+
+        # shut down current session, will allow auto-sync
+        self.session.Detach()
+
+        # wait for start and end of auto-sync session
+        loop.run()
+        loop.run()
+        self.failUnlessEqual(DBusUtil.quit_events, ["session " + self.auto_sync_session_path + " ready",
+                                                    "session " + self.auto_sync_session_path + " done"])
+        session = dbus.Interface(bus.get_object(self.server.bus_name,
+                                                self.auto_sync_session_path),
+                                 'org.syncevolution.Session')
+        reports = session.GetReports(0, 100, utf8_strings=True)
+        self.failUnlessEqual(len(reports), 1)
+        self.failUnlessEqual(reports[0]["status"], "200")
+        name = session.GetConfigName()
+        self.failUnlessEqual(name, "dummy-test")
+        flags = session.GetFlags()
+        self.failUnlessEqual(flags, [])
+
+        # check that org.freedesktop.Notifications.Notify was called
+        # when starting and completing the sync
+        def checkDBusLog(self, content):
+            notifications = GrepNotifications(content)
+            self.failUnlessEqual(notifications,
+                                 ['   string "SyncEvolution"\n'
+                                  '   uint32 0\n'
+                                  '   string ""\n'
+                                  '   string "dummy-test is syncing"\n'
+                                  '   string "We have just started to sync your computer with the dummy-test sync service."\n'
+                                  '   array [\n'
+                                  '      string "view"\n'
+                                  '      string "View"\n'
+                                  '      string "default"\n'
+                                  '      string "Dismiss"\n'
+                                  '   ]\n'
+                                  '   array [\n'
+                                  '   ]\n'
+                                  '   int32 -1\n',
+
+                                  '   string "SyncEvolution"\n'
+                                  '   uint32 0\n'
+                                  '   string ""\n'
+                                  '   string "dummy-test sync complete"\n'
+                                  '   string "We have just finished syncing your computer with the dummy-test sync service."\n'
+                                  '   array [\n'
+                                  '      string "view"\n'
+                                  '      string "View"\n'
+                                  '      string "default"\n'
+                                  '      string "Dismiss"\n'
+                                  '   ]\n'
+                                  '   array [\n'
+                                  '   ]\n'
+                                  '   int32 -1\n'])
+
+        # done as part of post-processing in runTest()
+        self.runTestDBusCheck = checkDBusLog
 
 
 class TestSessionAPIsReal(unittest.TestCase, DBusUtil):
@@ -2160,7 +2395,7 @@ class TestConnection(unittest.TestCase, DBusUtil):
                                       must_authenticate,
                                       "")
         self.setUpConnectionListeners(conpath)
-        connection = dbus.Interface(bus.get_object('org.syncevolution',
+        connection = dbus.Interface(bus.get_object(self.server.bus_name,
                                                    conpath),
                                     'org.syncevolution.Connection')
         return (conpath, connection)
@@ -2253,6 +2488,7 @@ class TestConnection(unittest.TestCase, DBusUtil):
                                                     "connection " + conpath + " got final reply",
                                                     "session done"])
 
+    @timeout(20)
     def testCredentialsRight(self):
         """TestConnection.testCredentialsRight - send correct credentials"""
         self.setupConfig()

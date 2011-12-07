@@ -56,6 +56,32 @@ class unrefECalObjectList {
     }
 };
 
+bool EvolutionCalendarSource::LUIDs::containsLUID(const ItemID &id) const
+{
+    const_iterator it = findUID(id.m_uid);
+    return it != end() &&
+        it->second.find(id.m_rid) != it->second.end();
+}
+
+void EvolutionCalendarSource::LUIDs::insertLUID(const ItemID &id)
+{
+    (*this)[id.m_uid].insert(id.m_rid);
+}
+
+void EvolutionCalendarSource::LUIDs::eraseLUID(const ItemID &id)
+{
+    iterator it = find(id.m_uid);
+    if (it != end()) {
+        set<string>::iterator it2 = it->second.find(id.m_rid);
+        if (it2 != it->second.end()) {
+            it->second.erase(it2);
+            if (it->second.empty()) {
+                erase(it);
+            }
+        }
+    }
+}
+
 static int granularity()
 {
     // This long delay is necessary in combination
@@ -254,7 +280,7 @@ void EvolutionCalendarSource::listAllItems(RevisionMap_t &revisions)
         string luid = id.getLUID();
         string modTime = getItemModTime(ecomp);
 
-        m_allLUIDs.insert(luid);
+        m_allLUIDs.insertLUID(id);
         revisions[luid] = modTime;
         nextItem = nextItem->next;
     }
@@ -274,7 +300,7 @@ void EvolutionCalendarSource::readItem(const string &luid, std::string &item, bo
 EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(const string &luid, const std::string &item, bool raw)
 {
     bool update = !luid.empty();
-    bool merged = false;
+    InsertItemResultState state = ITEM_OKAY;
     bool detached = false;
     string newluid = luid;
     string data = item;
@@ -389,14 +415,14 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
         // gets used twice during a sync (examples: add + add, delete + add),
         // which should never happen.
         newluid = id.getLUID();
-        if (m_allLUIDs.find(newluid) != m_allLUIDs.end()) {
-            merged = true;
+        if (m_allLUIDs.containsLUID(id)) {
+            state = ITEM_NEEDS_MERGE;
         } else {
             // if this is a detached recurrence, then we
             // must use e_cal_modify_object() below if
-            // the parent already exists
+            // the parent or any other child already exists
             if (!id.m_rid.empty() &&
-                m_allLUIDs.find(ItemID::getLUID(id.m_uid, "")) != m_allLUIDs.end()) {
+                m_allLUIDs.containsUID(id.m_uid)) {
                 detached = true;
             } else {
                 // Creating the parent while children are already in
@@ -420,7 +446,7 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
                     ItemID newid(!id.m_uid.empty() ? id.m_uid : uid, id.m_rid);
                     newluid = newid.getLUID();
                     modTime = getItemModTime(newid);
-                    m_allLUIDs.insert(newluid);
+                    m_allLUIDs.insertLUID(newid);
                 } else {
                     throwError("storing new item", gerror);
                 }
@@ -438,7 +464,7 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
         }
     }
 
-    if (update || merged || detached) {
+    if (update || state != ITEM_NEEDS_MERGE || detached) {
         ItemID id(newluid);
         bool isParent = id.m_rid.empty();
 
@@ -475,11 +501,13 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
             // Therefore we have to use CALOBJ_MOD_ALL, but that removes
             // children.
             bool hasChildren = false;
-            BOOST_FOREACH(ItemID existingId, m_allLUIDs) {
-                if (existingId.m_uid == id.m_uid &&
-                    existingId.m_rid.size()) {
-                    hasChildren = true;
-                    break;
+            LUIDs::const_iterator it = m_allLUIDs.find(id.m_uid);
+            if (it != m_allLUIDs.end()) {
+                BOOST_FOREACH(const string &rid, it->second) {
+                    if (!rid.empty()) {
+                        hasChildren = true;
+                        break;
+                    }
                 }
             }
 
@@ -526,17 +554,17 @@ EvolutionCalendarSource::InsertItemResult EvolutionCalendarSource::insertItem(co
         modTime = getItemModTime(newid);
     }
 
-    return InsertItemResult(newluid, modTime, merged);
+    return InsertItemResult(newluid, modTime, state);
 }
 
-EvolutionCalendarSource::ICalComps_t EvolutionCalendarSource::removeEvents(const string &uid, bool returnOnlyChildren)
+EvolutionCalendarSource::ICalComps_t EvolutionCalendarSource::removeEvents(const string &uid, bool returnOnlyChildren, bool ignoreNotFound)
 {
     ICalComps_t events;
 
-    BOOST_FOREACH(const string &luid, m_allLUIDs) {
-        ItemID id(luid);
-
-        if (id.m_uid == uid) {
+    LUIDs::const_iterator it = m_allLUIDs.find(uid);
+    if (it != m_allLUIDs.end()) {
+        BOOST_FOREACH(const string &rid, it->second) {
+            ItemID id(uid, rid);
             icalcomponent *icomp = retrieveItem(id);
             if (icomp) {
                 if (id.m_rid.empty() && returnOnlyChildren) {
@@ -558,6 +586,9 @@ EvolutionCalendarSource::ICalComps_t EvolutionCalendarSource::removeEvents(const
             SE_LOG_DEBUG(this, NULL, "%s: request to delete non-existant item ignored",
                          uid.c_str());
             g_clear_error(&gerror);
+            if (!ignoreNotFound) {
+                throwError(STATUS_NOT_FOUND, string("delete item: ") + uid);
+            }
         } else {
             throwError(string("deleting item " ) + uid, gerror);
         }
@@ -579,31 +610,50 @@ void EvolutionCalendarSource::removeItem(const string &luid)
          * remove all items with the given uid and if we only wanted to
          * delete the parent, then recreate the children.
          */
-        ICalComps_t children = removeEvents(id.m_uid, true);
+        ICalComps_t children = removeEvents(id.m_uid, true, false);
 
         // recreate children
+        bool first = true;
         BOOST_FOREACH(boost::shared_ptr< eptr<icalcomponent> > &icalcomp, children) {
-            char *uid;
+            if (first) {
+                char *uid;
 
-            if (!e_cal_create_object(m_calendar, *icalcomp, &uid, &gerror)) {
-                throwError(string("recreating item ") + luid, gerror);
+                if (!e_cal_create_object(m_calendar, *icalcomp, &uid, &gerror)) {
+                    throwError(string("recreating first item ") + luid, gerror);
+                }
+                first = false;
+            } else {
+                if (!e_cal_modify_object(m_calendar, *icalcomp,
+                                         CALOBJ_MOD_THIS,
+                                         &gerror)) {
+                    throwError(string("recreating following item ") + luid, gerror);
+                }
             }
         }
-    } else if(!e_cal_remove_object_with_mod(m_calendar,
-                                            id.m_uid.c_str(),
-                                            id.m_rid.c_str(),
-                                            CALOBJ_MOD_THIS,
-                                            &gerror)) {
-        if (gerror->domain == E_CALENDAR_ERROR &&
-            gerror->code == E_CALENDAR_STATUS_OBJECT_NOT_FOUND) {
-            SE_LOG_DEBUG(this, NULL, "%s: request to delete non-existant item ignored",
+    } else {
+        // workaround for EDS 2.32 API semantic: succeeds even if
+        // detached recurrence doesn't exist and adds EXDATE,
+        // therefore we have to check for existence first
+        eptr<icalcomponent> item(retrieveItem(id));
+        gboolean success = !item ? false :
+            e_cal_remove_object_with_mod(m_calendar,
+                                         id.m_uid.c_str(),
+                                         id.m_rid.c_str(),
+                                         CALOBJ_MOD_THIS,
+                                         &gerror);
+        if (!item ||
+            (!success && gerror &&
+             gerror->domain == E_CALENDAR_ERROR &&
+             gerror->code == E_CALENDAR_STATUS_OBJECT_NOT_FOUND)) {
+            SE_LOG_DEBUG(this, NULL, "%s: request to delete non-existant item",
                          luid.c_str());
             g_clear_error(&gerror);
-        } else {
+            throwError(STATUS_NOT_FOUND, string("delete item: ") + id.getLUID());
+        } else if (!success) {
             throwError(string("deleting item " ) + luid, gerror);
         }
     }
-    m_allLUIDs.erase(luid);
+    m_allLUIDs.eraseLUID(id);
 
     if (!id.m_rid.empty()) {
         // Removing the child may have modified the parent.
@@ -637,13 +687,31 @@ icalcomponent *EvolutionCalendarSource::retrieveItem(const ItemID &id)
                           !id.m_rid.empty() ? id.m_rid.c_str() : NULL,
                           &comp,
                           &gerror)) {
-        throwError(string("retrieving item: ") + id.getLUID(), gerror);
+        if (gerror && gerror->domain == E_CALENDAR_ERROR && gerror->code == E_CALENDAR_STATUS_OBJECT_NOT_FOUND) {
+            g_clear_error(&gerror);
+            throwError(STATUS_NOT_FOUND, string("retrieving item: ") + id.getLUID());
+        } else {
+            throwError(string("retrieving item: ") + id.getLUID(), gerror);
+        }
     }
     if (!comp) {
         throwError(string("retrieving item: ") + id.getLUID());
     }
+    eptr<icalcomponent> ptr(comp);
 
-    return comp;
+    /*
+     * EDS bug: if a parent doesn't exist while a child does, and we ask
+     * for the parent, we are sent the (first?) child. Detect this and
+     * turn it into a "not found" error.
+     */
+    if (id.m_rid.empty()) {
+        struct icaltimetype rid = icalcomponent_get_recurrenceid(comp);
+        if (!icaltime_is_null_time(rid)) {
+            throwError(string("retrieving item: got child instead of parent: ") + id.m_uid);
+        }
+    }
+
+    return ptr.release();
 }
 
 string EvolutionCalendarSource::retrieveItemAsString(const ItemID &id)
@@ -663,21 +731,19 @@ string EvolutionCalendarSource::retrieveItemAsString(const ItemID &id)
                                                                ICAL_ANY_PROPERTY);
 
         while (prop) {
-            icalparameter *param = icalproperty_get_first_parameter(prop,
-                                                                    ICAL_TZID_PARAMETER);
-            while (param) {
-                icalproperty_remove_parameter_by_kind(prop, ICAL_TZID_PARAMETER);
-                param = icalproperty_get_next_parameter (prop, ICAL_TZID_PARAMETER);
-            }
+            // removes only the *first* TZID - but there shouldn't be more than one
+            icalproperty_remove_parameter_by_kind(prop, ICAL_TZID_PARAMETER);
             prop = icalcomponent_get_next_property (comp,
                                                     ICAL_ANY_PROPERTY);
         }
 
         // now try again
-        icalstr = icalcomponent_as_ical_string(comp);
+        icalstr = e_cal_get_component_as_string(m_calendar, comp);
         if (!icalstr) {
             throwError(string("could not encode item as iCalendar: ") + id.getLUID());
-        }
+        } else {
+            SE_LOG_DEBUG(this, NULL, "had to remove TZIDs because e_cal_get_component_as_string() failed for:\n%s", icalstr.get());
+	}
     }
 
     /*

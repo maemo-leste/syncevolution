@@ -1,3 +1,11 @@
+syncevolution (1.2.1-1) unstable; urgency=low
+
+  * New upstream release
+  * Update build dependencies to current libsynthesis
+  * Remove 0001-README-crucial-syncURL-was-missing.patch, included upstream
+
+ -- Tino Keitel <tino+debian@tikei.de>  Mon, 19 Dec 2011 21:35:51 +0100
+
 syncevolution (1.1.99.5a-2) unstable; urgency=low
 
   * Upload to unstable

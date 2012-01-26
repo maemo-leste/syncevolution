@@ -1,3 +1,10 @@
+syncevolution (1.2.2-1) unstable; urgency=medium
+
+  * New upstream version
+  * Fix upgrade from squeeze (Closes: #657001)
+
+ -- Tino Keitel <tino+debian@tikei.de>  Thu, 26 Jan 2012 21:18:23 +0100
+
 syncevolution (1.2.1-1) unstable; urgency=low
 
   * New upstream release

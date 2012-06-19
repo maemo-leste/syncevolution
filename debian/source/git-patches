@@ -1,2 +1,2 @@
-upstream/${UPSTREAM_REF}..patches/${UPSTREAM_REF}
+upstream/${UPSTREAM_REF}..patches/${DEB_REF}
 

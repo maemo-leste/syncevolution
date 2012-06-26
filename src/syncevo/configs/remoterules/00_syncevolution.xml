@@ -2,6 +2,8 @@
       <manufacturer>Patrick Ohly</manufacturer>
       <model>SyncEvolution</model>
 
+      <include rule="HAVE-SYNCEVOLUTION-EXDATE-DETACHED"/>
+
       <include rule="HAVE-EVOLUTION-UI-SLOT"/>
       <!-- Merging between SyncEvolution instances is expected to work
            well, so allow the engine to update items on both
@@ -13,5 +15,12 @@
            client we'll have not much such changes. -->
       <updateclientinslowsync>yes</updateclientinslowsync>
       <updateserverinslowsync>yes</updateserverinslowsync>
+
+      <!--
+          unconditionally disable the standard-compliant "skip map phase"
+          behavior in favor of letting the client choose to restart the
+          sync session if it has more changes
+      -->
+      <completefromclientonly>yes</completefromclientonly>
     </remoterule>
 

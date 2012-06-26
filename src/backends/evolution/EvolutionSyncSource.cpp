@@ -48,7 +48,7 @@ ESource *EvolutionSyncSource::findSource( ESourceList *list, const string &id )
         GSList *s;
         for (s = e_source_group_peek_sources (group); s; s = s->next) {
             ESource *source = E_SOURCE (s->data);
-            GString uri(e_source_get_uri(source));
+            GStringPtr uri(e_source_get_uri(source));
             bool found = finalID.empty() ||
                 !finalID.compare(e_source_peek_name(source)) ||
                 (uri && !finalID.compare(uri));
@@ -60,13 +60,12 @@ ESource *EvolutionSyncSource::findSource( ESourceList *list, const string &id )
     return NULL;
 }
 
-void EvolutionSyncSource::throwError(const string &action, GError *gerror)
+void EvolutionSyncSource::throwError(const string &action, GErrorCXX &gerror)
 {
     string gerrorstr;
     if (gerror) {
         gerrorstr += ": ";
         gerrorstr += gerror->message;
-        g_clear_error(&gerror);
     } else {
         gerrorstr = ": failure";
     }

@@ -1,0 +1,2 @@
+dist_noinst_SCRIPTS += build/gen-git-version.sh \
+	build/source2html.py

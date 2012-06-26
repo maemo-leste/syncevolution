@@ -21,6 +21,7 @@
 #include <syncevo/Logging.h>
 #include <syncevo/LogRedirect.h>
 #include <syncevo/SmartPtr.h>
+#include <syncevo/SuspendFlags.h>
 
 #include <sstream>
 
@@ -48,11 +49,11 @@ std::string features()
     return boost::join(res, ", ");
 }
 
-URI URI::parse(const std::string &url)
+URI URI::parse(const std::string &url, bool collection)
 {
     ne_uri uri;
     int error = ne_uri_parse(url.c_str(), &uri);
-    URI res = fromNeon(uri);
+    URI res = fromNeon(uri, collection);
     if (!res.m_port) {
         res.m_port = ne_uri_defaultport(res.m_scheme.c_str());
     }
@@ -66,14 +67,14 @@ URI URI::parse(const std::string &url)
     return res;
 }
 
-URI URI::fromNeon(const ne_uri &uri)
+URI URI::fromNeon(const ne_uri &uri, bool collection)
 {
     URI res;
 
     if (uri.scheme) { res.m_scheme = uri.scheme; }
     if (uri.host) { res.m_host = uri.host; }
     if (uri.userinfo) { res.m_userinfo = uri.userinfo; }
-    if (uri.path) { res.m_path = normalizePath(uri.path, false); }
+    if (uri.path) { res.m_path = normalizePath(uri.path, collection); }
     if (uri.query) { res.m_query = uri.query; }
     if (uri.fragment) { res.m_fragment = uri.fragment; }
     res.m_port = uri.port;
@@ -139,24 +140,32 @@ std::string URI::normalizePath(const std::string &path, bool collection)
     std::string res;
     res.reserve(path.size() * 150 / 100);
 
+    // always start with one leading slash
+    res = "/";
+
     typedef boost::split_iterator<string::const_iterator> string_split_iterator;
     string_split_iterator it =
         boost::make_split_iterator(path, boost::first_finder("/", boost::is_iequal()));
     while (!it.eof()) {
-        std::string split(it->begin(), it->end());
-        // Let's have an exception here for "%u", since we use that to replace the
-        // actual username into the path. It's safe to ignore "%u" because it
-        // couldn't be in a valid URI anyway.
-        // TODO: we should find a neat way to remove the awareness of "%u" from
-        // NeonCXX.
-        std::string normalizedSplit = split;
-        if (split != "%u") {
-            normalizedSplit = escape(unescape(split));
-        }
-        res += normalizedSplit;
-        ++it;
-        if (!it.eof()) {
-            res += '/';
+        if (it->begin() == it->end()) {
+            // avoid adding empty path components
+            ++it;
+        } else {
+            std::string split(it->begin(), it->end());
+            // Let's have an exception here for "%u", since we use that to replace the
+            // actual username into the path. It's safe to ignore "%u" because it
+            // couldn't be in a valid URI anyway.
+            // TODO: we should find a neat way to remove the awareness of "%u" from
+            // NeonCXX.
+            std::string normalizedSplit = split;
+            if (split != "%u") {
+                normalizedSplit = escape(unescape(split));
+            }
+            res += normalizedSplit;
+            ++it;
+            if (!it.eof()) {
+                res += '/';
+            }
         }
     }
     if (collection && !boost::ends_with(res, "/")) {
@@ -481,6 +490,9 @@ void Session::startOperation(const string &operation, const Timespec &deadline)
                                          (deadline - Timespec::monotonic()).duration()).c_str() :
                  "no deadline");
 
+    // now is a good time to check for user abort
+    SuspendFlags::getSuspendFlags().checkForNormal();
+
     // remember current operation attributes
     m_operation = operation;
     m_deadline = deadline;
@@ -505,6 +517,7 @@ void Session::flush()
 bool Session::checkError(int error, int code, const ne_status *status, const string &location)
 {
     flush();
+    SuspendFlags &s = SuspendFlags::getSuspendFlags();
 
     // unset operation, set it again only if the same operation is going to be retried
     string operation = m_operation;
@@ -665,9 +678,11 @@ bool Session::checkError(int error, int code, const ne_status *status, const str
                                  m_attempt);
                 }
 
-                // try same operation again
-                m_operation = operation;
-                return false;
+                // try same operation again?
+                if (s.getState() == SuspendFlags::NORMAL) {
+                    m_operation = operation;
+                    return false;
+                }
             } else {
                 SE_LOG_DEBUG(NULL, NULL, "retry %s would exceed deadline, bailing out",
                              m_operation.c_str());

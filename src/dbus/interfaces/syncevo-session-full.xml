@@ -48,9 +48,9 @@
     </method>  
 
     <method name="GetConfig">
-      <doc:doc><doc:description>Get the configuration of the server</doc:description></doc:doc>
-      <arg type="b" name="tmplate" direction="in">
-        <doc:doc><doc:summary>if TRUE, will return a matching template configuration, otherwise will return a matching server configuration</doc:summary></doc:doc>
+      <doc:doc><doc:description>Get the configuration identified by the name given to StartSession()</doc:description></doc:doc>
+      <arg type="b" name="template" direction="in">
+        <doc:doc><doc:summary>if TRUE, will return a matching template configuration, otherwise will return the stored configuration</doc:summary></doc:doc>
       </arg>
       <arg type="a{sa{ss}}" name="configuration" direction="out">
         <doc:doc><doc:summary>server configuration</doc:summary></doc:doc>
@@ -107,6 +107,32 @@
       <annotation name="com.trolltech.QtDBus.QtTypeName.In2" value="QStringMultiMap"/>
     </method>
 
+    <method name="GetNamedConfig">
+      <doc:doc><doc:description>Get the configuration identified by
+      the name given in the first argument; same as
+      Server.GetConfig(), provided again in Session for the sake of
+      completeness</doc:description></doc:doc>
+      <arg type="s" name="name" direction="in">
+        <doc:doc><doc:summary>configuration name</doc:summary></doc:doc>
+      </arg>
+      <arg type="b" name="template" direction="in"/>
+      <arg type="a{sa{ss}}" name="configuration" direction="out"/>
+      <annotation name="com.trolltech.QtDBus.QtTypeName.Out0" value="QStringMultiMap"/>
+    </method>
+
+    <method name="SetNamedConfig">
+      <doc:doc><doc:description>Same as SetConfig() except that the modified configuration is named explicitly</doc:description></doc:doc>
+      <arg type="s" name="name" direction="in">
+        <doc:doc><doc:summary>configuration name; if exactly the same as in StartSession() or StartSessionWithFlags(), then SetNamedConfig() behaves exactly like SetConfig() and none of the constraints for SetNamedConfig() apply</doc:summary></doc:doc>
+      </arg>
+      <arg type="b" name="update" direction="in"/>
+      <arg type="b" name="temporary" direction="in">
+        <doc:doc><doc:summary>temporary changes of the configuration are currently only supported for the configuration chosen when creating the session</doc:summary></doc:doc>
+      </arg>
+      <arg type="a{sa{ss}}" name="configuration" direction="in"/>
+      <annotation name="com.trolltech.QtDBus.QtTypeName.In2" value="QStringMultiMap"/>
+    </method>
+
     <method name="GetReports">
       <doc:doc><doc:description>Get synchronization reports for the server</doc:description></doc:doc>
       <arg type="u" name="start" direction="in">
@@ -146,7 +172,7 @@
             each entry contains in this order:
             an optional name that can be shown to the user
             (already localized or chosen by the user, empty if unavailable),
-            a unique value for the "evolutionSource" property,
+            a unique value for the "database" (previously "evolutionSource") property,
             a boolean which is true at most once for the default source
           </doc:description>
         </doc:doc>
@@ -216,8 +242,30 @@
       <doc:doc><doc:description>Suspend synchronization. See Status-signal for results.</doc:description></doc:doc>
     </method>
 
+    <method name="Attach">
+      <doc:doc>
+        <doc:description>
+          Prevents destruction of the session until the client
+          detaches or quits. Implemented with a counter, so each
+          Attach() must be matched by a Detach() to free the session.
+          Meant to be used by clients which want to follow the
+          progress of a session started by the daemon or some other
+          client. StartSession() automatically includes one Attach()
+          call, so typically the client which created a session never
+          calls Attach() and Detach() only once.
+        </doc:description>
+      </doc:doc>
+    </method>
+
     <method name="Detach">
-      <doc:doc><doc:description>Detach from the session.</doc:description></doc:doc>
+      <doc:doc>
+        <doc:description>
+          Each Attach() or StartSession() must be matched by one
+          Detach() call, otherwise the session will not be
+          destructed. A client that quits without these calls will be
+          detached automatically.
+        </doc:description>
+      </doc:doc>
     </method>
 
     <method name="Restore">
@@ -286,7 +334,12 @@
     </method>
 
     <method name="Execute">
-      <doc:doc><doc:description>Execute command line arguments </doc:description></doc:doc>
+      <doc:doc><doc:description>Starts execution of the operation
+      defined via the command line arguments. Like Sync(), it returns
+      immediately even if the operation still runs. Session
+      completion indicates that the operation is done. To determine
+      whether that operation was successful, check the session status.
+      </doc:description></doc:doc>
       <arg type="as" name="args" direction="in">
         <doc:doc><doc:summary>Command line arguments</doc:summary></doc:doc>
       </arg>

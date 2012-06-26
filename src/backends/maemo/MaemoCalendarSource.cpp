@@ -73,6 +73,14 @@ const char *MaemoCalendarSource::getMimeVersion() const
     }
 }
 
+void MaemoCalendarSource::getSynthesisInfo(SynthesisInfo &info,
+                                           XMLConfigFragments &fragments)
+{
+    TrackingSyncSource::getSynthesisInfo(info, fragments);
+    info.m_backendRule = "MAEMO-CALENDAR";
+    info.m_afterReadScript += "$FIX_EXDATE_SCRIPT;\n";
+}
+
 void MaemoCalendarSource::open()
 {
     string id = getDatabaseID();

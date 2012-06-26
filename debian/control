@@ -151,3 +151,17 @@ Description: Sync personal information data using SyncML and CalDAV/CardDAV (sha
  .
  This package provides a shared library.
 
+Package: libgdbussyncevo0
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version}), dbus
+Replaces: syncevolution-libs (<< 1.2.99.1)
+Breaks: syncevolution-libs (<< 1.2.99.1)
+Description: Sync personal information data using SyncML and CalDAV/CardDAV (shared library)
+ SyncEvolution synchronizes contact, calendar and task items via SyncML and
+ CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server
+ to sync PIM data in Evolution, but a plain file storage is also supported.
+ Data exchange can happen via HTTP(S) and Bluetooth. Full, one-way and
+ incremental synchronization of items are supported. SyncEvolution can act as
+ a SyncML/DAV client and SyncML server.
+ .
+ This package provides a shared library.

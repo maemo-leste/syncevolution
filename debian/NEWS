@@ -1,3 +1,24 @@
+syncevolution (1.2.99.1-1) unstable; urgency=low
+
+  * The sync format of existing configurations for Mobical (aka Everdroid)
+    must be updated manually, because the server has encoding problems when
+    using vCard 3.0 (now the default for Evolution contacts):
+
+    syncevolution --configure \
+                 syncFormat=text/x-vcard \
+                 mobical addressbook
+
+  * The Funambol template explicitly enables usage of the
+    "refresh-from-server" sync mode to avoid getting throttled with 417
+    'retry later' errors.  The same must be added to existing configs
+    manually:
+
+    syncevolution configure \
+                 enableRefreshSync=TRUE \
+                 funambol
+
+ -- Tino Keitel <tino+debian@tikei.de>  Thu, 28 Jun 2012 08:01:52 +0200
+
 syncevolution (1.1.99.5a-1) experimental; urgency=low
 
   * This version of syncevolution introduces an irreversible change to the

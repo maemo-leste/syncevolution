@@ -1,3 +1,14 @@
+syncevolution (1.2.99.1-1) UNRELEASED; urgency=low
+
+  * New upstream release candidate (Closes: #675288)
+  * Use DEB_REF instead of UPSTREAM_REF for git based patch creation
+  * Add libpcre3-dev and libcppunit-dev build dependencies
+  * New library package for libgdbussyncevo
+  * Install new syncevo-dbus-helper binary
+  * Document possible issues when upgrading from 1.2.x in NEWS
+
+ -- Tino Keitel <tino+debian@tikei.de>  Thu, 28 Jun 2012 11:34:20 +0200
+
 syncevolution (1.2.2-1) unstable; urgency=medium
 
   * New upstream version

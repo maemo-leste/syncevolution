@@ -1,3 +1,12 @@
+syncevolution (1.2.99.1-1.1) unstable; urgency=low
+
+  * Non-maintainer upload.
+  * dbus-auto-activation.patch: new patch backported from upstream; fix
+    D-Bus auto-activation. Thanks to Josselin Mouette for pointing to the
+    relevant commit. (Closes: #699852)
+
+ -- Sébastien Villemot <sebastien@debian.org>  Mon, 01 Apr 2013 20:12:55 +0200
+
 syncevolution (1.2.99.1-1) unstable; urgency=low
 
   * New upstream release candidate (Closes: #675288)

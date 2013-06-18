@@ -124,6 +124,14 @@ inline void throwFailure(const std::string &object,
 
 class DBusConnectionPtr : public boost::intrusive_ptr<GDBusConnection>
 {
+    /**
+     * Bus name of client, as passed to dbus_get_bus_connection().
+     * The name will be requested in dbus_bus_connection_undelay() =
+     * undelay(), to give the caller a chance to register objects on
+     * the new connection.
+     */
+    std::string m_name;
+
  public:
     DBusConnectionPtr() {}
     // connections are typically created once, so increment the ref counter by default
@@ -138,9 +146,18 @@ class DBusConnectionPtr : public boost::intrusive_ptr<GDBusConnection>
         return conn;
     }
 
+    /**
+     * Ensure that all IO is sent out of the process.
+     * Blocks. Only use it right before shutting down.
+     */
+    void flush();
+
     typedef boost::function<void ()> Disconnect_t;
     void setDisconnect(const Disconnect_t &func);
     // #define GDBUS_CXX_HAVE_DISCONNECT 1
+
+    void undelay() const;
+    void addName(const std::string &name) { m_name = name; }
 };
 
 class DBusMessagePtr : public boost::intrusive_ptr<GDBusMessage>
@@ -224,7 +241,7 @@ DBusConnectionPtr dbus_get_bus_connection(const std::string &address,
                                           DBusErrorCXX *err,
                                           bool delayed = false);
 
-void dbus_bus_connection_undelay(const DBusConnectionPtr &conn);
+inline void dbus_bus_connection_undelay(const DBusConnectionPtr &conn) { conn.undelay(); }
 
 /**
  * Wrapper around DBusServer. Does intentionally not expose
@@ -1211,8 +1228,8 @@ struct VariantTypeUInt64  { static const GVariantType* getVariantType() { return
 struct VariantTypeDouble  { static const GVariantType* getVariantType() { return G_VARIANT_TYPE_DOUBLE;  } };
 
 #define GDBUS_CXX_QUOTE(x) #x
-#define GDBUS_CXX_LINE GDBUS_CXX_QUOTE(__LINE__)
-#define GDBUS_CXX_SOURCE_INFO __FILE__ ":" GDBUS_CXX_LINE
+#define GDBUS_CXX_LINE(l) GDBUS_CXX_QUOTE(l)
+#define GDBUS_CXX_SOURCE_INFO __FILE__ ":" GDBUS_CXX_LINE(__LINE__)
 
 template<class host, class VariantTraits> struct basic_marshal : public dbus_traits_base
 {
@@ -1957,111 +1974,45 @@ static GDBusMessage *handleException(GDBusMessage *msg)
 /**
  * Check presence of a certain D-Bus client.
  */
-class DBusWatch : public Watch
+class Watch : private boost::noncopyable
 {
     DBusConnectionPtr m_conn;
     boost::function<void (void)> m_callback;
     bool m_called;
     guint m_watchID;
+    std::string m_peer;
 
-    static void disconnect(GDBusConnection *connection,
-                           const gchar *sender_name,
-                           const gchar *object_path,
-                           const gchar *interface_name,
-                           const gchar *signal_name,
-                           GVariant *parameters,
-                           gpointer user_data)
-    {
-        DBusWatch *watch = static_cast<DBusWatch *>(user_data);
-        if (!watch->m_called) {
-            watch->m_called = true;
-            if (watch->m_callback) {
-                watch->m_callback();
-            }
-        }
-    }
+    static void nameOwnerChanged(GDBusConnection *connection,
+                                 const gchar *sender_name,
+                                 const gchar *object_path,
+                                 const gchar *interface_name,
+                                 const gchar *signal_name,
+                                 GVariant *parameters,
+                                 gpointer user_data);
+
+    void disconnected();
 
  public:
-    DBusWatch(const DBusConnectionPtr &conn,
-              const boost::function<void (void)> &callback = boost::function<void (void)>()) :
-        m_conn(conn),
-        m_callback(callback),
-        m_called(false),
-        m_watchID(0)
-    {
-    }
+    Watch(const DBusConnectionPtr &conn,
+          const boost::function<void (void)> &callback = boost::function<void (void)>());
+    ~Watch();
 
-    virtual void setCallback(const boost::function<void (void)> &callback)
-    {
-        m_callback = callback;
-        if (m_called && m_callback) {
-            m_callback();
-        }
-    }
+    /**
+     * Changes the callback triggered by this Watch.  If the watch has
+     * already fired, the callback is invoked immediately.
+     */
+    void setCallback(const boost::function<void (void)> &callback);
 
-    void activate(const char *peer)
-    {
-        if (!peer) {
-            throw std::runtime_error("DBusWatch::activate(): no peer");
-        }
-
-        // Install watch first ...
-        m_watchID = g_dbus_connection_signal_subscribe(m_conn.get(),
-                                                       peer,
-                                                       "org.freedesktop.DBus",
-                                                       "NameLost",
-                                                       "/org/freesktop/DBus",
-                                                       NULL,
-                                                       G_DBUS_SIGNAL_FLAGS_NONE,
-                                                       disconnect,
-                                                       this,
-                                                       NULL);
-        if (!m_watchID) {
-            throw std::runtime_error("g_dbus_connection_signal_subscribe(): NameLost failed");
-        }
-
-        // ... then check that the peer really exists,
-        // otherwise we'll never notice the disconnect.
-        // If it disconnects while we are doing this,
-        // then disconnect() will be called twice,
-        // but it handles that.
-        GError *error = NULL;
-
-        GVariant *result = g_dbus_connection_call_sync(m_conn.get(),
-                                                       "org.freedesktop.DBus",
-                                                       "/org/freedesktop/DBus",
-                                                       "org.freedesktop.DBus",
-                                                       "NameHasOwner",
-                                                       g_variant_new("(s)", peer),
-                                                       G_VARIANT_TYPE("(b)"),
-                                                       G_DBUS_CALL_FLAGS_NONE,
-                                                       -1, // default timeout
-                                                       NULL,
-                                                       &error);
-
-        if (result != NULL) {
-            bool actual_result = false;
-
-            g_variant_get(result, "(b)", &actual_result);
-            if (!actual_result) {
-                disconnect(m_conn.get(), NULL, NULL, NULL, NULL, NULL, this);
-            }
-        } else {
-            std::string error_message(error->message);
-            g_error_free(error);
-            std::string err_msg("g_dbus_connection_call_sync(): NameHasOwner - ");
-            throw std::runtime_error(err_msg + error_message);
-        }
-    }
-
-    ~DBusWatch()
-    {
-        if (m_watchID) {
-            g_dbus_connection_signal_unsubscribe(m_conn.get(), m_watchID);
-            m_watchID = 0;
-        }
-    }
+    /**
+     * Starts watching for disconnect of that peer
+     * and also checks whether it is currently
+     * still around.
+     */
+    void activate(const char *peer);
 };
+
+void getWatch(GDBusConnection *conn, GDBusMessage *msg,
+              GVariantIter &iter, boost::shared_ptr<Watch> &value);
 
 /**
  * pseudo-parameter: not part of D-Bus signature,
@@ -2074,13 +2025,7 @@ template <> struct dbus_traits< boost::shared_ptr<Watch> >  : public dbus_traits
     static std::string getReply() { return ""; }
 
     static void get(GDBusConnection *conn, GDBusMessage *msg,
-                    GVariantIter &iter, boost::shared_ptr<Watch> &value)
-    {
-        boost::shared_ptr<DBusWatch> watch(new DBusWatch(conn));
-        watch->activate(g_dbus_message_get_sender(msg));
-        value = watch;
-    }
-
+                    GVariantIter &iter, boost::shared_ptr<Watch> &value) { getWatch(conn, msg, iter, value); }
     static void append(GVariantBuilder &builder, const boost::shared_ptr<Watch> &value) {}
 
     typedef boost::shared_ptr<Watch> host_type;
@@ -2123,7 +2068,7 @@ class DBusResult : virtual public Result
 
     virtual Watch *createWatch(const boost::function<void (void)> &callback)
     {
-        std::auto_ptr<DBusWatch> watch(new DBusWatch(m_conn, callback));
+        std::auto_ptr<Watch> watch(new Watch(m_conn, callback));
         watch->activate(g_dbus_message_get_sender(m_msg.get()));
         return watch.release();
     }

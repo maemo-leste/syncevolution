@@ -623,9 +623,11 @@ public:
     virtual void testIterateTwice();
     virtual void testDelete404();
     virtual void testReadItem404();
+    void doInsert(bool withUID = true);
     virtual void testSimpleInsert();
     virtual void testLocalDeleteAll();
     virtual void testComplexInsert();
+    virtual void testInsertTwice();
     virtual void testLocalUpdate();
     void doChanges(bool restart);
     virtual void testChanges();
@@ -900,7 +902,7 @@ protected:
     virtual void postSync(int res, const std::string &logname);
 
  private:
-    void allSourcesInsert();
+    void allSourcesInsert(bool withUID = true);
     void allSourcesUpdate();
     void allSourcesDeleteAll();
     void allSourcesInsertMany(int startIndex, int numItems,

@@ -1352,7 +1352,11 @@ public:
 
                 // pretty-print report
                 if (m_logLevel > LOGGING_QUIET) {
-                    SE_LOG_SHOW(NULL, NULL, "\nChanges applied during synchronization:");
+                    std::string procname = Logger::getProcessName();
+                    SE_LOG_SHOW(NULL, NULL, "\nChanges applied during synchronization%s%s%s:",
+                                procname.empty() ? "" : " (",
+                                procname.c_str(),
+                                procname.empty() ? "" : ")");
                 }
                 if (m_logLevel > LOGGING_QUIET && report) {
                     ostringstream out;
@@ -1536,7 +1540,7 @@ boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainl
 
     if (m_localSync) {
         string peer = url.substr(strlen("local://"));
-        boost::shared_ptr<LocalTransportAgent> agent(new LocalTransportAgent(this, peer, gmainloop));
+        boost::shared_ptr<LocalTransportAgent> agent(LocalTransportAgent::create(this, peer, gmainloop));
         InitializeTransport(agent, timeout);
         agent->start();
         return agent;
@@ -1548,12 +1552,10 @@ boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainl
         InitializeTransport(agent, timeout);
         return agent;
 #elif defined(ENABLE_LIBCURL)
-        if (!gmainloop) {
-            boost::shared_ptr<CurlTransportAgent> agent(new CurlTransportAgent());
-            agent->setConfig(*this);
-            InitializeTransport(agent, timeout);
-            return agent;
-        }
+        boost::shared_ptr<CurlTransportAgent> agent(new CurlTransportAgent());
+        agent->setConfig(*this);
+        InitializeTransport(agent, timeout);
+        return agent;
 #endif
     } else if (url.find("obex-bt://") ==0) {
 #ifdef ENABLE_BLUETOOTH
@@ -2353,7 +2355,8 @@ void SyncContext::getConfigXML(string &xml, string &configname)
         "      delayedabort = FALSE;\n"
         "      INTEGER alarmTimeToUTC;\n"
         "      alarmTimeToUTC = FALSE;\n"
-        "      // for VCALENDAR_COMPARE_SCRIPT: don't use UID by default\n"
+        "      INTEGER stripUID;\n"
+        "      stripUID = FALSE;\n"
         "    ]]></sessioninitscript>\n";
 
     ostringstream clientorserver;
@@ -3293,6 +3296,7 @@ SyncMLStatus SyncContext::doSync()
     }
 
     // delay the sync for debugging purposes
+    SE_LOG_DEBUG(NULL, NULL, "ready to sync");
     const char *delay = getenv("SYNCEVOLUTION_SYNC_DELAY");
     if (delay) {
         Sleep(atoi(delay));

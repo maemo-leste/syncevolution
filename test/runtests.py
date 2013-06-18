@@ -240,6 +240,12 @@ class Context:
         if cmd[command] in ("env", "sudo"):
             cmd.insert(0, cmd[command])
             del cmd[command + 1]
+        elif isenv.match(cmd[0]):
+            # We did not insert env or sudo before the initial
+            # variable assignment. Don't rely on the shell to
+            # handle that (breaks for 'foo="x" "y"'), instead
+            # use env.
+            cmd.insert(0, 'env')
 
         cmdstr = " ".join(map(lambda x: (' ' in x or x == '') and ("'" in x and '"%s"' or "'%s'") % x or x, cmd))
         if dumpCommands:
@@ -632,6 +638,16 @@ class SyncEvolutionTest(Action):
                 "SYNCEVOLUTION_BACKEND_DIR=%s " \
                 % ( datadir, templatedir, confdir, backenddir )
 
+            # Translations have no fallback, they must be installed. Leave unset
+            # if not found.
+            localedir = os.path.join(self.build.installdir, "usr/share/locale")
+            print localedir
+            if os.access(localedir, os.F_OK):
+                installenv = installenv + \
+                    ("SYNCEVOLUTION_LOCALE_DIR=%s " % localedir)
+            else:
+                print 'locale dir not found'
+
             cmd = "%s %s %s %s %s ./syncevolution" % (self.testenv, installenv, self.runner, context.setupcmd, self.name)
             context.runCommand(cmd)
 
@@ -641,7 +657,7 @@ class SyncEvolutionTest(Action):
                       "CLIENT_TEST_SOURCES=%(sources)s " \
                       "SYNC_EVOLUTION_EVO_CALENDAR_DELAY=1 " \
                       "CLIENT_TEST_ALARM=%(alarm)d " \
-                      "%(env)s %(installenv)s" \
+                      "%(env)s %(installenv)s " \
                       "CLIENT_TEST_LOG=%(log)s " \
                       "CLIENT_TEST_EVOLUTION_PREFIX=%(evoprefix)s " \
                       "%(runner)s " \
@@ -885,13 +901,23 @@ class ActiveSyncDCheckout(GitCheckout):
         """checkout activesyncd"""
         GitCheckout.__init__(self,
                              name, context.workdir, options.shell,
-                             "git://git.infradead.org/activesyncd.git",
+                             "git://git.gnome.org/evolution-activesync",
                              revision)
 
 class SyncEvolutionBuild(AutotoolsBuild):
     def execute(self):
         AutotoolsBuild.execute(self)
-        context.runCommand("%s %s src/client-test CXXFLAGS=-O0" % (self.runner, context.make))
+        # LDFLAGS=-no-install is needed to ensure that the resulting
+        # client-test is a normal, usable executable. Otherwise we
+        # can have the following situation:
+        # - A wrapper script is created on the reference platform.
+        # - It is never executed there, which means that it won't
+        #   produce the final .libs/lt-client-test executable
+        #   (done on demand by libtool wrapper).
+        # - The wrapper script is invokved for the first time
+        #   on some other platform, it tries to link, but fails
+        #   because libs are different.
+        context.runCommand("%s %s src/client-test CXXFLAGS='-O0 -g' LDFLAGS=-no-install" % (self.runner, context.make))
 
 class NopAction(Action):
     def __init__(self, name):
@@ -1022,6 +1048,10 @@ evolutiontest = SyncEvolutionTest("evolution", compile,
                                   "Client::Source SyncEvolution",
                                   [],
                                   "CLIENT_TEST_FAILURES="
+                                  # testReadItem404 works with some Akonadi versions (Ubuntu Lucid),
+                                  # but not all (Debian Testing). The other tests always fail,
+                                  # the code needs to be fixed.
+                                  "Client::Source::kde_.*::testReadItem404,"
                                   "Client::Source::kde_.*::testDelete404,"
                                   "Client::Source::kde_.*::testImport.*,"
                                   "Client::Source::kde_.*::testRemoveProperties,"
@@ -1132,17 +1162,52 @@ test.alarmSeconds = 2400
 context.add(test)
 
 class ActiveSyncTest(SyncEvolutionTest):
-    def __init__(self, name):
+    def __init__(self, name, sources = [ "eas_event", "eas_contact", "eds_event", "eds_contact" ],
+                 env = "",
+                 knownFailures = []):
+        tests = []
+        if "eds_event" in sources:
+            tests.append("Client::Sync::eds_event")
+        if "eds_contact" in sources:
+            tests.append("Client::Sync::eds_contact")
+        if "eas_event" in sources:
+            tests.append("Client::Source::eas_event")
+        if "eas_contact" in sources:
+            tests.append("Client::Source::eas_contact")
         SyncEvolutionTest.__init__(self, name,
                                    compile,
                                    "", options.shell,
-                                   "Client::Sync::eds_event Client::Sync::eds_contact Client::Source::eas_event Client::Source::eas_contact",
-                                   [ "eas_event", "eas_contact", "eds_event", "eds_contact" ],
+                                   tests,
+                                   sources,
+                                   env +
                                    "CLIENT_TEST_NUM_ITEMS=10 "
                                    "CLIENT_TEST_MODE=server " # for Client::Sync
                                    "EAS_SOUP_LOGGER=1 "
                                    "EAS_DEBUG=5 "
                                    "EAS_DEBUG_DETACHED_RECURRENCES=1 "
+
+                                   "CLIENT_TEST_FAILURES=" +
+                                   ",".join(knownFailures +
+                                            # time zone mismatch between client and server,
+                                            # still need to investigate
+                                            [ ".*::LinkedItemsWeekly::testSubsetStart11Skip[0-3]",
+                                              ".*::LinkedItemsWeekly::testSubsetStart22Skip[1-3]",
+                                              ".*::LinkedItemsWeekly::testSubsetStart33Skip[1-3]",
+                                              ".*::LinkedItemsWeekly::testSubsetStart44.*" ] +
+                                            # The disables the synccompare simplifications for
+                                            # BDAY and friends, and therefore fails.
+                                            [ ".*::testExtensions" ]
+                                            ) +
+                                   " "
+
+                                   "CLIENT_TEST_SKIP="
+                                   # See "[SyncEvolution] one-way sync + sync tokens not updated":
+                                   # one-way sync keeps using old (and obsolete) sync keys,
+                                   # thus running into unexpected slow syncs with ActiveSync.
+                                   "Client::Sync::.*::testOneWayFromClient,"
+                                   "Client::Sync::.*::testOneWayFromLocal,"
+                                   " "
+
                                    "CLIENT_TEST_LOG=activesyncd.log "
                                    ,
                                    testPrefix=" ".join(("env EAS_DEBUG_FILE=activesyncd.log",
@@ -1177,6 +1242,19 @@ class ActiveSyncTest(SyncEvolutionTest):
                 raise Exception("activesyncd did not return")
 
 test = ActiveSyncTest("exchange")
+context.add(test)
+
+test = ActiveSyncTest("googleeas",
+                      ["eds_contact", "eas_contact"],
+                      env="CLIENT_TEST_DELAY=10 CLIENT_TEST_SOURCE_DELAY=10 ",
+                      knownFailures=[
+                          # Google does not support the Fetch operation, leading
+                          # to an unhandled generic error.
+                          ".*::testReadItem404",
+                          # Remove of PHOTO not supported by Google (?),
+                          # works with Exchange.
+                          "Client::Source::eas_contact::testRemoveProperties",
+                          ])
 context.add(test)
 
 syncevoPrefix=" ".join([os.path.join(sync.basedir, "test", "wrappercheck.sh")] +
@@ -1274,9 +1352,6 @@ test = SyncEvolutionTest("davfile",
                          # server cannot detect pairs based on UID/RECURRENCE-ID
                          "CLIENT_TEST_ADD_BOTH_SIDES_SERVER_IS_DUMB=1 "
                          "CLIENT_TEST_SKIP="
-                         # testConversion fails because X-EVOLUTION-UI-SLOT is never enabled
-                         # (depends on DevInf from peer, but test runs before parsing that).
-                         "Client::Sync::.*carddav.*::testConversion"
                          ,
                          testPrefix=syncevoPrefix)
 context.add(test)
@@ -1300,9 +1375,6 @@ test = SyncEvolutionTest("edsdav",
                          # server supports multiple cycles inside the same session
                          "CLIENT_TEST_PEER_CAN_RESTART=1 "
                          "CLIENT_TEST_SKIP="
-                         # testConversion fails because X-EVOLUTION-UI-SLOT is never enabled
-                         # (depends on DevInf from peer, but test runs before parsing that).
-                         "Client::Sync::.*carddav.*::testConversion"
                          ,
                          testPrefix=syncevoPrefix)
 context.add(test)
@@ -1532,8 +1604,9 @@ mobicaltest = SyncEvolutionTest("mobical", compile,
                                 "Client::Sync",
                                 [ "eds_contact",
                                   "eds_event",
-                                  "eds_task",
-                                  "eds_memo" ],
+                                  "eds_task" ],
+                                # "eds_memo" - no longer works, 400 "Bad Request"
+
                                 # all-day detection in vCalendar 1.0
                                 # only works if client and server
                                 # agree on the time zone (otherwise the start/end times
@@ -1549,84 +1622,19 @@ mobicaltest = SyncEvolutionTest("mobical", compile,
                                 "Client::Sync::eds_event::testAddBothSidesRefresh,"
                                 "Client::Sync::eds_task::testAddBothSides,"
                                 "Client::Sync::eds_task::testAddBothSidesRefresh,"
-                                "Client::Sync::eds_contact::Retry,"
-                                "Client::Sync::eds_contact::Suspend,"
-                                "Client::Sync::eds_contact::Resend,"
-                                "Client::Sync::eds_contact::testRefreshFromClientSync,"
-                                "Client::Sync::eds_contact::testSlowSyncSemantic,"
-                                "Client::Sync::eds_contact::testRefreshStatus,"
-                                "Client::Sync::eds_contact::testDelete,"
-                                "Client::Sync::eds_contact::testItemsXML,"
-                                "Client::Sync::eds_contact::testOneWayFromServer,"
-                                "Client::Sync::eds_contact::testOneWayFromClient,"
-                                "Client::Sync::eds_contact::testRefreshFromLocalSync,"
-                                "Client::Sync::eds_contact::testOneWayFromLocal,"
-                                "Client::Sync::eds_contact::testOneWayFromRemote,"
-                                "Client::Sync::eds_event::testRefreshFromClientSync,"
-                                "Client::Sync::eds_event::testSlowSyncSemantic,"
-                                "Client::Sync::eds_event::testRefreshStatus,"
-                                "Client::Sync::eds_event::testDelete,"
-                                "Client::Sync::eds_event::testItemsXML,"
-                                "Client::Sync::eds_event::testOneWayFromServer,"
-                                "Client::Sync::eds_event::testOneWayFromClient,"
-                                "Client::Sync::eds_event::testRefreshFromLocalSync,"
-                                "Client::Sync::eds_event::testOneWayFromLocal,"
-                                "Client::Sync::eds_event::testOneWayFromRemote,"
-                                "Client::Sync::eds_event::Retry,"
-                                "Client::Sync::eds_event::Suspend,"
-                                "Client::Sync::eds_event::Resend,"
-                                "Client::Sync::eds_task::testRefreshFromClientSync,"
-                                "Client::Sync::eds_task::testSlowSyncSemantic,"
-                                "Client::Sync::eds_task::testRefreshStatus,"
-                                "Client::Sync::eds_task::testDelete,"
-                                "Client::Sync::eds_task::testItemsXML,"
-                                "Client::Sync::eds_task::testOneWayFromServer,"
-                                "Client::Sync::eds_task::testOneWayFromClient,"
-                                "Client::Sync::eds_task::testRefreshFromLocalSync,"
-                                "Client::Sync::eds_task::testOneWayFromLocal,"
-                                "Client::Sync::eds_task::testOneWayFromRemote,"
-                                "Client::Sync::eds_task::Retry,"
-                                "Client::Sync::eds_task::Suspend,"
-                                "Client::Sync::eds_task::Resend,"
-                                "Client::Sync::eds_memo::testRefreshFromClientSync,"
-                                "Client::Sync::eds_memo::testSlowSyncSemantic,"
-                                "Client::Sync::eds_memo::testRefreshStatus,"
-                                "Client::Sync::eds_memo::testDelete,"
-                                "Client::Sync::eds_memo::testItemsXML,"
-                                "Client::Sync::eds_memo::testOneWayFromServer,"
-                                "Client::Sync::eds_memo::testOneWayFromClient,"
-                                "Client::Sync::eds_memo::testRefreshFromLocalSync,"
-                                "Client::Sync::eds_memo::testOneWayFromLocal,"
-                                "Client::Sync::eds_memo::testOneWayFromRemote,"
-                                "Client::Sync::eds_memo::Retry,"
-                                "Client::Sync::eds_memo::Suspend,"
-                                "Client::Sync::eds_memo::Resend,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testRefreshFromClientSync,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testSlowSyncSemantic,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testRefreshStatus,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testDelete,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testItemsXML,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testOneWayFromServer,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testOneWayFromClient,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testRefreshFromLocalSync,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testOneWayFromLocal,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::testOneWayFromRemote,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::Retry,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::Suspend,"
-                                "Client::Sync::eds_contact_eds_event_eds_task_eds_memo::Resend,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testRefreshFromClientSync,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testSlowSyncSemantic,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testRefreshStatus,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testDelete,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testItemsXML,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testOneWayFromServer,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testOneWayFromClient,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testRefreshFromLocalSync,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testOneWayFromLocal,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::testOneWayFromRemote,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::Retry,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::Suspend,"
-                                "Client::Sync::eds_event_eds_task_eds_memo_eds_contact::Resend "
+                                "Client::Sync::.*::testRefreshFromClientSync,"
+                                "Client::Sync::.*::testSlowSyncSemantic,"
+                                "Client::Sync::.*::testRefreshStatus,"
+                                "Client::Sync::.*::testDelete,"
+                                "Client::Sync::.*::testItemsXML,"
+                                "Client::Sync::.*::testOneWayFromServer,"
+                                "Client::Sync::.*::testOneWayFromClient,"
+                                "Client::Sync::.*::testRefreshFromLocalSync,"
+                                "Client::Sync::.*::testOneWayFromLocal,"
+                                "Client::Sync::.*::testOneWayFromRemote,"
+                                "Client::Sync::.*::Retry,"
+                                "Client::Sync::.*::Suspend,"
+                                "Client::Sync::.*::Resend "
                                 "CLIENT_TEST_DELAY=5 "
                                 "CLIENT_TEST_RESEND_TIMEOUT=5 "
                                 "CLIENT_TEST_INTERRUPT_AT=1",

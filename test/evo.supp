@@ -4857,3 +4857,130 @@
    fun:*MakeMethodEntry*make*
 }
 
+# ==10148== 3,912 (512 direct, 3,400 indirect) bytes in 1 blocks are definitely lost in loss record 4,885 of 4,958
+# ==10148==    at 0x4C28CCE: realloc (vg_replace_malloc.c:632)
+# ==10148==    by 0x9E45E7E: g_realloc (gmem.c:224)
+# ==10148==    by 0x9E156A9: g_ptr_array_maybe_expand (garray.c:1093)
+# ==10148==    by 0x9E16802: g_ptr_array_add (garray.c:1350)
+# ==10148==    by 0x98ED18B: read_netlink_messages (gnetworkmonitornetlink.c:237)
+# ==10148==    by 0x98ED3FA: g_network_monitor_netlink_initable_init (gnetworkmonitornetlink.c:143)
+# ==10148==    by 0x98B07CE: g_initable_new_valist (ginitable.c:228)
+# ==10148==    by 0x98B08B8: g_initable_new (ginitable.c:148)
+# ==10148==    by 0x98B34BF: _g_io_module_get_default (giomodule.c:742)
+# ==10148==    by 0x52DE554: backend_constructed (e-backend.c:138)
+# ==10148==    by 0x9BBE2B2: g_object_newv (gobject.c:1741)
+# ==10148==    by 0x9BBE62F: g_object_new_valist (gobject.c:1830)
+# ==10148==    by 0x9BBE963: g_object_new (gobject.c:1545)
+# ==10148==    by 0x4E4150A: book_backend_factory_new_backend (e-book-backend-factory.c:61)
+# ==10148==    by 0x52DEC0B: e_backend_factory_new_backend (e-backend-factory.c:109)
+# ==10148==    by 0x52E144F: e_data_factory_ref_backend (e-data-factory.c:249)
+# ==10148==    by 0x4E54E68: data_book_factory_ref_backend (e-data-book-factory.c:109)
+# ==10148==    by 0x4E5520E: impl_BookFactory_get_book (e-data-book-factory.c:339)
+# ==10148==    by 0x5527A96: e_gdbus_marshallers_BOOLEAN__OBJECT_STRING (e-gdbus-marshallers.c:246)
+# ==10148==    by 0x9BB7723: g_closure_invoke (gclosure.c:777)
+# ==10148==    by 0x9BC87AF: signal_emit_unlocked_R (gsignal.c:3547)
+# ==10148==    by 0x9BD034A: g_signal_emit_valist (gsignal.c:3306)
+# ==10148==    by 0x9BD08C1: g_signal_emit (gsignal.c:3352)
+# ==10148==    by 0x5536A52: e_gdbus_stub_handle_method_call (e-gdbus-templates.c:687)
+# ==10148==    by 0x4E5BA9C: handle_method_call (e-gdbus-book-factory.c:145)
+# ==10148==    by 0x9911914: call_in_idle_cb (gdbusconnection.c:4687)
+# ==10148==    by 0x9E40204: g_main_context_dispatch (gmain.c:2539)
+# ==10148==    by 0x9E40537: g_main_context_iterate.isra.23 (gmain.c:3146)
+# ==10148==    by 0x9E40931: g_main_loop_run (gmain.c:3340)
+# ==10148==    by 0x52E1AD2: dbus_server_run_server (e-dbus-server.c:222)
+# ==10148== 
+{
+   GIO networkmonitor https://bugzilla.gnome.org/show_bug.cgi?id=676265
+   Memcheck:Leak
+   ...
+   fun:read_netlink_messages
+   ...
+   fun:g_network_monitor_*
+}
+
+# ==10187== 2,060 bytes in 37 blocks are definitely lost in loss record 3,772 of 3,810
+# ==10187==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
+# ==10187==    by 0x85ACDE0: g_malloc (gmem.c:159)
+# ==10187==    by 0x85C282B: g_strdup (gstrfuncs.c:356)
+# ==10187==    by 0x7C87D94: g_dbus_object_proxy_set_property (gdbusobjectproxy.c:118)
+# ==10187==    by 0x83239CB: g_object_constructor (gobject.c:1352)
+# ==10187==    by 0x8324E40: g_object_newv (gobject.c:1713)
+# ==10187==    by 0x832562F: g_object_new_valist (gobject.c:1830)
+# ==10187==    by 0x8325963: g_object_new (gobject.c:1545)
+# ==10187==    by 0x7C890D2: add_interfaces (gdbusobjectmanagerclient.c:1445)
+# ==10187==    by 0x7C89483: process_get_all_result (gdbusobjectmanagerclient.c:1628)
+# ==10187==    by 0x7C89DA5: initable_init (gdbusobjectmanagerclient.c:1384)
+# ==10187==    by 0x7C0D7CE: g_initable_new_valist (ginitable.c:228)
+# ==10187==    by 0x7C0D8B8: g_initable_new (ginitable.c:148)
+# ==10187==    by 0x6C8B3F1: e_dbus_object_manager_client_new_for_bus_sync (e-dbus-source.c:3821)
+# ==10187==    by 0x6C73D92: source_registry_object_manager_thread (e-source-registry.c:723)
+# ==10187==    by 0x85C9DF4: g_thread_proxy (gthread.c:801)
+# ==10187==    by 0x95E8B4F: start_thread (pthread_create.c:304)
+# ==10187==    by 0xA0756DC: clone (clone.S:112)
+# ==10187== 
+{
+   object_path GDBus Object Proxy https://bugzilla.gnome.org/show_bug.cgi?id=680505
+   Memcheck:Leak
+   ...
+   fun:g_dbus_object_proxy_set_property
+}
+
+# ==19542== 104 (40 direct, 64 indirect) bytes in 1 blocks are definitely lost in loss record 5,479 of 6,315
+# ==19542==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
+# ==19542==    by 0x955DDE0: g_malloc (gmem.c:159)
+# ==19542==    by 0x95721C2: g_slice_alloc (gslice.c:1003)
+# ==19542==    by 0x952D899: g_array_sized_new (garray.c:195)
+# ==19542==    by 0x902C6DD: g_dbus_connection_signal_unsubscribe (gdbusconnection.c:3585)
+# ==19542==    by 0x90357B8: g_dbus_proxy_finalize (gdbusproxy.c:223)
+# ==19542==    by 0x6C91011: e_dbus_source_manager_proxy_finalize (e-dbus-source-manager.c:834)
+# ==19542==    by 0x92D4697: g_object_unref (gobject.c:3018)
+# ==19542==    by 0x6C75ECE: source_registry_dispose (e-source-registry.c:936)
+# ==19542==    by 0x92D4603: g_object_unref (gobject.c:2981)
+# ==19542==    by 0x9FDADF1: __run_exit_handlers (exit.c:78)
+# ==19542==    by 0x9FDAE44: exit (exit.c:100)
+# ==19542==    by 0x9FC2EB3: (below main) (libc-start.c:260)
+# ==19542== 
+{
+   source_registry atexit
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:source_registry_dispose
+   ...
+   fun:exit
+   fun:(below main)
+}
+
+# ==19714== 24 bytes in 1 blocks are definitely lost in loss record 2,265 of 6,299
+# ==19714==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
+# ==19714==    by 0x955DDE0: g_malloc (gmem.c:159)
+# ==19714==    by 0x95721C2: g_slice_alloc (gslice.c:1003)
+# ==19714==    by 0x9554DAD: g_list_prepend (glist.c:275)
+# ==19714==    by 0x954FBA3: g_key_file_add_group (gkeyfile.c:3714)
+# ==19714==    by 0x9550811: g_key_file_flush_parse_buffer (gkeyfile.c:1265)
+# ==19714==    by 0x9550B70: g_key_file_parse_data (gkeyfile.c:1415)
+# ==19714==    by 0x9551F28: g_key_file_load_from_data (gkeyfile.c:922)
+# ==19714==    by 0x6C617EB: source_parse_dbus_data (e-source.c:604)
+# ==19714==    by 0x6C6306B: source_initable_init (e-source.c:1337)
+# ==19714==    by 0x8FC87CE: g_initable_new_valist (ginitable.c:228)
+# ==19714==    by 0x8FC88B8: g_initable_new (ginitable.c:148)
+# ==19714==    by 0x6C638DE: e_source_new (e-source.c:1615)
+# ==19714==    by 0x6C7508C: source_registry_new_source (e-source-registry.c:523)
+# ==19714==    by 0x6C75842: source_registry_object_manager_thread (e-source-registry.c:758)
+# ==19714==    by 0x957ADF4: g_thread_proxy (gthread.c:801)
+# ==19714==    by 0x7A2FB4F: start_thread (pthread_create.c:304)
+# ==19714==    by 0xA07C70C: clone (clone.S:112)
+# ==19714== 
+{
+   new esource
+   Memcheck:Leak
+   fun:malloc
+   fun:g_malloc
+   fun:g_slice_alloc
+   fun:g_list_prepend
+   fun:g_key_file_add_group
+   ...
+   fun:e_source_new
+   ...
+   fun:g_thread_proxy
+}

@@ -59,8 +59,10 @@ static SyncSource *createSource(const SyncSourceParams &params)
             if (enabled) {
                 boost::shared_ptr<Neon::Settings> settings;
                 if (sourceType.m_backend == "CalDAV") {
-                    boost::shared_ptr<SubSyncSource> sub(new CalDAVSource(params, settings));
-                    return new MapSyncSource(params, sub);
+                    if (EDSAbiHaveIcal) {
+                        boost::shared_ptr<SubSyncSource> sub(new CalDAVSource(params, settings));
+                        return new MapSyncSource(params, sub);
+                    }
                 } else {
                     return new CalDAVVxxSource(sourceType.m_backend == "CalDAVTodo" ? "VTODO" : "VJOURNAL",
                                                params, settings);
@@ -255,6 +257,10 @@ public:
         if (m_type == "caldav") {
             config.m_supportsReccurenceEXDates = true;
         }
+        config.m_sourceKnowsItemSemantic =
+            m_type == "caldav" ||
+            m_type == "caldavjournal" ||
+            m_type == "caldavtodo";
         config.m_createSourceA = boost::bind(&WebDAVTest::createSource, this, _2, _4);
         config.m_createSourceB = boost::bind(&WebDAVTest::createSource, this, _2, _4);
         ConfigProps::const_iterator it = m_props.find(m_type + "/testcases");

@@ -562,12 +562,10 @@ void Server::removeSyncSession(Session *session)
     }
 }
 
-static bool quitLoop(GMainLoop *loop)
+static void quitLoop(GMainLoop *loop)
 {
     SE_LOG_DEBUG(NULL, NULL, "stopping server's event loop");
     g_main_loop_quit(loop);
-    // don't call me again
-    return false;
 }
 
 void Server::checkQueue()
@@ -601,12 +599,10 @@ void Server::checkQueue()
     }
 }
 
-bool Server::sessionExpired(const boost::shared_ptr<Session> &session)
+void Server::sessionExpired(const boost::shared_ptr<Session> &session)
 {
     SE_LOG_DEBUG(NULL, NULL, "session %s expired",
                  session->getSessionID().c_str());
-    // don't call me again
-    return false;
 }
 
 void Server::delaySessionDestruction(const boost::shared_ptr<Session> &session)
@@ -691,17 +687,14 @@ void Server::passwordResponse(const InfoReq::InfoMap &response,
 }
 
 
-bool Server::callTimeout(const boost::shared_ptr<Timeout> &timeout, const boost::function<bool ()> &callback)
+bool Server::callTimeout(const boost::shared_ptr<Timeout> &timeout, const boost::function<void ()> &callback)
 {
-    if (!callback()) {
-        m_timeouts.remove(timeout);
-        return false;
-    } else {
-        return true;
-    }
+    callback();
+    m_timeouts.remove(timeout);
+    return false;
 }
 
-void Server::addTimeout(const boost::function<bool ()> &callback,
+void Server::addTimeout(const boost::function<void ()> &callback,
                         int seconds)
 {
     boost::shared_ptr<Timeout> timeout(new Timeout);
@@ -861,7 +854,9 @@ void Server::messagev(Level level,
                       int line,
                       const char *function,
                       const char *format,
-                      va_list args)
+                      va_list args,
+                      const std::string &dbusPath,
+                      const std::string &procname)
 {
     // iterating over args in messagev() is destructive, must make a copy first
     va_list argsCopy;
@@ -874,7 +869,7 @@ void Server::messagev(Level level,
     // for general server output, the object path field is dbus server
     // the object path can't be empty for object paths prevent using empty string.
     string strLevel = Logger::levelToStr(level);
-    logOutput(getPath(), strLevel, log);
+    logOutput(dbusPath, strLevel, log, procname);
 }
 
 SE_END_CXX

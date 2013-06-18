@@ -60,6 +60,14 @@
 #include "gdbus.h"
 #include "gdbus-cxx.h"
 
+// Not defined by 1.4.x in Maemo Harmattan; INT_MAX has the same
+// value and effect there. In older libdbus, it is the same as
+// a very long timeout (2147483s), which is good enough.
+#include <stdint.h>
+#ifndef DBUS_TIMEOUT_INFINITE
+# define DBUS_TIMEOUT_INFINITE INT_MAX
+#endif
+
 #include <map>
 #include <vector>
 #include <utility>
@@ -119,6 +127,9 @@ class DBusConnectionPtr : public boost::intrusive_ptr<DBusConnection>
         dbus_connection_ref(conn);
         return conn;
     }
+
+    /** empty stub: flushing only necessary with GIO D-Bus */
+    void flush() {}
 
     /** GDBus GIO specific: disconnect callback */
     typedef boost::function<void ()> Disconnect_t;
@@ -1743,7 +1754,7 @@ static DBusMessage *handleException(DBusMessage *msg)
 /**
  * Check presence of a certain D-Bus client.
  */
-class DBusWatch : public Watch
+class Watch : private boost::noncopyable
 {
     DBusConnectionPtr m_conn;
     boost::function<void (void)> m_callback;
@@ -1753,7 +1764,7 @@ class DBusWatch : public Watch
     static void disconnect(DBusConnection *connection,
                            void *user_data)
     {
-        DBusWatch *watch = static_cast<DBusWatch *>(user_data);
+        Watch *watch = static_cast<Watch *>(user_data);
         if (!watch->m_called) {
             watch->m_called = true;
             if (watch->m_callback) {
@@ -1763,7 +1774,7 @@ class DBusWatch : public Watch
     }
 
  public:
-    DBusWatch(const DBusConnectionPtr &conn,
+    Watch(const DBusConnectionPtr &conn,
               const boost::function<void (void)> &callback = boost::function<void (void)>()) :
         m_conn(conn),
         m_callback(callback),
@@ -1772,7 +1783,7 @@ class DBusWatch : public Watch
     {
     }
 
-    virtual void setCallback(const boost::function<void (void)> &callback)
+    void setCallback(const boost::function<void (void)> &callback)
     {
         m_callback = callback;
         if (m_called && m_callback) {
@@ -1783,7 +1794,7 @@ class DBusWatch : public Watch
     void activate(const char *peer)
     {
         if (!peer) {
-            throw std::runtime_error("DBusWatch::activate(): no peer");
+            throw std::runtime_error("Watch::activate(): no peer");
         }
 
         // Install watch first ...
@@ -1812,7 +1823,7 @@ class DBusWatch : public Watch
         }
     }
 
-    ~DBusWatch()
+    ~Watch()
     {
         if (m_watchID) {
             if (!b_dbus_remove_watch(m_conn.get(), m_watchID)) {
@@ -1837,7 +1848,7 @@ template <> struct dbus_traits< boost::shared_ptr<Watch> >  : public dbus_traits
     static void get(DBusConnection *conn, DBusMessage *msg,
                     DBusMessageIter &iter, boost::shared_ptr<Watch> &value)
     {
-        boost::shared_ptr<DBusWatch> watch(new DBusWatch(conn));
+        boost::shared_ptr<Watch> watch(new Watch(conn));
         watch->activate(dbus_message_get_sender(msg));
         value = watch;
     }
@@ -1877,7 +1888,7 @@ class DBusResult : virtual public Result
 
     virtual Watch *createWatch(const boost::function<void (void)> &callback)
     {
-        std::auto_ptr<DBusWatch> watch(new DBusWatch(m_conn, callback));
+        std::auto_ptr<Watch> watch(new Watch(m_conn, callback));
         watch->activate(dbus_message_get_sender(m_msg.get()));
         return watch.release();
     }
@@ -4213,7 +4224,7 @@ protected:
     void send(DBusMessagePtr &msg, const Callback_t &callback)
     {
         DBusPendingCall *call;
-        if (!dbus_connection_send_with_reply(m_conn.get(), msg.get(), &call, -1)) {
+        if (!dbus_connection_send_with_reply(m_conn.get(), msg.get(), &call, DBUS_TIMEOUT_INFINITE)) {
             throw std::runtime_error("dbus_connection_send failed");
         } else if (call == NULL) {
             throw std::runtime_error("received pending call is NULL");
@@ -4233,7 +4244,7 @@ protected:
         DBusErrorCXX error;
         // Constructor steals reference, reset() doesn't!
         // Therefore use constructor+copy instead of reset().
-        DBusMessagePtr reply = DBusMessagePtr(dbus_connection_send_with_reply_and_block(m_conn.get(), msg.get(), -1, &error));
+        DBusMessagePtr reply = DBusMessagePtr(dbus_connection_send_with_reply_and_block(m_conn.get(), msg.get(), DBUS_TIMEOUT_INFINITE, &error));
         if (!reply) {
             error.throwFailure(m_method);
         }

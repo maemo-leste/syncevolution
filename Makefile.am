@@ -61,7 +61,12 @@ MAINTAINERCLEANFILES += Makefile.in config.h.in config.guess config.sub configur
 
 TEST_README_FILES = $(wildcard $(top_srcdir)/test/README.*)
 
+# files and file patterns which are not meant to be packaged.
 DEV_FILE_PATTERN = $(1)$(2)/include $(1)$(2)/lib/*.so $(1)$(2)/lib/*.a $(1)$(2)/lib/*.la $(1)$(2)/lib/*/*.la $(1)$(2)/lib/pkgconfig
+
+# Exclude syncactivesync.so from bundle package because that needs to
+# be packaged separately.
+DEV_FILE_PATTERN += $(1)$(2)/lib/syncevolution/backends/syncactivesync.so
 
 # binary distribution as .tar.gz
 if COND_DBUS
@@ -126,13 +131,16 @@ TYPE_rpm = -R
 #   distros, libkdeui5 is what we need.
 # - same for kdepimlibs5 -> libakonadi-kde4
 REQUIRES_SED_KDE = -e 's/kdelibs5 ([^,]*),/kdelibs5 | libkdeui5,/g' -e 's/kdepimlibs5 ([^,]*),/kdepimlibs5 | libakonadi-kde4,/g'
-REQUIRES_deb = --requires="'$(shell set -x; cd checkinstall/dist; LD_LIBRARY_PATH=$(distdir)/usr/lib:$(distdir)/usr/lib/syncevolution dpkg-shlibdeps -L$(srcdir)/src/shlibs.local --ignore-missing-info -O $$(for i in $$(find $(distdir) -type f -perm /u+x | grep -v -e client-test -e lib/syncevolution/backends/); do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) | sed $(REQUIRES_SED_KDE) -e 's/[^=]*=//')$(REQUIRES_deb_neon)'"
+REQUIRES_deb = --requires="'$(shell set -x; cd checkinstall/dist; LD_LIBRARY_PATH=$(distdir)/usr/lib:$(distdir)/usr/lib/syncevolution dpkg-shlibdeps -L$(srcdir)/src/shlibs.local --ignore-missing-info -O $$(for i in $$(find $(distdir) -type f -perm /u+x | grep -v -e client-test -e lib/syncevolution/backends/); do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) | sed $(REQUIRES_SED_KDE) -e 's/[^=]*=//')$(REQUIRES_deb_neon)$(REQUIRES_deb_ical)'"
 if NEON_COMPATIBILITY
 # --enable-neon-compatibility in src/backends/webdav:
 # replace dependencies from linking with hard-coded dlopen() dependencies
 REQUIRES_deb_neon = , libneon27 (>= 0.29.0) | libneon27-gnutls (>= 0.29.0)
 else
 REQUIRES_deb_neon =
+endif
+if ENABLE_ICAL
+REQUIRES_deb_ical = , libical0
 endif
 VERSION_deb = 1:$(STABLE_VERSION)$(VERSION)
 VERSION_rpm = `echo $(VERSION) | sed -e s/-/_/g`
@@ -197,9 +205,24 @@ endif
 PLATFORM_FILES_evolution = platformgnome syncecal syncebook
 PLATFORM_FILES_kde = platformkde syncakonadi
 
+# Additional parameters for syncevolution-kde/evolution.deb.
 # Fake conflicts/replaces works around a bug in CheckInstall,
 # which creates empty, invalid entries for those unless
-# something is given.
+# something is given. For Evolution we hard-code dependencies
+# (because with EDS compatibility turned on, several
+# alternatives will work at runtime) and conflict with
+# EDS 3.6, because that breaks the API and does not work for us
+# at the moment.
+SYNCEVOLUTION_kde_DEB_ARGS = \
+	--conflicts=syncevolution-foobar \
+        --replaces=syncevolution-foobar
+SYNCEVOLUTION_evolution_DEB_ARGS = \
+	--conflicts="'evolution-data-server (>= 3.6), libebook-1.2-14 (>= 3.6), libecal-1.2.12 (>= 3.6)'" \
+	--replaces=syncevolution-foobar
+SYNCEVOLUTION_evolution_DEB_REQUIRES = \
+	, libebook1.2-5 | libebook1.2-6 | libebook1.2-7 | libebook1.2-8 | libebook1.2-9 | libebook1.2-10 | libebook1.2-11 | libebook-1.2-11 | libebook-1.2-12 | libebook-1.2-13 \
+	, libecal1.2-3 | libecal1.2-4 | libecal1.2-5 | libecal1.2-6 | libecal1.2-7 | libecal1.2-8 | libecal1.2-9 | libecal1.2-10 | libecal-1.2-10 | libecal-1.2-11
+
 syncevolution-%-deb: checkinstall/dist/$(distdir) checkinstall/dist/debian/control
 	(echo "SyncEvolution - meta package for $*" && cat $(srcdir)/description) >checkinstall/description-pak
 	tmpdir=`mktemp -d $$HOME/syncevolution.XXXXXXXXXX` && \
@@ -212,11 +235,10 @@ syncevolution-%-deb: checkinstall/dist/$(distdir) checkinstall/dist/debian/contr
                 --nodoc \
 		--pkgversion=$(PLATFORM_DEB_VERSION) \
 		--pkgrelease=$(PLATFORM_DEB_RELEASE) \
+		$(SYNCEVOLUTION_$*_DEB_ARGS) \
 		--pkgname=syncevolution-$* \
 		--pkgarch=all \
-                --requires="'$(shell set -x; cd checkinstall/dist; LD_LIBRARY_PATH=$(distdir)/usr/lib:$(distdir)/usr/lib/syncevolution dpkg-shlibdeps -L$(srcdir)/src/shlibs.local --ignore-missing-info -O $$(for i in $(patsubst %,$(distdir)/usr/lib/syncevolution/backends/%.so,$(PLATFORM_FILES_$*)); do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) | sed $(REQUIRES_SED_KDE) -e 's/[^=]*=//'), $(PKGNAME) (= $(VERSION_deb)-$(RELEASE))'" \
-                --conflicts=syncevolution-foobar \
-                --replaces=syncevolution-foobar \
+                --requires="'$(shell set -x; cd checkinstall/dist; LD_LIBRARY_PATH=$(distdir)/usr/lib:$(distdir)/usr/lib/syncevolution dpkg-shlibdeps -L$(srcdir)/src/shlibs.local --ignore-missing-info -O $$(for i in $(patsubst %,$(distdir)/usr/lib/syncevolution/backends/%.so,$(PLATFORM_FILES_$*)); do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) | sed $(REQUIRES_SED_KDE) -e 's/[^=]*=//'), $(PKGNAME) (= $(VERSION_deb)-$(RELEASE))$(SYNCEVOLUTION_$*_DEB_REQUIRES)'" \
 		--maintainer="'Patrick Ohly <patrick.ohly@gmx.de>'" \
 		--pkgsource='http://syncevolution.org' \
 		--pkggroup='$*' \
@@ -290,6 +312,43 @@ toplevel_so_check:
 	    exit 1; \
 	  fi; \
 	done
+endif
+
+# Check that no executable or shared object depends on symbols in
+# libraries that it does not link against. Unnecessarily linking
+# against libs is okay, that can be caught and fixed by
+# -Wl,--as-needed. Depends on dpkg-shlibdeps, skipped if that is
+# not available.
+all_local_installchecks += toplevel_link_check
+toplevel_link_check:
+	set -x; cd $(DESTDIR) && \
+	mkdir debian && \
+	touch debian/control && \
+        trap "rm -rf debian" EXIT && \
+	files=$$(find $(DESTDIR)/$(prefix) $(DESTDIR)/$(libdir) $(DESTDIR)/$(bindir) $(DESTDIR)/$(libexecdir) -type f -perm /u+x | sort -u) && \
+	files=$$(for i in $$files; do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) && \
+	if ! dpkg-shlibdeps --version; then \
+	    echo "dpkg-shlibdeps not found, skipping link check"; \
+	elif LD_LIBRARY_PATH=usr/lib:usr/lib/syncevolution dpkg-shlibdeps \
+             --ignore-missing-info -O $$files \
+	     2>&1 >/dev/null | \
+             grep -v $(LINK_CHECK_ALLOWED) | \
+             grep -e "symbol .* found in none of the libraries" \
+                  -e "contains an unresolvable reference to symbol" \
+        ; then \
+	    echo "linking must be fixed"; false; \
+        else \
+	    echo "linking is okay"; \
+	fi
+
+# Some exceptions for the link check above (= symbol may be used without linking).
+LINK_CHECK_ALLOWED = -e xxxxxxxx
+# SySync_ConsolePrintf is expected by libsmltk and has to be provided by caller.
+LINK_CHECK_ALLOWED += -e 'SySync_ConsolePrintf.*libsmltk.so'
+if NEON_COMPATIBILITY
+# libneon is intentionally not linked against, to choose between
+# GNUTLS and OpenSSL at runtime.
+LINK_CHECK_ALLOWED += -e 'symbol ne_.*syncdav.so'
 endif
 
 # Be strict about running 'syncevolution' only when not doing

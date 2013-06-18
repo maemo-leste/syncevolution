@@ -63,6 +63,18 @@ configName = "dbus_unittest"
 def usingValgrind():
     return 'valgrind' in os.environ.get("TEST_DBUS_PREFIX", "")
 
+def which(program):
+    '''find absolute path to program (simple file name, no path) in PATH env variable'''
+    def isExe(fpath):
+        return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+    for path in os.environ["PATH"].split(os.pathsep):
+        exeFile = os.path.join(path, program)
+        if isExe(exeFile):
+            return os.path.abspath(exeFile)
+
+    return None
+
 def GrepNotifications(dbuslog):
     '''finds all Notify calls and returns their parameters as list of line lists'''
     return re.findall(r'^method call .* dest=.* .*interface=org.freedesktop.Notifications; member=Notify\n((?:^   .*\n)*)',
@@ -457,7 +469,7 @@ class DBusUtil(Timeout):
         # set additional environment variables for the test run,
         # as defined by @property("ENV", "foo=bar x=y")
         for assignment in self.getTestProperty("ENV", "").split():
-            var, value = assignment.split("=")
+            var, value = assignment.split("=", 1)
             env[var] = value
 
         # always print all debug output directly (no output redirection),
@@ -618,7 +630,8 @@ class DBusUtil(Timeout):
     def getChildren(self):
         '''Find all children of the current process (ppid = out pid,
         in our process group, or in process group of known
-        children). Return mapping from pid to name.'''
+        children). Return mapping from pid to (name, cmdline),
+        where cmdline has spaces between parameters.'''
 
         # Any of the known children might have its own process group.
         # syncevo-dbus-server definitely does (we create it like that);
@@ -639,6 +652,7 @@ class DBusUtil(Timeout):
                 m = statre.search(stat)
                 if m:
                     procs[pid] = m.groupdict()
+                    procs[pid]['cmdline'] = open('/proc/%d/cmdline' % pid, 'r').read().replace('\0', ' ')
                     for i in ('ppid', 'pgid'):
                         procs[pid][i] = int(procs[pid][i])
             except:
@@ -658,7 +672,7 @@ class DBusUtil(Timeout):
                 isChild(procs[pid]['ppid'])
         for pid, info in procs.iteritems():
             if isChild(pid):
-                children[pid] = info['name']
+                children[pid] = (info['name'], info['cmdline'])
         # Exclude dbus-monitor and forked test-dbus.py, they are handled separately.
         if self.pmonitor:
             del children[self.pmonitor.pid]
@@ -672,8 +686,8 @@ class DBusUtil(Timeout):
         children = self.getChildren()
         # First pass with SIGTERM?
         if delay:
-            for pid, name in children.iteritems():
-                logging.printf("sending SIGTERM to %d %s", pid, name)
+            for pid, (name, cmdline) in children.iteritems():
+                logging.printf("sending SIGTERM to %d %s = %s", pid, name, cmdline)
                 TryKill(pid, signal.SIGTERM)
         start = time.time()
         logging.printf("starting to wait for process termination at %s", time.asctime(time.localtime(start)))
@@ -710,6 +724,7 @@ class DBusUtil(Timeout):
                 logging.printf("all process gone at %s",
                                time.asctime())
                 return []
+            time.sleep(0.1)
         # Force killing of remaining children. It's still possible
         # that one of them quits before we get around to sending the
         # signal.
@@ -907,6 +922,15 @@ class DBusUtil(Timeout):
                                 byte_arrays=True, 
                                 utf8_strings=True)
 
+    def collectEvents(self, until='\nstatus: done'):
+        '''Normally collection of events stops when any of the 'quit events' are encounted.
+        Cmdline tests are different, they stop when the command line tool returns. At that
+        time the quit event may or may not have been seen.
+        This method continues collecting events until the 'until' string is in the
+        pretty-printed events.'''
+        while not until in self.prettyPrintEvents():
+            loop.get_context().iteration(True)
+
     def setUpLocalSyncConfigs(self, childPassword=None, enableCalendar=False):
         # create file<->file configs
         self.setUpSession("target-config@client")
@@ -1013,7 +1037,7 @@ status: idle, 0, {}
                 lines.append(event[0])
         return '\n'.join(lines)
 
-    def assertSyncStatus(self, config, status, error):
+    def getSyncStatus(self, config):
         cache = self.own_xdg and os.path.join(xdg_root, 'cache', 'syncevolution') or \
             os.path.join(os.environ['HOME'], '.cache', 'syncevolution')
         entries = [x for x in os.listdir(cache) if x.startswith(config + '-')]
@@ -1022,11 +1046,26 @@ status: idle, 0, {}
         config = ConfigParser.ConfigParser()
         content = '[fake]\n' + open(os.path.join(cache, entries[0], 'status.ini')).read()
         config.readfp(io.BytesIO(content))
-        self.assertEqual(status, config.getint('fake', 'status'))
-        if error == None:
-            self.assertFalse(config.has_option('fake', 'error'))
+        status = config.getint('fake', 'status')
+        error = None
+        if config.has_option('fake', 'error'):
+            error = config.get('fake', 'error')
+        return (status, error)
+
+    def isSet(self, data):
+        return isinstance(data, type([])) or \
+            isinstance(data, type(()))
+
+    def assertSyncStatus(self, config, status, error):
+        realStatus, realError = self.getSyncStatus(config)
+        if self.isSet(status):
+            self.assertTrue(realStatus in status)
         else:
-            self.assertEqual(error, config.get('fake', 'error'))
+            self.assertEqual(status, realStatus)
+        if self.isSet(error):
+            self.assertTrue(realError in error)
+        else:
+            self.assertEqual(error, realError)
 
     def doCheckSync(self, expectedError=0, expectedResult=0, reportOptional=False, numReports=1):
         # check recorded events in DBusUtil.events, first filter them
@@ -1224,12 +1263,79 @@ class TestDBusServer(DBusUtil, unittest.TestCase):
         else:
             self.fail("no exception thrown")
 
+class TestDBusServerStart(DBusUtil, unittest.TestCase):
+    def testAutoActivation(self):
+        '''TestDBusServerStart.testAutoActivation - check that activating syncevo-dbus-server via D-Bus daemon works'''
+        # Create a D-Bus service file for the syncevo-dbus-server that we
+        # are testing (= the one in PATH).
+        shutil.rmtree(xdg_root, True)
+        dirname = os.path.join(xdg_root, "share", "dbus-1", "services")
+        os.makedirs(dirname)
+        service = open(os.path.join(dirname, "org.syncevolution.service"), "w")
+        service.write('''[D-BUS Service]
+Name=org.syncevolution
+Exec=%s
+''' % which('syncevo-dbus-server'))
+        service.close()
+
+        # Now run a private D-Bus session in which dbus-send activates
+        # that syncevo-dbus-server. Uses a dbus-session.sh from the
+        # same dir as test-dbus.py itself.
+        env = copy.deepcopy(os.environ)
+        env['XDG_DATA_DIRS'] = os.path.abspath(os.path.join(xdg_root, "share"))
+
+        # Avoid running EDS and Akonadi. They are not needed for this test
+        # and can cause false failures, for example when the daemons
+        # return an unexpected error cause, which then would be returned
+        # by dbus-session.sh.
+        for key in ('DBUS_SESSION_SH_EDS_BASE', 'DBUS_SESSION_SH_AKONADI'):
+            if env.has_key(key):
+                del env[key]
+
+        # First run something which just starts the daemon.
+        dbus = subprocess.Popen((os.path.join(os.path.dirname(sys.argv[0]), 'dbus-session.sh'),
+                                 'dbus-send',
+                                 '--print-reply',
+                                 '--dest=org.syncevolution',
+                                 '/',
+                                 'org.freedesktop.DBus.Introspectable.Introspect'),
+                                env=env,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+        (out, err) = dbus.communicate()
+        self.assertEqual(0, dbus.returncode,
+                         msg='introspection of syncevo-dbus-server failed:\n' + out)
+
+        # Now try some real command.
+        dbus = subprocess.Popen((os.path.join(os.path.dirname(sys.argv[0]), 'dbus-session.sh'),
+                                 'dbus-send',
+                                 '--print-reply',
+                                 '--dest=org.syncevolution',
+                                 '/org/syncevolution/Server',
+                                 'org.syncevolution.Server.GetVersions'),
+                                env=env,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+        (out, err) = dbus.communicate()
+        self.assertEqual(0, dbus.returncode,
+                         msg='GetVersions of syncevo-dbus-server failed:\n' + out)
+
+
 class TestDBusServerTerm(DBusUtil, unittest.TestCase):
     def setUp(self):
         self.setUpServer()
 
     def run(self, result):
         self.runTest(result, True, ["-d", "10"])
+
+    def testSingleton(self):
+        """TestDBusServerTerm.testSingleton - a second instance of syncevo-dbus-server must terminate right away"""
+        dbus = subprocess.Popen([ 'syncevo-dbus-server' ],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+        (out, err) = dbus.communicate()
+        if not re.search(r'''\[ERROR.*already running\?\n''', out):
+            self.fail('second dbus server did not recognize already running server:\n%s' % out)
 
     @timeout(100)
     def testNoTerm(self):
@@ -1399,8 +1505,12 @@ class TestDBusServerTerm(DBusUtil, unittest.TestCase):
         self.session.SetConfig(False, False, config)
         self.session.Detach()
 
-        # should shut down after the 10 second idle period
-        time.sleep(16)
+        # should shut down after the 10 second idle period,
+        # may take longer when using valgrind
+        if usingValgrind():
+            time.sleep(30)
+        else:
+            time.sleep(16)
         self.assertFalse(self.isServerRunning())
 
 
@@ -2488,8 +2598,7 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
         Timeout.removeTimeout(timeout_handler)
         self.assertEqual(self.lastState, "done")
 
-    @timeout(60)
-    def testAutoSyncNetworkFailure(self):
+    def doAutoSyncNetworkFailure(self):
         """TestSessionAPIsDummy.testAutoSyncNetworkFailure - test that auto-sync is triggered, fails due to (temporary?!) network error here"""
         self.setupConfig()
         # enable auto-sync
@@ -2499,7 +2608,7 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
         # or any other D-Bus test.
         config[""]["syncURL"] = "http://no-such-domain.foobar"
         config[""]["autoSync"] = "1"
-        config[""]["autoSyncDelay"] = "0"
+        config[""]["autoSyncDelay"] = "1"
         config[""]["autoSyncInterval"] = "10s"
         config[""]["password"] = "foobar"
         self.session.SetConfig(True, False, config, utf8_strings=True)
@@ -2570,7 +2679,35 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
         self.runTestDBusCheck = checkDBusLog
 
     @timeout(60)
-    def doAutoSyncLocalConfigError(self, notifyLevel):
+    @property("ENV", "LC_ALL=en_US.UTF-8 LANGUAGE=en_US")
+    def testAutoSyncNetworkFailure(self):
+        """TestSessionAPIsDummy.testAutoSyncNetworkFailure - test that auto-sync is triggered, fails due to (temporary?!) network error here"""
+        self.doAutoSyncNetworkFailure()
+
+    @timeout(60)
+    @property("ENV", "DBUS_TEST_CONNMAN=session DBUS_TEST_NETWORK_MANAGER=session "
+                     "LC_ALL=en_US.UTF-8 LANGUAGE=en_US")
+    def testAutoSyncNoNetworkManager(self):
+        """TestSessionAPIsDummy.testAutoSyncNoNetworkManager - test that auto-sync is triggered despite having neither NetworkManager nor Connman, fails due to (temporary?!) network error here"""
+        self.doAutoSyncNetworkFailure()
+
+    @timeout(60)
+    def doAutoSyncLocalConfigError(self, notifyLevel,
+                                   notification=
+                                   '   string "SyncEvolution"\n'
+                                   '   uint32 0\n'
+                                   '   string ""\n'
+                                   '   string "Sync problem."\n'
+                                   '   string "Sorry, there\'s a problem with your sync that you need to attend to."\n'
+                                   '   array [\n'
+                                   '      string "view"\n'
+                                   '      string "View"\n'
+                                   '      string "default"\n'
+                                   '      string "Dismiss"\n'
+                                   '   ]\n'
+                                   '   array [\n'
+                                   '   ]\n'
+                                   '   int32 -1\n'):
         self.setupConfig()
         # enable auto-sync
         config = copy.deepcopy(self.config)
@@ -2623,21 +2760,7 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
         def checkDBusLog(self, content):
             notifications = GrepNotifications(content)
             self.assertEqual(notifications,
-                             notifyLevel >= 1 and
-                             ['   string "SyncEvolution"\n'
-                              '   uint32 0\n'
-                              '   string ""\n'
-                              '   string "Sync problem."\n'
-                              '   string "Sorry, there\'s a problem with your sync that you need to attend to."\n'
-                              '   array [\n'
-                              '      string "view"\n'
-                              '      string "View"\n'
-                              '      string "default"\n'
-                              '      string "Dismiss"\n'
-                              '   ]\n'
-                              '   array [\n'
-                              '   ]\n'
-                              '   int32 -1\n']
+                             notifyLevel >= 1 and [notification]
                              or [])
 
         # check that no other session is started at the time of
@@ -2671,21 +2794,44 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
         self.runTestDBusCheck = checkDBusLog
 
     @timeout(60)
+    @property("ENV", "LC_ALL=en_US.UTF-8 LANGUAGE=en_US")
     def testAutoSyncLocalConfigError(self):
         """TestSessionAPIsDummy.testAutoSyncLocalConfigError - test that auto-sync is triggered for local sync, fails due to permanent config error here"""
         self.doAutoSyncLocalConfigError(3)
 
     @timeout(60)
+    @property("ENV", "LC_ALL=de_DE.UTF-8 LANGUAGE=de_DE:de")
+    def testAutoSyncLocalConfigErrorGerman(self):
+        """TestSessionAPIsDummy.testAutoSyncLocalConfigErrorGerman - test that auto-sync is triggered for local sync, fails due to permanent config error here"""
+        self.doAutoSyncLocalConfigError(3,
+                                        '   string "SyncEvolution"\n'
+                                        '   uint32 0\n'
+                                        '   string ""\n'
+                                        '   string "Sync-Problem"\n'
+                                        '   string "Ein Problem mit der Synchronisation bedarf deiner Aufmerksamkeit."\n'
+                                        '   array [\n'
+                                        '      string "view"\n'
+                                        '      string "Anzeigen"\n'
+                                        '      string "default"\n'
+                                        '      string "Ignorieren"\n'
+                                        '   ]\n'
+                                        '   array [\n'
+                                        '   ]\n'
+                                        '   int32 -1\n')
+
+    @timeout(60)
+    @property("ENV", "LC_ALL=en_US.UTF-8 LANGUAGE=en_US")
     def testAutoSyncLocalConfigErrorEssential(self):
         """TestSessionAPIsDummy.testAutoSyncLocalConfigErrorEssential - test that auto-sync is triggered for local sync, fails due to permanent config error here, with only the essential error notification"""
         self.doAutoSyncLocalConfigError(1)
 
     @timeout(60)
+    @property("ENV", "LC_ALL=en_US.UTF-8 LANGUAGE=en_US")
     def testAutoSyncLocalConfigErrorQuiet(self):
         """TestSessionAPIsDummy.testAutoSyncLocalConfigErrorQuiet - test that auto-sync is triggered for local sync, fails due to permanent config error here, with no notification"""
         self.doAutoSyncLocalConfigError(0)
 
-    def doAutoSyncLocalSuccess(self, notifyLevel):
+    def doAutoSyncLocalSuccess(self, notifyLevel, repeat=False):
         # create @foobar config
         self.session.Detach()
         self.setUpSession("target-config@foobar")
@@ -2736,20 +2882,26 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
         self.session.Detach()
 
         # wait for start and end of auto-sync session
-        loop.run()
-        loop.run()
-        self.assertEqual(DBusUtil.quit_events, ["session " + self.auto_sync_session_path + " ready",
-                                                "session " + self.auto_sync_session_path + " done"])
-        session = dbus.Interface(bus.get_object(self.server.bus_name,
-                                                self.auto_sync_session_path),
-                                 'org.syncevolution.Session')
-        reports = session.GetReports(0, 100, utf8_strings=True)
-        self.assertEqual(len(reports), 1)
-        self.assertEqual(reports[0]["status"], "200")
-        name = session.GetConfigName()
-        self.assertEqual(name, "dummy-test")
-        flags = session.GetFlags()
-        self.assertEqual(flags, [])
+        def run(operation, numSyncs):
+            logging.log(operation)
+            loop.run()
+            loop.run()
+            self.assertEqual(DBusUtil.quit_events, ["session " + self.auto_sync_session_path + " ready",
+                                                    "session " + self.auto_sync_session_path + " done"])
+            session = dbus.Interface(bus.get_object(self.server.bus_name,
+                                                    self.auto_sync_session_path),
+                                     'org.syncevolution.Session')
+            reports = session.GetReports(0, 100, utf8_strings=True)
+            self.assertEqual(len(reports), numSyncs)
+            self.assertEqual(reports[0]["status"], "200")
+            name = session.GetConfigName()
+            self.assertEqual(name, "dummy-test")
+            flags = session.GetFlags()
+            self.assertEqual(flags, [])
+            DBusUtil.quit_events = []
+            self.auto_sync_session_path = None
+
+        run('waiting for first auto sync', 1)
 
         # check that org.freedesktop.Notifications.Notify was called
         # when starting and completing the sync
@@ -2788,18 +2940,30 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
                               '   int32 -1\n']
                              or [])
 
-        # done as part of post-processing in runTest()
-        self.runTestDBusCheck = checkDBusLog
+        if repeat:
+            for i in range(1,3):
+                run('waiting for auto sync #%d' % i, i + 1)
+        else:
+            # done as part of post-processing in runTest()
+            self.runTestDBusCheck = checkDBusLog
 
     @timeout(120)
+    @property("ENV", "LC_ALL=en_US.UTF-8 LANGUAGE=en_US")
     def testAutoSyncLocalSuccess(self):
         """TestSessionAPIsDummy.testAutoSyncLocalSuccess - test that auto-sync is done successfully for local sync between file backends, with notifications"""
         self.doAutoSyncLocalSuccess(3)
 
     @timeout(120)
+    @property("ENV", "LC_ALL=en_US.UTF-8 LANGUAGE=en_US")
     def testAutoSyncLocalSuccessQuiet(self):
         """TestSessionAPIsDummy.testAutoSyncLocalSuccessQuiet - test that auto-sync is done successfully for local sync between file backends, without notifications"""
         self.doAutoSyncLocalSuccess(1)
+
+    @timeout(240)
+    @property("ENV", "LC_ALL=en_US.UTF-8 LANGUAGE=en_US")
+    def testAutoSyncLocalMultiple(self):
+        """TestSessionAPIsDummy.testAutoSyncLocalMultiple - test that auto-sync is done successfully for local sync between file backends, several times"""
+        self.doAutoSyncLocalSuccess(1, repeat=True)
 
 class TestSessionAPIsReal(DBusUtil, unittest.TestCase):
     """ This class is used to test those unit tests of session APIs, depending on doing sync.
@@ -3620,11 +3784,11 @@ END:VCARD''')
         self.assertEqual(DBusUtil.quit_events, ["session " + self.sessionpath + " done"])
         self.assertEqual(self.lastState, "done")
         self.checkSync(expectedError=20017, expectedResult=20017)
-        self.assertSyncStatus('server', 20017, "error code from SyncEvolution aborted on behalf of user (local, status 20017): failure in local sync child: User did not provide the 'addressbook backend' password.")
+        self.assertSyncStatus('server', 20017, "error code from SyncEvolution aborted on behalf of user (local, status 20017): User did not provide the 'addressbook backend' password.")
 
     @timeout(200)
     def testPasswordRequestTimeout(self):
-        """TestLocalSync.testPassswordRequestTimeout - let password request time out"""
+        """TestLocalSync.testPasswordRequestTimeout - let password request time out"""
         self.setUpConfigs(childPassword="-")
         self.setUpListeners(self.sessionpath)
         signal = self.setUpInfoRequest(response=None)
@@ -3639,7 +3803,7 @@ END:VCARD''')
         self.assertEqual(DBusUtil.quit_events, ["session " + self.sessionpath + " done"])
         self.assertEqual(self.lastState, "request")
         self.checkSync(expectedError=22003, expectedResult=22003)
-        self.assertSyncStatus('server', 22003, "error code from SyncEvolution password request timed out (local, status 22003): failure in local sync child: Could not get the 'addressbook backend' password from user.")
+        self.assertSyncStatus('server', 22003, "error code from SyncEvolution password request timed out (local, status 22003): Could not get the 'addressbook backend' password from user.")
         end = time.time()
         self.assertTrue(abs(120 + (usingValgrind() and 20 or 0) -
                             (end - start)) <
@@ -3649,20 +3813,35 @@ END:VCARD''')
     # Killing the syncevo-dbus-helper before it even starts (SYNCEVOLUTION_LOCAL_CHILD_DELAY=5)
     # is possible, but leads to ugly valgrind warnings about "possibly lost" memory because
     # SIGTERM really kills the process right away. Better wait until syncing really has started
-    # in the helper (SYNCEVOLUTION_SYNC_DELAY=5). The test is more realistic that way, too.
-    @property("ENV", usingValgrind() and "SYNCEVOLUTION_SYNC_DELAY=55" or "SYNCEVOLUTION_SYNC_DELAY=5")
+    # in the helper (SYNCEVOLUTION_SYNC_DELAY). The test is more realistic that way, too.
+    # The delay itself can be aborted, which is why this test will complete fairly quickly
+    # despite that delay.
+    @property("ENV", "SYNCEVOLUTION_SYNC_DELAY=1000")
     @timeout(100)
     def testConcurrency(self):
         """TestLocalSync.testConcurrency - D-Bus server must remain responsive while sync runs"""
         self.setUpConfigs()
         self.setUpListeners(self.sessionpath)
         self.session.Sync("slow", {})
-        time.sleep(usingValgrind() and 30 or 3)
-        status, error, sources = self.session.GetStatus(utf8_strings=True)
-        self.assertEqual(status, "running")
-        self.assertEqual(error, 0)
-        self.session.Abort()
-        loop.run()
+
+        self.aborted = False
+        def output(path, level, text, procname):
+            if self.running and not self.aborted and text == 'ready to sync':
+                logging.printf('aborting sync')
+                self.session.Abort()
+                self.aborted = True
+
+        receiver = bus.add_signal_receiver(output,
+                                           'LogOutput',
+                                           'org.syncevolution.Server',
+                                           self.server.bus_name,
+                                           byte_arrays=True,
+                                           utf8_strings=True)
+        try:
+            loop.run()
+        finally:
+            receiver.remove()
+        self.assertTrue(self.aborted)
         self.assertEqual(DBusUtil.quit_events, ["session " + self.sessionpath + " done"])
         report = self.checkSync(20017, 20017, reportOptional=True) # aborted, with or without report
         if report:
@@ -3671,7 +3850,142 @@ END:VCARD''')
 
     @timeout(200)
     def testParentFailure(self):
-        """TestLocalSync.testParentFailure - check that child detects when parent dies"""
+        """TestLocalSync.testParentFailure - check that server and local sync helper detect when D-Bus helper dies"""
+        self.setUpConfigs(childPassword="-")
+        self.setUpListeners(self.sessionpath)
+        self.lastState = "unknown"
+        def infoRequest(id, session, state, handler, type, params):
+            if state == "request":
+                self.assertEqual(self.lastState, "unknown")
+                self.lastState = "request"
+                # kill syncevo-dbus-helper
+                for pid, (name, cmdline) in self.getChildren().iteritems():
+                    if 'syncevo-dbus-helper' in cmdline:
+                        logging.printf('killing syncevo-dbus-helper with pid %d', pid)
+                        os.kill(pid, signal.SIGKILL)
+                        break
+        dbusSignal = bus.add_signal_receiver(infoRequest,
+                                             'InfoRequest',
+                                             'org.syncevolution.Server',
+                                             self.server.bus_name,
+                                             None,
+                                             byte_arrays=True,
+                                             utf8_strings=True)
+
+        try:
+            self.session.Sync("slow", {})
+            loop.run()
+            self.assertEqual(DBusUtil.quit_events, ["session " + self.sessionpath + " done"])
+            self.checkSync(expectedError=10500, expectedResult=22002)
+        finally:
+            dbusSignal.remove()
+
+        # kill syncevo-dbus-server (and not the wrapper, because that would
+        # also kill the process group)
+        pid = self.serverPid()
+        logging.printf('killing syncevo-dbus-server with pid %d', pid)
+        os.kill(pid, signal.SIGKILL)
+
+        # Give syncevo-local-sync some time to shut down.
+        time.sleep(usingValgrind() and 60 or 10)
+
+        # Remove syncevo-dbus-server zombie process(es).
+        DBusUtil.pserver.wait()
+        DBusUtil.pserver = None
+        try:
+            while True:
+                res = os.waitpid(-1, os.WNOHANG)
+                if res[0]:
+                    logging.printf('got status %d for pid %d', res[1], res[0])
+                else:
+                    break
+        except OSError, ex:
+            if ex.errno != errno.ECHILD:
+                raise ex
+
+        # Now no processes should be left in the process group
+        # of the syncevo-dbus-server.
+        self.assertEqual({}, self.getChildren())
+
+        # check status reports
+        self.assertSyncStatus('server', 22002, 'synchronization process died prematurely')
+        # Local sync helper cannot tell for sure what happened.
+        # A generic error is okay. If the ForkExecChild::m_onQuit signal is
+        # triggered first, it'll report the "aborted" error.
+        status, error = self.getSyncStatus('target_+config@client')
+        self.assertTrue(status in (10500, 20017))
+        self.assertTrue(error in ('retrieving password failed: The connection is closed',
+                                  'sync parent quit unexpectedly'))
+
+    @timeout(200)
+    def testChildFailure(self):
+        """TestLocalSync.testChildFailure - check that server and D-Bus sync helper detect when local sync helper dies"""
+        self.setUpConfigs(childPassword="-")
+        self.setUpListeners(self.sessionpath)
+        self.lastState = "unknown"
+        def infoRequest(id, session, state, handler, type, params):
+            if state == "request":
+                self.assertEqual(self.lastState, "unknown")
+                self.lastState = "request"
+                # kill syncevo-dbus-helper
+                for pid, (name, cmdline) in self.getChildren().iteritems():
+                    if 'syncevo-local-sync' in cmdline:
+                        logging.printf('killing syncevo-local-sync with pid %d', pid)
+                        os.kill(pid, signal.SIGKILL)
+                        break
+        dbusSignal = bus.add_signal_receiver(infoRequest,
+                                             'InfoRequest',
+                                             'org.syncevolution.Server',
+                                             self.server.bus_name,
+                                             None,
+                                             byte_arrays=True,
+                                             utf8_strings=True)
+
+        try:
+            self.session.Sync("slow", {})
+            loop.run()
+            self.assertEqual(DBusUtil.quit_events, ["session " + self.sessionpath + " done"])
+            # TODO: this shouldn't be 20043 'external transport failure'
+            self.checkSync(expectedError=20043, expectedResult=20043)
+        finally:
+            dbusSignal.remove()
+
+        # kill syncevo-dbus-server (and not the wrapper, because that would
+        # also kill the process group)
+        pid = self.serverPid()
+        logging.printf('killing syncevo-dbus-server with pid %d', pid)
+        os.kill(pid, signal.SIGKILL)
+
+        # Give syncevo-local-sync some time to shut down.
+        time.sleep(usingValgrind() and 60 or 10)
+
+        # Remove syncevo-dbus-server zombie process(es).
+        DBusUtil.pserver.wait()
+        DBusUtil.pserver = None
+        try:
+            while True:
+                res = os.waitpid(-1, os.WNOHANG)
+                if res[0]:
+                    logging.printf('got status %d for pid %d', res[1], res[0])
+                else:
+                    break
+        except OSError, ex:
+            if ex.errno != errno.ECHILD:
+                raise ex
+
+        # Now no processes should be left in the process group
+        # of the syncevo-dbus-server.
+        self.assertEqual({}, self.getChildren())
+
+        # check status reports
+        status, error = self.getSyncStatus('server')
+        self.assertSyncStatus('server', 20043, ('child process quit because of signal 9',
+                                                'sending message to child failed: The connection is closed'))
+        self.assertSyncStatus('target_+config@client', 22002, 'synchronization process died prematurely')
+
+    @timeout(200)
+    def testServerFailure(self):
+        """TestLocalSync.testServerFailure - check that D-Bus helper detects when server dies"""
         self.setUpConfigs(childPassword="-")
         self.setUpListeners(self.sessionpath)
         self.lastState = "unknown"
@@ -3725,7 +4039,7 @@ END:VCARD''')
 
         # Sync should have failed with an explanation that it was
         # because of the password.
-        self.assertSyncStatus('server', 22003, "error code from SyncEvolution password request timed out (local, status 22003): failure in local sync child: Could not get the 'addressbook backend' password from user.")
+        self.assertSyncStatus('server', 22003, "error code from SyncEvolution password request timed out (local, status 22003): Could not get the 'addressbook backend' password from user.")
 
     @timeout(200)
     @property("ENV", "SYNCEVOLUTION_LOCAL_CHILD_DELAY=10") # allow killing syncevo-dbus-server in middle of sync
@@ -3810,10 +4124,14 @@ class TestFileNotify(unittest.TestCase, DBusUtil):
             time.sleep(5)
             i = i + 1
         self.assertTrue(self.isServerRunning())
-        time.sleep(10)
+        if usingValgrind():
+            # valgrind shutdown takes time
+            time.sleep(20)
+        else:
+            time.sleep(10)
         self.assertFalse(self.isServerRunning())
 
-    @timeout(30)
+    @timeout(100)
     def testSession(self):
         """TestFileNotify.testSession - create session, shut down directly after closing it"""
         self.assertTrue(self.isServerRunning())
@@ -3825,12 +4143,12 @@ class TestFileNotify(unittest.TestCase, DBusUtil):
         # should shut down almost immediately,
         # except when using valgrind
         if usingValgrind():
-            time.sleep(10)
+            time.sleep(20)
         else:
             time.sleep(1)
         self.assertFalse(self.isServerRunning())
 
-    @timeout(30)
+    @timeout(100)
     def testSession2(self):
         """TestFileNotify.testSession2 - create session, shut down after quiesence period after closing it"""
         self.assertTrue(self.isServerRunning())
@@ -3841,12 +4159,12 @@ class TestFileNotify(unittest.TestCase, DBusUtil):
         time.sleep(8)
         self.assertTrue(self.isServerRunning())
         if usingValgrind():
-            time.sleep(10)
+            time.sleep(20)
         else:
             time.sleep(4)
         self.assertFalse(self.isServerRunning())
 
-    @timeout(30)
+    @timeout(100)
     def testSession3(self):
         """TestFileNotify.testSession3 - shut down after quiesence period without activating a pending session request"""
         self.assertTrue(self.isServerRunning())
@@ -4289,7 +4607,10 @@ class TestCmdline(DBusUtil, unittest.TestCase):
         Returns tuple with stdout, stderr and result code. DBusUtil.events
         contains the status and progress events seen while the command line
         ran. self.session is the proxy for that session.'''
+        s = self.startCmdline(args, env, preserveOutputOrder)
+        return self.finishCmdline(s, expectSuccess, sessionFlags)
 
+    def startCmdline(self, args, env=None, preserveOutputOrder=False):
         # Watch all future events, ignore old ones.
         while loop.get_context().iteration(False):
             pass
@@ -4312,6 +4633,9 @@ class TestCmdline(DBusUtil, unittest.TestCase):
         else:
             s = subprocess.Popen(a, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  env=cmdline_env)
+        return s
+
+    def finishCmdline(self, s, expectSuccess=True, sessionFlags=['no-sync'], preserveOutputOrder=False):
         out, err = s.communicate()
         doFail = False
         if expectSuccess and s.returncode != 0:
@@ -6576,6 +6900,13 @@ END:VCARD
         self.assertNoErrors(err)
         self.assertEqualDiff(john + "\n" + joan, out)
 
+        # export all into file
+        exportfile = xdg_root + "/export.vcf"
+        out, err, code = self.runCmdline(["--export", exportfile,
+                                          "foo", "bar"])
+        self.assertNoErrors(err)
+        self.assertEqualDiff(john + "\n" + joan, open(exportfile).read())
+
         # export one
         out, err, code = self.runCmdline(["--export", "-",
                                           "backend=file",
@@ -6590,6 +6921,13 @@ END:VCARD
                                           "foo", "bar", "1"])
         self.assertNoErrors(err)
         self.assertEqualDiff(john, out)
+
+        # export one into file
+        exportfile = xdg_root + "/export.vcf"
+        out, err, code = self.runCmdline(["--export", exportfile,
+                                          "foo", "bar", "1"])
+        self.assertNoErrors(err)
+        self.assertEqualDiff(john, open(exportfile).read())
 
         # Copied from C++ test:
         # TODO: check configuration of just the source as @foo bar
@@ -6645,7 +6983,198 @@ END:VCARD
                                          sessionFlags=[],
                                          expectSuccess=True)
 
-        
+
+    @property("debug", False)
+    @property("ENV", "SYNCEVOLUTION_SYNC_DELAY=60")
+    @timeout(200)
+    def testSyncFailure1(self):
+        """TestCmdline.testSyncFailure1 - check that cmdline notices when sync fails prematurely before it even starts"""
+        self.setUpLocalSyncConfigs()
+        self.session.Detach()
+
+        # We must kill the process before the sync starts, to achieve
+        # the expected output and sync result. The
+        # SYNCEVOLUTION_LOCAL_CHILD_DELAY2 should give us that chance.
+        self.killed = False
+        def output(path, level, text, procname):
+            if self.running and not self.killed and procname == '' and text == 'ready to sync':
+                # kill syncevo-local-sync
+                for pid, (name, cmdline) in self.getChildren().iteritems():
+                    if 'syncevo-dbus-helper' in cmdline:
+                        logging.printf('killing syncevo-dbus-helper with pid %d', pid)
+                        os.kill(pid, signal.SIGKILL)
+                        loop.quit()
+                        self.killed = True
+                        break
+
+        receiver = bus.add_signal_receiver(output,
+                                           'LogOutput',
+                                           'org.syncevolution.Server',
+                                           self.server.bus_name,
+                                           byte_arrays=True,
+                                           utf8_strings=True)
+        try:
+            s = self.startCmdline(["--sync", "slow", "server"], preserveOutputOrder=True)
+            loop.run()
+        finally:
+            receiver.remove()
+        self.assertTrue(self.killed)
+
+        out, err, code = self.finishCmdline(s, expectSuccess=False, sessionFlags=[], preserveOutputOrder=True)
+        self.assertEqual(err, None)
+        self.assertEqual(1, code)
+        out = self.stripSyncTime(out)
+        # The error message is not particularly informative, but the error should
+        # not occur, so let it be... Also, the "connection is closed" error only
+        # occurs occasionally.
+        self.assertNotEqual(out, '')
+        self.assertTrue('''[ERROR] The connection is closed
+''' in out or
+                        '''[ERROR syncevo-dbus-server] child process quit because of signal 9
+''' in out)
+
+    @property("debug", False)
+    @property("ENV", "SYNCEVOLUTION_LOCAL_CHILD_DELAY2=60")
+    @timeout(200)
+    def testSyncFailure2(self):
+        """TestCmdline.testSyncFailure2 - check that cmdline notices when sync fails prematurely in the middle"""
+        self.setUpLocalSyncConfigs()
+        self.session.Detach()
+
+        # We must kill the process before the sync starts, to achieve
+        # the expected output and sync result. The
+        # SYNCEVOLUTION_LOCAL_CHILD_DELAY2 should give us that chance.
+        self.killed = False
+        def output(path, level, text, procname):
+            if self.running and not self.killed and procname == '@client':
+                # kill syncevo-local-sync
+                for pid, (name, cmdline) in self.getChildren().iteritems():
+                    if 'syncevo-local-sync' in cmdline:
+                        logging.printf('killing syncevo-local-sync with pid %d', pid)
+                        os.kill(pid, signal.SIGKILL)
+                        loop.quit()
+                        self.killed = True
+                        break
+
+        receiver = bus.add_signal_receiver(output,
+                                           'LogOutput',
+                                           'org.syncevolution.Server',
+                                           self.server.bus_name,
+                                           byte_arrays=True, 
+                                           utf8_strings=True)
+        try:
+            s = self.startCmdline(["--sync", "slow", "server"], preserveOutputOrder=True)
+            loop.run()
+        finally:
+            receiver.remove()
+        self.assertTrue(self.killed)
+
+        out, err, code = self.finishCmdline(s, expectSuccess=False, sessionFlags=[], preserveOutputOrder=True)
+        self.assertEqual(err, None)
+        self.assertEqual(1, code)
+        out = self.stripSyncTime(out)
+        out = re.sub(r'giving up after \d+ retries and \d+:\d+min',
+                     'giving up after x retries and y:zzmin',
+                     out)
+        out = re.sub(r'Synchronization failed, see .*temp-test-dbus/cache/syncevolution/server.*/syncevolution-log.html for details.',
+                     'Synchronization failed, see syncevolution-log.html for details.',
+                     out)
+        # Two possible outcomes:
+        # 1. death of child is noticed first.
+        # 2. loss of D-Bus connection is noticed first.
+        # Also, the "connection is closed" error only
+        # occurs occasionally.
+        if out.startswith('[ERROR] child process quit because of signal 9'):
+            out = out.replace('''[ERROR] sending message to child failed: The connection is closed
+''', '')
+            self.assertEqualDiff(out, '''[ERROR] child process quit because of signal 9
+[ERROR] local transport failed: child process quit because of signal 9
+[INFO] Transport giving up after x retries and y:zzmin
+[ERROR] transport problem: transport failed, retry period exceeded
+[INFO] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+
+Synchronization failed, see syncevolution-log.html for details.
+
+Changes applied during synchronization:
++---------------|-----------------------|-----------------------|-CON-+
+|               |       @default        |        @client        | FLI |
+|        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+|   addressbook |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+| start xxx, duration a:bcmin |
+|          external transport failure (local, status 20043)           |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+First ERROR encountered: child process quit because of signal 9
+
+''')
+        else:
+            self.assertEqualDiff(out, '''[ERROR] sending message to child failed: The connection is closed
+[INFO] Transport giving up after x retries and y:zzmin
+[ERROR] transport problem: transport failed, retry period exceeded
+[INFO] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+
+Synchronization failed, see syncevolution-log.html for details.
+
+Changes applied during synchronization:
++---------------|-----------------------|-----------------------|-CON-+
+|               |       @default        |        @client        | FLI |
+|        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+|   addressbook |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+| start xxx, duration a:bcmin |
+|          external transport failure (local, status 20043)           |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+First ERROR encountered: sending message to child failed: The connection is closed
+
+''')
+
+    @property("debug", False)
+    @property("ENV", "SYNCEVOLUTION_SYNC_DELAY=60")
+    @timeout(200)
+    def testSyncFailure3(self):
+        """TestCmdline.testSyncFailure3 - check that cmdline notices when server dies"""
+        self.setUpLocalSyncConfigs()
+        self.session.Detach()
+
+        # We must kill the process before the sync starts, to achieve
+        # the expected output and sync result. The
+        # SYNCEVOLUTION_LOCAL_CHILD_DELAY2 should give us that chance.
+        self.killed = False
+        pid = self.serverPid()
+        def output(path, level, text, procname):
+            if self.running and not self.killed and text == 'ready to sync':
+                # kill syncevo-dbus-server (and not the wrapper, because that would
+                # also kill the process group)
+                logging.printf('killing syncevo-dbus-server with pid %d', pid)
+                os.kill(pid, signal.SIGKILL)
+                self.killed = True
+                loop.quit()
+
+        receiver = bus.add_signal_receiver(output,
+                                           'LogOutput',
+                                           'org.syncevolution.Server',
+                                           self.server.bus_name,
+                                           byte_arrays=True,
+                                           utf8_strings=True)
+        try:
+            s = self.startCmdline(["--sync", "slow", "server"], preserveOutputOrder=True)
+            loop.run()
+        finally:
+            receiver.remove()
+        self.assertTrue(self.killed)
+
+        # Remove syncevo-dbus-server zombie process(es).
+        DBusUtil.pserver.wait()
+        DBusUtil.pserver = None
+
+        out, err, code = self.finishCmdline(s, expectSuccess=False, sessionFlags=None)
+        self.assertEqual(err, None)
+        self.assertEqual(1, code)
+        out = self.stripSyncTime(out)
+        self.assertEqualDiff(out, '''[ERROR] Background sync daemon has gone.
+''')
 
     @property("debug", False)
     @timeout(200)
@@ -6669,7 +7198,8 @@ END:VCARD''')
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] @client/addressbook: starting first time sync, two-way (peer is server)
+        self.assertEqualDiff('''[INFO @client] target side of local sync ready
+[INFO @client] @client/addressbook: starting first time sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
@@ -6692,7 +7222,7 @@ Comparison was impossible.
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -6740,10 +7270,12 @@ Data modified @default during synchronization:
 no changes
 
 ''', out)
+
         # Only 'addressbook' ever active. When done (= progress 100%),
         # a lot of information seems to be missing (= -1) or dubious
         # (1 out of 0 items sent?!). This information comes straight
         # from libsynthesis; use it as it is for now.
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(slow, running, 0\)\}
@@ -6762,7 +7294,8 @@ no changes
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
+        self.assertEqualDiff('''[INFO @client] target side of local sync ready
+[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
@@ -6782,7 +7315,7 @@ no changes
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -6821,6 +7354,7 @@ Data modified @default during synchronization:
 no changes
 
 ''', out)
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\)\}
@@ -6842,7 +7376,8 @@ END:VCARD''')
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
+        self.assertEqualDiff('''[INFO @client] target side of local sync ready
+[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
@@ -6874,7 +7409,7 @@ END:VCARD                                END:VCARD
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -6922,6 +7457,7 @@ Data modified @default during synchronization:
 no changes
 
 ''', out)
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\)\}
@@ -6937,7 +7473,8 @@ no changes
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
+        self.assertEqualDiff('''[INFO @client] target side of local sync ready
+[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
@@ -6969,7 +7506,7 @@ END:VCARD                              <
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -7017,6 +7554,7 @@ Data modified @default during synchronization:
 no changes
 
 ''', out)
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\)\}
@@ -7046,7 +7584,8 @@ END:VCARD''')
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] @client/addressbook: starting first time sync, two-way (peer is server)
+        self.assertEqualDiff('''[INFO @client] target side of local sync ready
+[INFO @client] @client/addressbook: starting first time sync, two-way (peer is server)
 [INFO @client] @client/calendar: starting first time sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
@@ -7083,7 +7622,7 @@ Comparison was impossible.
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -7143,6 +7682,7 @@ no changes
 no changes
 
 ''', out)
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(slow, running, 0\), calendar: \(slow, running, 0\)\}
@@ -7161,7 +7701,8 @@ no changes
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
+        self.assertEqualDiff('''[INFO @client] target side of local sync ready
+[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
 [INFO @client] @client/calendar: starting normal sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
@@ -7195,7 +7736,7 @@ no changes
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -7246,6 +7787,7 @@ no changes
 no changes
 
 ''', out)
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\), calendar: \(two-way, running, 0\)\}
@@ -7267,7 +7809,8 @@ END:VCARD''')
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
+        self.assertEqualDiff('''[INFO @client] target side of local sync ready
+[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
 [INFO @client] @client/calendar: starting normal sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
@@ -7313,7 +7856,7 @@ no changes
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -7373,6 +7916,7 @@ no changes
 no changes
 
 ''', out)
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\), calendar: \(two-way, running, 0\)\}
@@ -7388,7 +7932,8 @@ no changes
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
+        self.assertEqualDiff('''[INFO @client] target side of local sync ready
+[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
 [INFO @client] @client/calendar: starting normal sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
@@ -7434,7 +7979,7 @@ no changes
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -7494,6 +8039,7 @@ no changes
 no changes
 
 ''', out)
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\), calendar: \(two-way, running, 0\)\}
@@ -7509,6 +8055,7 @@ no changes
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
         self.assertEqualDiff('''[INFO] @default/calendar: inactive
+[INFO @client] target side of local sync ready
 [INFO @client] @client/calendar: inactive
 [INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
 [INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
@@ -7530,7 +8077,7 @@ no changes
 
 Synchronization successful.
 
-Changes applied during synchronization:
+Changes applied during synchronization (@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -7569,6 +8116,7 @@ Data modified @default during synchronization:
 no changes
 
 ''', out)
+        self.collectEvents()
         self.assertRegexpMatches(self.prettyPrintEvents(),
                                  r'''status: idle, .*
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\), calendar: \(none, idle, 0\)\}

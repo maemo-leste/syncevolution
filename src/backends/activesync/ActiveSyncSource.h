@@ -135,8 +135,7 @@ class ActiveSyncSource :
         // also for other keys if the need ever arises).
         m_itemNode(new PrefixConfigNode("item-",
                                         boost::shared_ptr<ConfigNode>(new SafeConfigNode(params.m_nodes.getTrackingNode())))),
-        m_context(params.m_context),
-        m_account(0)
+        m_context(params.m_context)
         {
             if (!m_context) {
                 m_context.reset(new SyncConfig());
@@ -173,24 +172,7 @@ class ActiveSyncSource :
  protected:
 
     virtual void getSynthesisInfo(SynthesisInfo &info,
-                                  XMLConfigFragments &fragments)
-    {
-        TestingSyncSource::getSynthesisInfo(info, fragments);
-
-        /**
-         * no ActiveSync specific rules yet, use condensed format as
-         * if we were storing locally, with all extensions enabled
-         */
-        info.m_backendRule = "LOCALSTORAGE";
-
-        /**
-         * access to data must be done early so that a slow sync can be
-         * enforced when the ActiveSync sync key turns out to be
-         * invalid
-         */
-        info.m_earlyStartDataRead = true;
-    }
-
+                                  XMLConfigFragments &fragments);
     EasSyncHandler *getHandler() { return m_handler.get(); }
     std::string getFolder() { return m_folder; }
     std::string getStartSyncKey() { return m_startSyncKey; }
@@ -205,7 +187,7 @@ class ActiveSyncSource :
     boost::shared_ptr<SyncConfig> m_context;
 
     /** account ID for libeas, must be set in "username" config property */
-    const char* m_account;
+    std::string m_account;
 
     /** folder ID for libeas, optionally set in "database" config property */
     std::string m_folder;

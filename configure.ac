@@ -8,7 +8,7 @@ dnl Invoke autogen.sh to produce a configure script.
 #
 # Starting with the 1.1 release cycle, the rpm-style
 # .99 pseudo-version number is used to mark a pre-release.
-AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.2.99.1])])
+AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.3.2])])
 # STABLE_VERSION=1.0.1+
 AC_SUBST(STABLE_VERSION)
 
@@ -25,7 +25,7 @@ SE_CHECK_FOR_STABLE_RELEASE
 
 # Minimum version of libsynthesis as defined in its
 # configure script and thus .pc files:
-define([SYNTHESIS_MIN_VERSION], [3.4.0.16.7])
+define([SYNTHESIS_MIN_VERSION], [3.4.0.16.8])
 
 # Line above is patched by gen-autotools.sh. Handle
 # both "yes" and "no".
@@ -559,7 +559,7 @@ if test $enable_gui != "no"; then
     AC_PATH_PROG(DBUS_BINDING_TOOL, dbus-binding-tool)
     AC_PATH_PROG(GLIB_GENMARSHAL, glib-genmarshal)
 
-    gui_modules="$gtk_version glib-2.0 dbus-glib-1 >= 0.60 gio-2.0"
+    gui_modules="$gtk_version glib-2.0 dbus-glib-1 >= 0.60 gio-2.0 gio-unix-2.0"
     if test $enable_gui = "moblin"; then
         AC_DEFINE(USE_MOBLIN_UX, 1, [Use Moblin UI widgets])
     fi
@@ -711,7 +711,7 @@ elif test "$SYNTHESISSRC" != "none" && test -d $srcdir/src/synthesis; then
 elif test "$enable_shared" = "no"; then
     # link against engine
     PKG_CHECK_MODULES([SYNTHESIS], [synthesis >= 3.4])
-    SYNTHESIS_ENGINE="$SYNTHESIS_LIBS -lsynthesis"
+    SYNTHESIS_ENGINE="$SYNTHESIS_LIBS -lsynthesis -lsmltk"
 else
     # link against SDK alone, except in client-test
     #PKG_CHECK_MODULES(SYNTHESIS, "synthesis-sdk")
@@ -732,7 +732,7 @@ if test $SYNTHESIS_SRC != "no-synthesis-source"; then
     # to trigger building the synthesis library
     SYNTHESIS_SUBDIR=$PWD/src/build-synthesis
     SYNTHESIS_CFLAGS="-I$SYNTHESIS_SUBDIR/src"
-    SYNTHESIS_LIBS="$SYNTHESIS_SUBDIR/src/libsynthesissdk.la"
+    SYNTHESIS_LIBS="$SYNTHESIS_SUBDIR/src/libsynthesissdk.la $SYNTHESIS_SUBDIR/src/libsmltk.la"
 
     if test "x$enable_core" = "xno" && test "x$enable_gui" != "xno"; then
        # SYNTHESIS_SUBDIR is ignored, at least build headers for GUI
@@ -741,14 +741,14 @@ if test $SYNTHESIS_SRC != "no-synthesis-source"; then
 
     if test "$enable_shared" = "no"; then
         # link against the engines that were enabled
-        case $SYNCML_ENGINES in both|client|server) SYNTHESIS_LIBS="$SYNTHESIS_LIBS $SYNTHESIS_SUBDIR/src/libsynthesis.la";; esac
+        case $SYNCML_ENGINES in both|client|server) SYNTHESIS_LIBS="$SYNTHESIS_LIBS $SYNTHESIS_SUBDIR/src/libsynthesis.la $SYNTHESIS_SUBDIR/src/libsmltk.la";; esac
         AC_DEFINE(ENABLE_SYNCML_LINKED, 1, [SyncML engines are linked directly])
     else
         # It would be nice if we could avoid linking against libsynthesis.la here.
         # This doesn't work at the moment because sysync::SySyncDebugPuts()
         # is called directly by the libsynthesissdk instead of going through
         # the normal C function pointer lookup.
-        SYNTHESIS_LIBS="$SYNTHESIS_LIBS $SYNTHESIS_SUBDIR/src/libsynthesis.la"
+        SYNTHESIS_LIBS="$SYNTHESIS_LIBS $SYNTHESIS_SUBDIR/src/libsynthesis.la $SYNTHESIS_SUBDIR/src/libsmltk.la"
     fi
     SYNTHESIS_DEP=$SYNTHESIS_LIBS
 
@@ -996,8 +996,11 @@ fi
 # that a backend can alternatively use its own top-level configure
 # with PKG_CHECK_MODULES(SYNCEVOLUTION, "syncevolution") to set them.
 # need absolute path, use pwd instead of relative $srcdir
+#
+# When adding something here, remember to also update syncevolution.pc.in.
+# -lrt is for clock_gettime() in the Timespec.h inline functions.
 SYNCEVOLUTION_CFLAGS=-I`cd $srcdir && pwd`/src
-SYNCEVOLUTION_LIBS=`pwd`/src/syncevo/libsyncevolution.la
+SYNCEVOLUTION_LIBS="src/syncevo/libsyncevolution.la -lrt"
 AC_SUBST(SYNCEVOLUTION_CFLAGS)
 AC_SUBST(SYNCEVOLUTION_LIBS)
 

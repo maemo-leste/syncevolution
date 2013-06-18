@@ -22,6 +22,8 @@
 #endif
 
 #include <iostream>
+#include <locale.h>
+#include <glib/gi18n.h>
 
 #include "server.h"
 #include "restart.h"
@@ -69,6 +71,13 @@ int main(int argc, char **argv, char **envp)
     // remember environment for restart
     boost::shared_ptr<Restart> restart;
     restart.reset(new Restart(argv, envp));
+
+    // Internationalization for auto sync messages.
+    setlocale(LC_ALL, "");
+    bindtextdomain(GETTEXT_PACKAGE,
+                   getEnv("SYNCEVOLUTION_LOCALE_DIR", SYNCEVOLUTION_LOCALEDIR));
+    bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
+    textdomain(GETTEXT_PACKAGE);
 
     int duration = 600;
     int opt = 1;
@@ -150,12 +159,15 @@ int main(int argc, char **argv, char **envp)
             unsetenv("G_DBUS_DEBUG");
         }
 
+        dbus_bus_connection_undelay(conn);
         server->run();
         SE_LOG_DEBUG(NULL, NULL, "cleaning up");
         server.reset();
-        conn.reset();
         obj.reset();
         guard.reset();
+        SE_LOG_DEBUG(NULL, NULL, "flushing D-Bus connection");
+        conn.flush();
+        conn.reset();
         SE_LOG_INFO(NULL, NULL, "terminating");
         return 0;
     } catch ( const std::exception &ex ) {

@@ -440,6 +440,9 @@ void LocalTests::addTests() {
             ADD_TEST(LocalTests, testSimpleInsert);
             ADD_TEST(LocalTests, testLocalDeleteAll);
             ADD_TEST(LocalTests, testComplexInsert);
+            if (config.m_insertItem.find("\nUID:") != std::string::npos) {
+                ADD_TEST(LocalTests, testInsertTwice);
+            }
 
             if (!config.m_updateItem.empty()) {
                 ADD_TEST(LocalTests, testLocalUpdate);
@@ -1049,13 +1052,26 @@ void LocalTests::testReadItem404() {
     CT_ASSERT_EQUAL(STATUS_NOT_FOUND, status);
 }
 
-// insert one contact without clearing the source first
-void LocalTests::testSimpleInsert() {
+void LocalTests::doInsert(bool withUID)
+{
     // check requirements
     CT_ASSERT(!config.m_insertItem.empty());
     CT_ASSERT(!config.m_createSourceA.empty());
 
-    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem));
+    std::string item = config.m_insertItem;
+    if (!withUID) {
+        CT_ASSERT_NO_THROW(stripProperty(item, "UID"));
+    }
+    CT_ASSERT_NO_THROW(insert(createSourceA, item));
+}
+
+// insert one contact without clearing the source first
+void LocalTests::testSimpleInsert() {
+    // Insert the item without the UID. There is no guarantee that the
+    // item wasn't already inserted before (database not cleaned by
+    // test) and some backends (CalDAV) will catch an attempt to
+    // add the same item twice.
+    doInsert(false);
 }
 
 // delete all items
@@ -1065,7 +1081,9 @@ void LocalTests::testLocalDeleteAll() {
     CT_ASSERT(config.m_createSourceA);
 
     // make sure there is something to delete, then delete again
-    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem));
+    std::string item = config.m_insertItem;
+    CT_ASSERT_NO_THROW(stripProperty(item, "UID"));
+    CT_ASSERT_NO_THROW(insert(createSourceA, item));
     CT_ASSERT_NO_THROW(deleteAll(createSourceA));
 }
 
@@ -1073,8 +1091,49 @@ void LocalTests::testLocalDeleteAll() {
 void LocalTests::testComplexInsert() {
     CT_ASSERT(config.m_createSourceA);
     CT_ASSERT_NO_THROW(deleteAll(createSourceA));
-    CT_ASSERT_NO_THROW(testSimpleInsert());
+    CT_ASSERT_NO_THROW(doInsert());
     CT_ASSERT_NO_THROW(testIterateTwice());
+}
+
+// insert the same item (identified by UID) twice => either
+// ITEM_NEEDS_MERGE, ITEM_REPLACED or ITEM_MERGED are acceptable
+void LocalTests::testInsertTwice() {
+    CT_ASSERT(config.m_createSourceA);
+    CT_ASSERT(!config.m_insertItem.empty());
+    CT_ASSERT(config.m_insertItem.find("\nUID:") != std::string::npos);
+    CT_ASSERT_NO_THROW(deleteAll(createSourceA));
+
+    // create source
+    TestingSyncSourcePtr source;
+    SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
+
+    // mangle data once
+    std::string data = config.m_mangleItem(config.m_insertItem, false);
+
+    // insert new item
+    SyncSourceRaw::InsertItemResult first;
+    SOURCE_ASSERT_NO_FAILURE(source.get(), first = source->insertItemRaw("", data));
+    CT_ASSERT_EQUAL(ITEM_OKAY, first.m_state);
+
+    // and again
+    SyncSourceRaw::InsertItemResult second;
+    SOURCE_ASSERT_NO_FAILURE(source.get(), second = source->insertItemRaw("", data));
+    CLIENT_TEST_LOG("item %s",
+                    second.m_state == ITEM_NEEDS_MERGE ? "needs to be merged" :
+                    second.m_state == ITEM_REPLACED ? "was replaced" :
+                    second.m_state == ITEM_MERGED ? "was merged" :
+                    second.m_state == ITEM_OKAY ? "was added, which is broken!" :
+                    "unknown result ?!");
+    if (config.m_sourceKnowsItemSemantic) {
+        CT_ASSERT(second.m_state == ITEM_NEEDS_MERGE || second.m_state == ITEM_REPLACED || second.m_state == ITEM_MERGED);
+        CT_ASSERT_EQUAL(first.m_luid, second.m_luid);
+    } else {
+        CT_ASSERT(second.m_state == ITEM_OKAY);
+        CT_ASSERT(first.m_luid != second.m_luid);
+    }
+    if (second.m_state == ITEM_REPLACED || second.m_state == ITEM_MERGED) {
+        CT_ASSERT(first.m_revision != second.m_revision);
+    }
 }
 
 // clean database, insert item, update it
@@ -1085,7 +1144,7 @@ void LocalTests::testLocalUpdate() {
 
     CT_ASSERT_NO_THROW(deleteAll(createSourceA));
 
-    CT_ASSERT_NO_THROW(testSimpleInsert());
+    CT_ASSERT_NO_THROW(doInsert());
     CT_ASSERT_NO_THROW(update(createSourceA, config.m_updateItem));
 }
 
@@ -1103,7 +1162,7 @@ void LocalTests::doChanges(bool restart) {
     CT_ASSERT_NO_THROW(deleteAll(createSourceA));
 
     CLIENT_TEST_LOG("insert item via source A");
-    CT_ASSERT_NO_THROW(testSimpleInsert());
+    CT_ASSERT_NO_THROW(doInsert());
 
     CLIENT_TEST_LOG("clean changes in sync source B by creating and closing it");
     TestingSyncSourcePtr source;
@@ -1176,7 +1235,7 @@ void LocalTests::doChanges(bool restart) {
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
 
     CLIENT_TEST_LOG("insert another item via source A");
-    CT_ASSERT_NO_THROW(testSimpleInsert());
+    CT_ASSERT_NO_THROW(doInsert());
     CLIENT_TEST_LOG("check for new item via source B");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     SOURCE_ASSERT_EQUAL(source.get(), 1, countItems(source.get()));
@@ -1222,7 +1281,7 @@ void LocalTests::doChanges(bool restart) {
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
     CLIENT_TEST_LOG("create and update an item in source A");
-    CT_ASSERT_NO_THROW(testSimpleInsert());
+    CT_ASSERT_NO_THROW(doInsert());
     CT_ASSERT_NO_THROW(update(createSourceA, config.m_updateItem));
     CLIENT_TEST_LOG("should only be listed as new or updated in source B, but not both");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
@@ -1236,9 +1295,9 @@ void LocalTests::doChanges(bool restart) {
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
     CLIENT_TEST_LOG("create, delete and recreate an item in source A");
-    CT_ASSERT_NO_THROW(testSimpleInsert());
+    CT_ASSERT_NO_THROW(doInsert());
     CT_ASSERT_NO_THROW(deleteAll(createSourceA));
-    CT_ASSERT_NO_THROW(testSimpleInsert());
+    CT_ASSERT_NO_THROW(doInsert());
     CLIENT_TEST_LOG("should only be listed as new or updated in source B, even if\n "
                     "(as for calendar with UID) the same LUID gets reused");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
@@ -1311,7 +1370,7 @@ void LocalTests::testLinkedSources()
 
         // insert one item
         CLIENT_TEST_LOG("inserting into %s", main->getSourceName().c_str());
-        CT_ASSERT_NO_THROW(main->testSimpleInsert());
+        CT_ASSERT_NO_THROW(main->doInsert());
         BOOST_FOREACH (LocalTests *test, m_linkedSources) {
             if (test == main) {
                 continue;
@@ -1928,7 +1987,7 @@ void LocalTests::testLinkedItemsRemoveNormal() {
     // Skip the testing, proceed to full removal.
     if (currentServer() != "exchange") {
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
-#ifndef USE_ECAL_CLIENT
+#ifndef USE_EDS_CLIENT
         if (getCurrentTest().find("::eds_event::") != std::string::npos) {
             // hack: ignore EDS side effect of adding EXDATE to parent, see http://bugs.meego.com/show_bug.cgi?id=10906
             size_t pos = parentData.rfind("DTSTART");
@@ -3067,7 +3126,7 @@ void SyncTests::testRefreshFromClientSemantic() {
 void SyncTests::testRefreshStatus() {
     source_it it;
 
-    CT_ASSERT_NO_THROW(allSourcesInsert());
+    CT_ASSERT_NO_THROW(allSourcesInsert(false));
     CT_ASSERT_NO_THROW(allSourcesDeleteAll());
     CT_ASSERT_NO_THROW(allSourcesInsert());
     doSync(__FILE__, __LINE__,
@@ -3159,7 +3218,7 @@ void SyncTests::doRestartSync(SyncMode mode)
         boost::bind(boost::function<void ()>(
                                              boost::lambda::if_then(++boost::lambda::var(startCount) == sources.size(),
                                                                     (boost::lambda::bind(log, "inserting one item"),
-                                                                     boost::lambda::bind(&SyncTests::allSourcesInsert, this)))
+                                                                     boost::lambda::bind(&SyncTests::allSourcesInsert, this, true)))
                                              ));
 
     SyncOptions::Callback_t setup =
@@ -4146,6 +4205,17 @@ bool SyncTests::doConversionCallback(bool *success,
             }
         }
         out.close();
+
+        // The test used peer-specific test cases, but the actual
+        // result does not depend on the peer because we haven't
+        // received the peer's DevInf at the point where we
+        // import/export the test cases (=> don't apply peer-specific
+        // synccompare workarounds).
+        //
+        // Due to the lack of DevInf, properties and parameters which
+        // need to be enabled via DevInf get lost (= filter them out).
+        ScopedEnvChange env("CLIENT_TEST_SERVER", "");
+        ScopedEnvChange envParams("CLIENT_TEST_STRIP_PARAMETERS", "X-EVOLUTION-UI-SLOT");
         CT_ASSERT(config->m_compare(client, testcases, converted));
     }
 
@@ -4237,17 +4307,20 @@ void SyncTests::testExtensions() {
     accessClientB->doSync(__FILE__, __LINE__, "update", SyncOptions(SYNC_TWO_WAY));
     doSync(__FILE__, __LINE__, "patch", SyncOptions(SYNC_TWO_WAY));
 
-    // compare data in source A against reference data *without* telling synccompare
-    // to ignore known data loss for the server
-    ScopedEnvChange env("CLIENT_TEST_SERVER", "");
-    ScopedEnvChange envParams("CLIENT_TEST_STRIP_PARAMETERS", "X-EVOLUTION-UI-SLOT");
-    ScopedEnvChange envProps("CLIENT_TEST_STRIP_PROPERTIES", "(PHOTO|FN)");
     bool equal = true;
     for (it = sources.begin(); it != sources.end(); ++it) {
         string refDir = getCurrentTest() + "." + it->second->config.m_sourceName + ".ref.dat";
         simplifyFilename(refDir);
         TestingSyncSourcePtr source;
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(it->second->createSourceB()));
+        // Compare data in source A against reference data *without*
+        // telling synccompare to ignore known data loss for the
+        // server. CLIENT_TEST_SERVER is relevant for finding the
+        // right source config and thus setting it must come after the
+        // createSourceB() call.
+        ScopedEnvChange env("CLIENT_TEST_SERVER", "");
+        ScopedEnvChange envParams("CLIENT_TEST_STRIP_PARAMETERS", "X-EVOLUTION-UI-SLOT");
+        ScopedEnvChange envProps("CLIENT_TEST_STRIP_PROPERTIES", "(PHOTO|FN)");
         if (!it->second->compareDatabases(refDir.c_str(), *source, false)) {
             equal = false;
         }
@@ -4604,6 +4677,19 @@ bool addBothSidesAddStatsBroken = false;
 // duplicates itself; the client needs to do that
 bool addBothSidesServerIsDumb = getenv("CLIENT_TEST_ADD_BOTH_SIDES_SERVER_IS_DUMB") != NULL;
 
+static void testAddBothSidesFixUpdateItem(std::string &updateItem)
+{
+    if (addBothSidesNoMergeLines) {
+        // VEVENT
+        boost::replace_all(updateItem, "LOCATION:big meeting room", "LOCATION:my office");
+        boost::replace_all(updateItem, "DESCRIPTION:nice to see you", "DESCRIPTION:let's talk<<REVISION>>");
+        // VJOURNAL
+        boost::replace_all(updateItem, "DESCRIPTION:Summary\\nBody text", "DESCRIPTION:Summary Modified\\nBody text");
+        // VTODO
+        boost::replace_all(updateItem, "DESCRIPTION:to be done", "DESCRIPTION:to be done<<REVISION>>");
+    }
+}
+
 void SyncTests::testAddBothSides()
 {
     CT_ASSERT_NO_THROW(deleteAll());
@@ -4611,11 +4697,7 @@ void SyncTests::testAddBothSides()
 
     std::string insertItem = sources[0].second->config.m_insertItem;
     std::string updateItem = sources[0].second->config.m_updateItem;
-
-    if (addBothSidesNoMergeLines) {
-        boost::replace_all(updateItem, "LOCATION:big meeting room", "LOCATION:my office");
-        boost::replace_all(updateItem, "DESCRIPTION:nice to see you", "DESCRIPTION:let's talk<<REVISION>>");
-    }
+    testAddBothSidesFixUpdateItem(updateItem);
 
     CT_ASSERT_NO_THROW(sources[0].second->insert(sources[0].second->createSourceA,
                                                       insertItem));
@@ -4713,11 +4795,7 @@ void SyncTests::testAddBothSidesRefresh()
 
     std::string insertItem = sources[0].second->config.m_insertItem;
     std::string updateItem = sources[0].second->config.m_updateItem;
-
-    if (addBothSidesNoMergeLines) {
-        boost::replace_all(updateItem, "LOCATION:big meeting room", "LOCATION:my office");
-        boost::replace_all(updateItem, "DESCRIPTION:nice to see you", "DESCRIPTION:let's talk<<REVISION>>");
-    }
+    testAddBothSidesFixUpdateItem(updateItem);
 
     // insert initial item data on B
     CT_ASSERT_NO_THROW(accessClientB->sources[0].second->insert(accessClientB->sources[0].second->createSourceA,
@@ -5830,10 +5908,10 @@ void SyncTests::postSync(int res, const std::string &logname)
     client.postSync(res, logname);
 }
 
-void SyncTests::allSourcesInsert()
+void SyncTests::allSourcesInsert(bool withUID)
 {
     BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
-        CT_ASSERT_NO_THROW(source_pair.second->testSimpleInsert());
+        CT_ASSERT_NO_THROW(source_pair.second->doInsert(withUID));
     }
 }
 
@@ -6307,14 +6385,10 @@ static string mangleICalendar20(const std::string &data, bool update)
     }
 
     if (getenv("CLIENT_TEST_NO_UID")) {
-        boost::replace_all(item, "UID:1234567890!@#$%^&*()<>@dummy\n", "");
+        stripProperty(item, "UID");
     } else if (getenv("CLIENT_TEST_SIMPLE_UID")) {
         boost::replace_all(item, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
     }
-
-    // Ensure that items of different types do not have the same UID.
-    // They might be stored in the same VCALENDAR.
-    boost::replace_all(item, "@dummy\n", "@dummy" + type + "\n");
 
     if (getenv("CLIENT_TEST_UNIQUE_UID")) {
         // Making UID unique per test to avoid issues
@@ -6754,6 +6828,14 @@ void ClientTest::getTestData(const char *type, Config &config)
         config.m_uniqueProperties = "";
         config.m_sizeProperty = "NOTE";
         config.m_testcases = "testcases/eds_contact.vcf";
+
+        if (server == "exchange" ||
+            server == "googleeas") {
+            // X-MOZILLA-HTML not supported by ActiveSync.
+            boost::replace_first(config.m_updateItem, "X-MOZILLA-HTML:TRUE", "X-MOZILLA-HTML:FALSE");
+            boost::replace_first(config.m_complexUpdateItem, "X-MOZILLA-HTML:TRUE", "X-MOZILLA-HTML:FALSE");
+            boost::replace_first(config.m_mergeItem2, "X-MOZILLA-HTML:TRUE", "X-MOZILLA-HTML:FALSE");
+        }
     } else if (!strcmp(type, "eds_event") && !noutc) {
         config.m_sourceName = "eds_event";
         config.m_sourceNameServerTemplate = "calendar";
@@ -6773,7 +6855,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SUMMARY:phone meeting - old\n"
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
-            "UID:1234567890!@#$%^&*()<>@dummy\n"
+            "UID:1234567890!@#$%^&*()<>@dummyVEVENT\n"
             "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201Z\n"
             "CREATED:20060409T213201Z\n"
@@ -6792,7 +6874,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SUMMARY:meeting on site - updated\n"
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
-            "UID:1234567890!@#$%^&*()<>@dummy\n"
+            "UID:1234567890!@#$%^&*()<>@dummyVEVENT\n"
             "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201Z\n"
             "CREATED:20060409T213201Z\n"
@@ -6812,7 +6894,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SUMMARY:phone meeting\n"
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
-            "UID:1234567890!@#$%^&*()<>@dummy\n"
+            "UID:1234567890!@#$%^&*()<>@dummyVEVENT\n"
             "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201Z\n"
             "CREATED:20060409T213201Z\n"
@@ -6837,7 +6919,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SUMMARY:phone meeting\n"
             "DTEND:20060406T163000Z\n"
             "DTSTART:20060406T160000Z\n"
-            "UID:1234567890!@#$%^&*()<>@dummy\n"
+            "UID:1234567890!@#$%^&*()<>@dummyVEVENT\n"
             "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201Z\n"
             "CREATED:20060409T213201Z\n"
@@ -6882,7 +6964,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "END:STANDARD\n"
             "END:VTIMEZONE\n"
             "BEGIN:VEVENT\n"
-            "UID:20080407T193125Z-19554-727-1-50@dummy\n"
+            "UID:20080407T193125Z-19554-727-1-50@dummyVEVENT\n"
             "DTSTAMP:20080407T193125Z\n"
             "DTSTART;TZID=Europe/Berlin:20080406T090000\n"
             "DTEND;TZID=Europe/Berlin:20080406T093000\n"
@@ -6919,7 +7001,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "END:STANDARD\n"
             "END:VTIMEZONE\n"
             "BEGIN:VEVENT\n"
-            "UID:20080407T193125Z-19554-727-1-50@dummy\n"
+            "UID:20080407T193125Z-19554-727-1-50@dummyVEVENT\n"
             "DTSTAMP:20080407T193125Z\n"
             "DTSTART;TZID=Europe/Berlin:20080413T090000\n"
             "DTEND;TZID=Europe/Berlin:20080413T093000\n"
@@ -6964,7 +7046,7 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "END:STANDARD\n"
                 "END:VTIMEZONE\n"
                 "BEGIN:VEVENT\n"
-                "UID:20080407T193125Z-19554-727-1-50@dummy\n"
+                "UID:20080407T193125Z-19554-727-1-50@dummyVEVENT\n"
                 "DTSTAMP:20080407T193125Z\n"
                 "DTSTART;TZID=Europe/Berlin:20080406T090000\n"
                 "DTEND;TZID=Europe/Berlin:20080406T093000\n"
@@ -6986,7 +7068,7 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
                 "VERSION:2.0\n"
                 "BEGIN:VEVENT\n"
-                "UID:20080407T193125Z-19554-727-1-50@dummy\n"
+                "UID:20080407T193125Z-19554-727-1-50@dummyVEVENT\n"
                 "DTSTAMP:20080407T193125Z\n"
                 "DTSTART:20080406T070000Z\n"
                 "DTEND:20080406T073000Z\n"
@@ -7005,7 +7087,7 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
                 "VERSION:2.0\n"
                 "BEGIN:VEVENT\n"
-                "UID:20080407T193125Z-19554-727-1-50@dummy\n"
+                "UID:20080407T193125Z-19554-727-1-50@dummyVEVENT\n"
                 "DTSTAMP:20080407T193125Z\n"
                 "DTSTART:20080413T070000Z\n"
                 "DTEND:20080413T073000Z\n"
@@ -7028,7 +7110,7 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
                 "VERSION:2.0\n"
                 "BEGIN:VEVENT\n"
-                "UID:20080407T193125Z-19554-727-1-50@dummy\n"
+                "UID:20080407T193125Z-19554-727-1-50@dummyVEVENT\n"
                 "DTSTAMP:20080407T193125Z\n"
                 "DTSTART:20080406T070000\n"
                 "DTEND:20080406T073000\n"
@@ -7047,7 +7129,7 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
                 "VERSION:2.0\n"
                 "BEGIN:VEVENT\n"
-                "UID:20080407T193125Z-19554-727-1-50@dummy\n"
+                "UID:20080407T193125Z-19554-727-1-50@dummyVEVENT\n"
                 "DTSTAMP:20080407T193125Z\n"
                 "DTSTART:20080413T070000\n"
                 "DTEND:20080413T073000\n"
@@ -7134,7 +7216,7 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
                 "VERSION:2.0\n"
                 "BEGIN:VEVENT\n"
-                "UID:20110829T130000Z-19554-727-1-50@dummy\n"
+                "UID:20110829T130000Z-19554-727-1-50@dummyVEVENT\n"
                 "DTSTAMP:20080407T193125Z\n"
                 "DTSTART;VALUE=DATE:20080406\n"
                 "DTEND;VALUE=DATE:20080407\n"
@@ -7164,7 +7246,7 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
                 "VERSION:2.0\n"
                 "BEGIN:VEVENT\n"
-                "UID:20110829T130000Z-19554-727-1-50@dummy\n"
+                "UID:20110829T130000Z-19554-727-1-50@dummyVEVENT\n"
                 "DTSTAMP:20080407T193125Z\n"
                 "DTSTART;VALUE=DATE:20080413\n"
                 "DTEND;VALUE=DATE:20080414\n"
@@ -7393,7 +7475,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SUMMARY:phone meeting\n"
             "DTEND;TZID=/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai:20060406T163000\n"
             "DTSTART;TZID=/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai:20060406T160000\n"
-            "UID:1234567890!@#$%^&*()<>@dummy\n"
+            "UID:1234567890!@#$%^&*()<>@dummyVEVENT\n"
             "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201Z\n"
             "CREATED:20060409T213201Z\n"
@@ -7430,7 +7512,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "SUMMARY:meeting on site\n"
             "DTEND;TZID=/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai:20060406T163000\n"
             "DTSTART;TZID=/freeassociation.sourceforge.net/Tzfile/Asia/Shanghai:20060406T160000\n"
-            "UID:1234567890!@#$%^&*()<>@dummy\n"
+            "UID:1234567890!@#$%^&*()<>@dummyVEVENT\n"
             "DTSTAMP:20060406T211449Z\n"
             "LAST-MODIFIED:20060409T213201Z\n"
             "CREATED:20060409T213201Z\n"
@@ -7460,7 +7542,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
             "BEGIN:VTODO\n"
-            "UID:20060417T173712Z-4360-727-1-2730@dummy\n"
+            "UID:20060417T173712Z-4360-727-1-2730@dummyVTODO\n"
             "DTSTAMP:20060417T173712Z\n"
             "SUMMARY:do me\n"
             "DESCRIPTION:to be done<<REVISION>>\n"
@@ -7475,7 +7557,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
             "BEGIN:VTODO\n"
-            "UID:20060417T173712Z-4360-727-1-2730@dummy\n"
+            "UID:20060417T173712Z-4360-727-1-2730@dummyVTODO\n"
             "DTSTAMP:20060417T173712Z\n"
             "SUMMARY:do me ASAP\n"
             "DESCRIPTION:to be done\n"
@@ -7491,7 +7573,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
             "BEGIN:VTODO\n"
-            "UID:20060417T173712Z-4360-727-1-2730@dummy\n"
+            "UID:20060417T173712Z-4360-727-1-2730@dummyVTODO\n"
             "DTSTAMP:20060417T173712Z\n"
             "SUMMARY:do me please\\, please\n"
             "DESCRIPTION:to be done\n"
@@ -7506,7 +7588,7 @@ void ClientTest::getTestData(const char *type, Config &config)
             "PRODID:-//Ximian//NONSGML Evolution Calendar//EN\n"
             "VERSION:2.0\n"
             "BEGIN:VTODO\n"
-            "UID:20060417T173712Z-4360-727-1-2730@dummy\n"
+            "UID:20060417T173712Z-4360-727-1-2730@dummyVTODO\n"
             "DTSTAMP:20060417T173712Z\n"
             "SUMMARY:do me\n"
             "DESCRIPTION:to be done\n"

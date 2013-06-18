@@ -391,9 +391,12 @@ sub NormalizeItem {
       s/^(TEL.*);TYPE=PREF/$1/mg;
     }
 
+   if($googlesyncml || $googleeas) {
+      # ignore the PHOTO encoding data
+      s/^PHOTO(.*?): .*\n/PHOTO$1: [...]\n/mg;
+   }
+
    if($googlesyncml) {
-      # ignore the PHOTO encoding data 
-      s/^PHOTO(.*?): .*\n/^PHOTO$1: [...]\n/mg; 
       # FN propertiey is not correct 
       s/^FN:.*\n/FN$1: [...]\n/mg;
       # Not support car type in telephone
@@ -655,8 +658,18 @@ sub NormalizeItem {
     }
 
     if ($googleeas) {
-        # unsupported properties
+        # properties not supported by Google
+        s/^(X-EVOLUTION-FILE-AS|CATEGORIES)(;[^:;\n]*)*:.*\r?\n?//gm;
+    }
+
+    if ($googleeas || $exchange) {
+        # properties not supported by ActiveSync
         s/^(FN)(;[^:;\n]*)*:.*\r?\n?//gm;
+    }
+
+    if ($googleeas || $exchange) {
+        # temporarily ignore modified properties
+        s/^(BDAY|X-ANNIVERSARY)(;[^:;\n]*)*:.*\r?\n?//gm;
     }
 
     # treat X-MOZILLA-HTML=FALSE as if the property didn't exist

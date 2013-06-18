@@ -328,8 +328,9 @@ class Server : public GDBusCXX::DBusObjectHelper,
                           const std::map<string, string> &> infoRequest;
 
     /** Server.LogOutput */
-    GDBusCXX::EmitSignal3<const GDBusCXX::DBusObject_t &,
-                          string,
+    GDBusCXX::EmitSignal4<const GDBusCXX::DBusObject_t &,
+                          const std::string &,
+                          const std::string &,
                           const std::string &> logOutput;
 
  private:
@@ -369,10 +370,10 @@ class Server : public GDBusCXX::DBusObjectHelper,
      * called each time a timeout triggers,
      * removes those which are done
      */
-    bool callTimeout(const boost::shared_ptr<Timeout> &timeout, const boost::function<bool ()> &callback);
+    bool callTimeout(const boost::shared_ptr<Timeout> &timeout, const boost::function<void ()> &callback);
 
     /** called 1 minute after last client detached from a session */
-    static bool sessionExpired(const boost::shared_ptr<Session> &session);
+    static void sessionExpired(const boost::shared_ptr<Session> &session);
 
 public:
     Server(GMainLoop *loop,
@@ -535,7 +536,7 @@ public:
      * before that time, then the callback will be deleted without
      * being called.
      */
-    void addTimeout(const boost::function<bool ()> &callback,
+    void addTimeout(const boost::function<void ()> &callback,
                     int seconds);
 
     /**
@@ -623,7 +624,21 @@ public:
                           int line,
                           const char *function,
                           const char *format,
-                          va_list args);
+                          va_list args) {
+        messagev(level, prefix, file, line,
+                 function, format, args,
+                 getPath(),
+                 getProcessName());
+    }
+    void messagev(Level level,
+                  const char *prefix,
+                  const char *file,
+                  int line,
+                  const char *function,
+                  const char *format,
+                  va_list args,
+                  const std::string &dbusPath,
+                  const std::string &procname);
 
     virtual bool isProcessSafe() const { return false; }
 };

@@ -1,2 +1,2 @@
-usr/lib/syncevolution/backends/*.so
-usr/lib/syncevolution/syncevo-local-sync
+usr/lib/*/syncevolution/backends/*.so
+usr/lib/*/syncevolution/syncevo-local-sync

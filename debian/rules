@@ -6,6 +6,8 @@ SOURCEPKG=$(shell dpkg-parsechangelog | sed  -n 's/^Source: \(.*\)/\1/p')
 UPSTREAM=$(shell dpkg-parsechangelog |  sed -n 's/^Version: \(.*\)-[^-]*/\1/p')
 ORIG=${SOURCEPKG}_${UPSTREAM}.orig.tar.gz
 
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+
 export CONFIG_SHELL=/bin/bash
 
 %: 
@@ -18,8 +20,10 @@ override_dh_auto_install:
 
 override_dh_auto_configure: 
 	sh autogen.sh
-	/bin/bash ./configure --with-synthesis-src=none --prefix=/usr --sysconfdir=/etc \
-			--libexecdir=/usr/lib/syncevolution --enable-gui \
+	dh_auto_configure -- --with-synthesis-src=none --prefix=/usr \
+			--sysconfdir=/etc \
+			--libexecdir=/usr/lib/$(DEB_HOST_MULTIARCH)/syncevolution \
+			--enable-gui \
 			--with-rst2man --with-rst2html --enable-dav
 
 override_dh_install:

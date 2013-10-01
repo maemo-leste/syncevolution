@@ -1,3 +1,17 @@
+syncevolution (1.3.2-1) unstable; urgency=low
+
+  * Install syncevo-local-sync helper, required for CardDAV/CalDAV.
+    Thanks to Gregor Herrmann for the patch. (Closes: #679657)
+  * New upstream release (Closes: #682280, #684077, #694004, #722044)
+  * Use multiarch paths for shared object files
+  * Raise debhelper compatibility level to 9
+  * Build with --as-needed and with hardening flags enabled
+  * Depend on recent libsynthesis, to pull in the fix for #694005
+  * Added upstream patch 0001-GTK-GTK3-UI-fix-crash-on-64-bit.patch to fix a
+    segmentation fault in sync-ui when built with hardening=+pie
+
+ -- Tino Keitel <tino+debian@tikei.de>  Tue, 01 Oct 2013 10:52:25 +0200
+
 syncevolution (1.2.99.1-1.1) unstable; urgency=low
 
   * Non-maintainer upload.

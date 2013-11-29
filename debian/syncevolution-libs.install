@@ -1,2 +1,10 @@
-usr/lib/*/syncevolution/backends/*.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/syncaddressbook.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/syncfile.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/syncdav.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/syncxmlrpc.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/synckcalextended.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/syncqtcontacts.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/syncmaemocal.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/syncactivesync.so
+usr/lib/x86_64-linux-gnu/syncevolution/backends/syncsqlite.so
 usr/lib/*/syncevolution/syncevo-local-sync

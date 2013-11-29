@@ -28,6 +28,7 @@ override_dh_auto_configure:
 			--sysconfdir=/etc \
 			--libexecdir=/usr/lib/$(DEB_HOST_MULTIARCH)/syncevolution \
 			--enable-gui \
+			--enable-kwallet --enable-akonadi \
 			--with-rst2man --with-rst2html --enable-dav
 
 override_dh_install:
@@ -35,10 +36,6 @@ override_dh_install:
 
 override_dh_strip:
 	dh_strip --dbg-package=syncevolution-dbg
-
-override_dh_makeshlibs:
-	dh_makeshlibs -psyncevolution-libs -n
-	dh_makeshlibs -Nsyncevolution-libs
 
 get-orig-source: 
 	git archive --format=tar ${UPSTREAMTAG} --prefix=${SOURCEPKG}_${UPSTREAM}/ | gzip -9 > ../${ORIG}

@@ -30,22 +30,112 @@
 
 SE_BEGIN_CXX
 
+static void dumpString(const std::string &output)
+{
+    fputs(output.c_str(), stdout);
+}
+
+/**
+ * Same logging approach as in Server class: pretend that we
+ * have reference counting for the SessionHelper class and
+ * use mutex locking to prevent dangling pointers.
+ */
+class SessionHelperLogger : public Logger
+{
+    Handle m_parentLogger;
+    boost::shared_ptr<SessionHelper> m_helper;
+    Level m_dbusLogLevel;
+
+public:
+    SessionHelperLogger(const boost::shared_ptr<SessionHelper> &helper):
+        m_parentLogger(Logger::instance()),
+        m_helper(helper),
+        m_dbusLogLevel(DEBUG)
+    {
+    }
+
+    void setDBusLogLevel(Level level) { m_dbusLogLevel = level; }
+    Level getDBusLogLevel() const { return m_dbusLogLevel; }
+
+    virtual void remove() throw ()
+    {
+        RecMutex::Guard guard = lock();
+        m_helper.reset();
+    }
+
+    virtual void messagev(const MessageOptions &options,
+                          const char *format,
+                          va_list args)
+    {
+        RecMutex::Guard guard = lock();
+        static bool dbg = getenv("SYNCEVOLUTION_DEBUG");
+
+        if (dbg) {
+            // Let parent LogRedirect or utility function handle the
+            // output *in addition* to logging via D-Bus. That way
+            // it'll be visible via our stdout/stderr (= console)
+            // right away.
+            //
+            // In non-debug mode, nothing should get written to
+            // stdout/stder, which got redirected into a pipe
+            // read by our parend. In that mode, the parent will include
+            // our output in its own output streams.
+            va_list argsCopy;
+            va_copy(argsCopy, args);
+            if (m_parentLogger) {
+                m_parentLogger.messagev(options, format, argsCopy);
+            } else {
+                formatLines(options.m_level, DEBUG,
+                            options.m_processName,
+                            options.m_prefix,
+                            format, argsCopy,
+                            boost::bind(dumpString, _1));
+            }
+            va_end(argsCopy);
+        } else if (m_parentLogger) {
+            // Pass through to parent, but marked in such a way that
+            // only the DLT and syslog logger will react to it, but
+            // not LogStdout. That's necessary because
+            // syncevo-dbus-server handles stdout for us.
+            va_list argsCopy;
+            va_copy(argsCopy, args);
+            MessageOptions buffer(options);
+            buffer.m_flags |= MessageOptions::ONLY_GLOBAL_LOG;
+            m_parentLogger.messagev(buffer, format, argsCopy);
+            va_end(argsCopy);
+        }
+
+        if (m_helper &&
+            options.m_level <= m_dbusLogLevel) {
+            // send to parent
+            string log = StringPrintfV(format, args);
+            string strLevel = Logger::levelToStr(options.m_level);
+            try {
+                m_helper->emitLogOutput(strLevel, log, options.m_processName ? *options.m_processName : getProcessName());
+            } catch (...) {
+                // Give up forwarding output.
+                m_helper.reset();
+            }
+        }
+    }
+};
+
 SessionHelper::SessionHelper(GMainLoop *loop,
                              const GDBusCXX::DBusConnectionPtr &conn,
-                             const boost::shared_ptr<ForkExecChild> &forkexec,
-                             LogRedirect *parentLogger) :
+                             const boost::shared_ptr<ForkExecChild> &forkexec) :
     GDBusCXX::DBusObjectHelper(conn,
-                               SessionCommon::HELPER_PATH,
+                               std::string(SessionCommon::HELPER_PATH) + "/" + forkexec->getInstance(),
                                SessionCommon::HELPER_IFACE,
                                GDBusCXX::DBusObjectHelper::Callback_t(), // we don't care about a callback per message
                                true), // direct connection, close it when done
     m_loop(loop),
     m_conn(conn),
     m_forkexec(forkexec),
-    m_parentLogger(parentLogger),
+    m_logger(new SessionHelperLogger(boost::shared_ptr<SessionHelper>(this, NopDestructor()))),
     emitLogOutput(*this, "LogOutput"),
     emitSyncProgress(*this, "SyncProgress"),
     emitSourceProgress(*this, "SourceProgress"),
+    emitSourceSynced(*this, "SourceSynced"),
     emitWaiting(*this, "Waiting"),
     emitSyncSuccessStart(*this, "SyncSuccessStart"),
     emitConfigChanged(*this, "ConfigChanged"),
@@ -62,60 +152,35 @@ SessionHelper::SessionHelper(GMainLoop *loop,
     add(emitLogOutput);
     add(emitSyncProgress);
     add(emitSourceProgress);
+    add(emitSourceSynced);
     add(emitWaiting);
     add(emitSyncSuccessStart);
     add(emitConfigChanged);
     add(emitPasswordRequest);
     add(emitMessage);
     add(emitShutdown);
-    activate();
-    LoggerBase::pushLogger(this);
+}
+
+void SessionHelper::setDBusLogLevel(Logger::Level level)
+{
+    m_logger->setDBusLogLevel(level);
+}
+
+Logger::Level SessionHelper::getDBusLogLevel() const
+{
+    return m_logger->getDBusLogLevel();
+}
+
+void SessionHelper::activate()
+{
+    GDBusCXX::DBusObjectHelper::activate();
+    m_pushLogger.reset(m_logger);
 }
 
 SessionHelper::~SessionHelper()
 {
-    LoggerBase::popLogger();
-}
-
-static void dumpString(const std::string &output)
-{
-    fputs(output.c_str(), stdout);
-}
-
-void SessionHelper::messagev(Level level,
-                             const char *prefix,
-                             const char *file,
-                             int line,
-                             const char *function,
-                             const char *format,
-                             va_list args)
-{
-    static bool dbg = getenv("SYNCEVOLUTION_DEBUG");
-
-    if (dbg) {
-        // let parent LogRedirect or utility function handle the output *in addition* to
-        // logging via D-Bus
-        va_list argsCopy;
-        va_copy(argsCopy, args);
-        if (m_parentLogger) {
-            m_parentLogger->messagev(level, prefix, file, line, function, format, argsCopy);
-        } else {
-            formatLines(level, DEBUG, getProcessName(),
-                        prefix, format, argsCopy,
-                        boost::bind(dumpString, _1));
-        }
-        va_end(argsCopy);
-    } else {
-        // Only flush parent logger, to capture output sent to
-        // stdout/stderr by some library and send it via D-Bus
-        // (recursively!)  before printing out own, new output.
-        m_parentLogger->flush();
-    }
-
-    // send to parent
-    string log = StringPrintfV(format, args);
-    string strLevel = Logger::levelToStr(level);
-    emitLogOutput(strLevel, log, getProcessName());
+    m_pushLogger.reset();
+    m_logger.reset();
 }
 
 void SessionHelper::run()
@@ -123,12 +188,12 @@ void SessionHelper::run()
     SuspendFlags &s = SuspendFlags::getSuspendFlags();
     while (true) {
         if (s.getState() != SuspendFlags::NORMAL) {
-            SE_LOG_DEBUG(NULL, NULL, "terminating because of suspend or abort signal");
+            SE_LOG_DEBUG(NULL, "terminating because of suspend or abort signal");
             break;
         }
         if (m_operation &&
             m_operation()) {
-            SE_LOG_DEBUG(NULL, NULL, "terminating as requested by operation");
+            SE_LOG_DEBUG(NULL, "terminating as requested by operation");
             break;
         }
         g_main_loop_run(m_loop);
@@ -141,24 +206,29 @@ bool SessionHelper::connected()
 }
 
 void SessionHelper::sync(const SessionCommon::SyncParams &params,
-                         const boost::shared_ptr< GDBusCXX::Result1<bool> > &result)
+                         const boost::shared_ptr< GDBusCXX::Result2<bool, SyncReport> > &result)
 {
     m_operation = boost::bind(&SessionHelper::doSync, this, params, result);
     g_main_loop_quit(m_loop);
 }
 
 bool SessionHelper::doSync(const SessionCommon::SyncParams &params,
-                           const boost::shared_ptr< GDBusCXX::Result1<bool> > &result)
+                           const boost::shared_ptr< GDBusCXX::Result2<bool, SyncReport> > &result)
 {
     try {
         m_sync.reset(new DBusSync(params, *this));
-        SyncMLStatus status = m_sync->sync();
+        SyncReport report;
+        SyncMLStatus status = m_sync->sync(&report);
         if (status) {
+            // Clear the abort signal, to allow the process to send
+            // out the D-Bus response. Our parent will signal us again
+            // after it received the response.
+            // TODO
             SE_THROW_EXCEPTION_STATUS(StatusException,
                                       "sync failed",
                                       status);
         }
-        result->done(true);
+        result->done(true, report);
     } catch (...) {
         dbusErrorCallback(result);
     }
@@ -258,7 +328,7 @@ void SessionHelper::passwordResponse(bool timedOut, bool aborted, const std::str
     if (m_sync) {
         m_sync->passwordResponse(timedOut, aborted, password);
     } else {
-        SE_LOG_DEBUG(NULL, NULL, "discarding obsolete password response");
+        SE_LOG_DEBUG(NULL, "discarding obsolete password response");
     }
 }
 

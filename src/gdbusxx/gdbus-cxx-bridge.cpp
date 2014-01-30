@@ -33,63 +33,117 @@ namespace GDBusCXX {
 MethodHandler::MethodMap MethodHandler::m_methodMap;
 boost::function<void (void)> MethodHandler::m_callback;
 
-// It should be okay to use global variables here because they are
-// only used inside the main thread while it waits in undelay() for a
-// positive or negative result to g_bus_own_name_on_connection().
-// Once acquired, the name can only get lost again when the
-// D-Bus daemon dies (no name owership alloed), in which case the
-// process dies anyway.
-static bool nameError;
-static bool nameAcquired;
-static void BusNameAcquired(GDBusConnection *connection,
-                            const gchar *name,
-                            gpointer userData) throw ()
+void appendArgInfo(GPtrArray *pa, const std::string &type)
 {
-    try {
-        g_debug("got D-Bus name %s", name);
-        nameAcquired = true;
-    } catch (...) {
-        nameError = true;
+    // Empty if not used in the current direction (in or out),
+    // ignore then.
+    if (type.empty()) {
+        // TODO: replace runtime check with compile-time check
+        // via type specialization... not terribly important, though.
+        return;
     }
+
+    GDBusArgInfo *argInfo = g_new0(GDBusArgInfo, 1);
+    argInfo->signature = g_strdup(type.c_str());
+    argInfo->ref_count = 1;
+    g_ptr_array_add(pa, argInfo);
 }
 
-static void BusNameLost(GDBusConnection *connection,
-                        const gchar *name,
-                        gpointer userData) throw ()
+struct OwnNameAsyncData
 {
-    try {
-        g_debug("lost %s %s",
-                connection ? "D-Bus connection for name" :
-                "D-Bus name",
-                name);
-    } catch (...) {
+    enum State {
+        OWN_NAME_WAITING,
+        OWN_NAME_OBTAINED,
+        OWN_NAME_LOST
+    };
+
+    OwnNameAsyncData(const std::string &name,
+                     const boost::function<void (bool)> &obtainedCB) :
+        m_name(name),
+        m_obtainedCB(obtainedCB),
+        m_state(OWN_NAME_WAITING)
+    {}
+
+    static void busNameAcquired(GDBusConnection *connection,
+                                const gchar *name,
+                                gpointer userData) throw ()
+    {
+        boost::shared_ptr<OwnNameAsyncData> *data = static_cast< boost::shared_ptr<OwnNameAsyncData> *>(userData);
+        (*data)->m_state = OWN_NAME_OBTAINED;
+        try {
+            g_debug("got D-Bus name %s", name);
+            if ((*data)->m_obtainedCB) {
+                (*data)->m_obtainedCB(true);
+            }
+        } catch (...) {
+            (*data)->m_state = OWN_NAME_LOST;
+        }
     }
-    nameError = true;
-}
+
+    static void busNameLost(GDBusConnection *connection,
+                            const gchar *name,
+                            gpointer userData) throw ()
+    {
+        boost::shared_ptr<OwnNameAsyncData> *data = static_cast< boost::shared_ptr<OwnNameAsyncData> *>(userData);
+        (*data)->m_state = OWN_NAME_LOST;
+        try {
+            g_debug("lost %s %s",
+                    connection ? "D-Bus connection for name" :
+                    "D-Bus name",
+                    name);
+            if ((*data)->m_obtainedCB) {
+                (*data)->m_obtainedCB(false);
+            }
+        } catch (...) {
+        }
+    }
+
+    static void freeData(gpointer userData) throw ()
+    {
+        delete static_cast< boost::shared_ptr<OwnNameAsyncData> *>(userData);
+    }
+
+    static boost::shared_ptr<OwnNameAsyncData> ownName(GDBusConnection *conn,
+                                                       const std::string &name,
+                                                       boost::function<void (bool)> obtainedCB =
+                                                       boost::function<void (bool)>()) {
+        boost::shared_ptr<OwnNameAsyncData> data(new OwnNameAsyncData(name, obtainedCB));
+        g_bus_own_name_on_connection(conn,
+                                     data->m_name.c_str(),
+                                     G_BUS_NAME_OWNER_FLAGS_NONE,
+                                     OwnNameAsyncData::busNameAcquired,
+                                     OwnNameAsyncData::busNameLost,
+                                     new boost::shared_ptr<OwnNameAsyncData>(data),
+                                     OwnNameAsyncData::freeData);
+        return data;
+    }
+
+    const std::string m_name;
+    const boost::function<void (bool)> m_obtainedCB;
+    State m_state;
+};
 
 void DBusConnectionPtr::undelay() const
 {
     if (!m_name.empty()) {
         g_debug("starting to acquire D-Bus name %s", m_name.c_str());
-        nameAcquired = false;
-        nameError = false;
-        char *copy = g_strdup(m_name.c_str());
-        g_bus_own_name_on_connection(get(),
-                                     copy,
-                                     G_BUS_NAME_OWNER_FLAGS_NONE,
-                                     BusNameAcquired,
-                                     BusNameLost,
-                                     copy,
-                                     g_free);
-        while (!nameAcquired && !nameError) {
+        boost::shared_ptr<OwnNameAsyncData> data = OwnNameAsyncData::ownName(get(),
+                                                                             m_name);
+        while (data->m_state == OwnNameAsyncData::OWN_NAME_WAITING) {
             g_main_context_iteration(NULL, true);
         }
         g_debug("done with acquisition of %s", m_name.c_str());
-        if (nameError) {
+        if (data->m_state == OwnNameAsyncData::OWN_NAME_LOST) {
             throw std::runtime_error("could not obtain D-Bus name - already running?");
         }
     }
     g_dbus_connection_start_message_processing(get());
+}
+
+void DBusConnectionPtr::ownNameAsync(const std::string &name,
+                                     const boost::function<void (bool)> &obtainedCB) const
+{
+    OwnNameAsyncData::ownName(get(), name, obtainedCB);
 }
 
 DBusConnectionPtr dbus_get_bus_connection(const char *busType,
@@ -125,6 +179,8 @@ DBusConnectionPtr dbus_get_bus_connection(const char *busType,
         if(conn == NULL) {
             if (err) {
                 err->set(error);
+            } else {
+                g_clear_error(&error);
             }
             return NULL;
         }
@@ -136,6 +192,8 @@ DBusConnectionPtr dbus_get_bus_connection(const char *busType,
         if(conn == NULL) {
             if (err) {
                 err->set(error);
+            } else {
+                g_clear_error(&error);
             }
             return NULL;
         }
@@ -171,6 +229,8 @@ DBusConnectionPtr dbus_get_bus_connection(const std::string &address,
                            false);
     if (!conn && err) {
         err->set(error);
+    } else {
+        g_clear_error(&error);
     }
 
     return conn;
@@ -247,6 +307,8 @@ boost::shared_ptr<DBusServerCXX> DBusServerCXX::listen(const std::string &addres
     if (!server) {
         if (err) {
             err->set(error);
+        } else {
+            g_clear_error(&error);
         }
         return boost::shared_ptr<DBusServerCXX>();
     }
@@ -424,12 +486,54 @@ Watch::~Watch()
     }
 }
 
-void getWatch(GDBusConnection *conn, GDBusMessage *msg,
-              GVariantIter &iter, boost::shared_ptr<Watch> &value)
+void getWatch(ExtractArgs &context,
+              boost::shared_ptr<Watch> &value)
 {
-    std::auto_ptr<Watch> watch(new Watch(conn));
-    watch->activate(g_dbus_message_get_sender(msg));
+    std::auto_ptr<Watch> watch(new Watch(context.m_conn));
+    watch->activate((context.m_msg && *context.m_msg) ?
+                    g_dbus_message_get_sender(*context.m_msg) :
+                    context.m_sender);
     value.reset(watch.release());
+}
+
+void ExtractArgs::init(GDBusConnection *conn,
+                       GDBusMessage **msg,
+                       GVariant *msgBody,
+                       const char *sender,
+                       const char *path,
+                       const char *interface,
+                       const char *signal)
+{
+    m_conn = conn;
+    m_msg = msg;
+    m_sender = sender;
+    m_path = path;
+    m_interface = interface;
+    m_signal = signal;
+    if (msgBody != NULL) {
+        g_variant_iter_init(&m_iter, msgBody);
+    }
+}
+
+
+ExtractArgs::ExtractArgs(GDBusConnection *conn, GDBusMessage *&msg)
+{
+    init(conn, &msg, g_dbus_message_get_body(msg), NULL, NULL, NULL, NULL);
+}
+
+ExtractArgs::ExtractArgs(GDBusConnection *conn,
+                         const char *sender,
+                         const char *path,
+                         const char *interface,
+                         const char *signal)
+{
+    init(conn, NULL, NULL, sender, path, interface, signal);
+}
+
+ExtractResponse::ExtractResponse(GDBusConnection *conn, GDBusMessage *msg)
+{
+    init(conn, NULL, g_dbus_message_get_body(msg),
+         g_dbus_message_get_sender(msg), NULL, NULL, NULL);
 }
 
 } // namespace GDBusCXX

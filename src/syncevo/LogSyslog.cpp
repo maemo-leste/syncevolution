@@ -28,17 +28,18 @@
 using namespace std;
 SE_BEGIN_CXX
 
-LoggerSyslog::LoggerSyslog(const std::string &processName)
-  : m_processName(processName)
+LoggerSyslog::LoggerSyslog(const std::string &processName) :
+    m_processName(processName),
+    m_parentLogger(Logger::instance())
 {
+    // valgrind tells us that openlog() does not copy the string.
+    // Must provide pointer to a permanent copy.
     openlog(m_processName.c_str(), LOG_CONS | LOG_NDELAY | LOG_PID, LOG_USER);
-    LoggerBase::pushLogger(this);
 }
 
 LoggerSyslog::~LoggerSyslog()
 {
     closelog();
-    LoggerBase::popLogger();
 }
 
 static void printToSyslog(int sysloglevel, std::string &chunk, size_t expectedTotal)
@@ -63,21 +64,28 @@ static void printToSyslog(int sysloglevel, std::string &chunk, size_t expectedTo
     }
 }
 
-void LoggerSyslog::messagev(Level level,
-                            const char *prefix,
-                            const char *file,
-                            int line,
-                            const char *function,
+void LoggerSyslog::messagev(const MessageOptions &options,
                             const char *format,
                             va_list args)
 {
+    // always to parent first (usually stdout):
+    // if the parent is a LogRedirect instance, then
+    // it'll flush its own output first, which ensures
+    // that the new output comes later (as desired)
+    {
+        va_list argscopy;
+        va_copy(argscopy, args);
+        m_parentLogger.messagev(options, format, argscopy);
+        va_end(argscopy);
+    }
 
-    if (level <= getLevel()) {
-        formatLines(level, getLevel(),
-                    "", // process name is set when opening the syslog
-                    prefix,
+    if (options.m_level <= getLevel()) {
+        const std::string none;
+        formatLines(options.m_level, getLevel(),
+                    &none, // Process name is set when opening the syslog, don't repeat it.
+                    options.m_prefix,
                     format, args,
-                    boost::bind(printToSyslog, getSyslogLevel(level), _1, _2));
+                    boost::bind(printToSyslog, getSyslogLevel(options.m_level), _1, _2));
     }
 }
 

@@ -67,11 +67,26 @@ if test "$enable_evo" = "yes"; then
         fi
         # Only the EClient code supports the API in EDS 3.5.x.
         PKG_CHECK_MODULES(EDS_VERSION, [libedataserver-1.2 >= 3.5],
-                          [AC_DEFINE(USE_EDS_CLIENT, 1, [use e_book/cal_client_* calls])],
-                          [true])
+                          [AC_DEFINE(USE_EDS_CLIENT, 1, [use e_book/cal_client_* calls])
+                           # Was used for a while (ESourceBackendSummarySetup), but not anymore.
+                           # Don't depend on it, it wasn't in 3.6 yet.
+                           # PKG_CHECK_MODULES(EBOOKCONTACTS, libebook-contacts-1.2)
+                           AC_CHECK_LIB(ebook-1.2, e_book_client_new_direct,
+                                        [AC_DEFINE(HAVE_E_BOOK_CLIENT_NEW_DIRECT, 1, [use e_book_client_new_direct])],
+                                        [true],
+                                        [$EDS_VERSION_LIBS])
+                           AC_CHECK_LIB(ebook-1.2, e_book_client_connect_direct_sync,
+                                        [AC_DEFINE(HAVE_E_BOOK_CLIENT_CONNECT_DIRECT_SYNC, 1, [use e_book_client_connect_direct_sync])],
+                                        [true],
+                                        [$EDS_VERSION_LIBS])
+                          ],
+        [CFLAGS_old="$CFLAGS"
+        CFLAGS="$CFLAGS $EPACKAGE_CFLAGS"
+        AC_CHECK_HEADERS(libedataserver/eds-version.h)
+        CFLAGS="$CFLAGS_old"])
 else
         EPACKAGE_CFLAGS=
         EPACKAGE_LIBS=
 fi
 
-BACKEND_CPPFLAGS="$BACKEND_CPPFLAGS $EPACKAGE_CFLAGS $ECAL_CFLAGS $EBOOK_CFLAGS"
+BACKEND_CPPFLAGS="$BACKEND_CPPFLAGS $EPACKAGE_CFLAGS $ECAL_CFLAGS $EBOOK_CFLAGS $EBOOKCONTACTS_CFLAGS"

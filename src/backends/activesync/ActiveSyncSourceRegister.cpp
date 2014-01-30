@@ -195,7 +195,7 @@ static TestingSyncSource *createEASSource(const ClientTestConfig::createsource_t
     // up sharing change tracking with source A.
     if (!isSourceA) {
         ActiveSyncSource *eassource = static_cast<ActiveSyncSource *>(res.get());
-        std::string account = eassource->getSyncConfig().getSyncUsername();
+        std::string account = eassource->getSyncConfig().getSyncUser().toString();
         account += "_B";
         eassource->getSyncConfig().setSyncUsername(account, true);
     }
@@ -204,7 +204,7 @@ static TestingSyncSource *createEASSource(const ClientTestConfig::createsource_t
         return res.release();
     } else {
         // sorry, no database
-        SE_LOG_ERROR(NULL, NULL, "cannot create EAS source for database %s, check config",
+        SE_LOG_ERROR(NULL, "cannot create EAS source for database %s, check config",
                      res->getDatabaseID().c_str());
         return NULL;
     }

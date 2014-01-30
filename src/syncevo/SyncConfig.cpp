@@ -32,6 +32,8 @@
 #include <syncevo/IniConfigNode.h>
 #include <syncevo/Cmdline.h>
 #include <syncevo/lcs.h>
+#include <syncevo/ThreadSupport.h>
+#include <syncevo/IdentityProvider.h>
 #include <test.h>
 #include <synthesis/timeutil.h>
 
@@ -105,6 +107,40 @@ PropertySpecifier PropertySpecifier::StringToPropSpec(const std::string &spec, i
     res.m_property = spec.substr(slash, at - slash);
 
     return res;
+}
+
+UserIdentity::UserIdentity() :
+    m_provider(InitStateString(USER_IDENTITY_PLAIN_TEXT, false))
+{
+}
+
+UserIdentity UserIdentity::fromString(const InitStateString &idString)
+{
+    UserIdentity id;
+    if (idString.wasSet()) {
+        size_t off = idString.find(':');
+        if (off != idString.npos) {
+            id.m_provider = off ?
+                idString.substr(0, off) :
+                InitStateString(USER_IDENTITY_PLAIN_TEXT, false);
+            id.m_identity = idString.substr(off + 1);
+        } else {
+            id.m_provider = InitStateString(USER_IDENTITY_PLAIN_TEXT, false);
+            id.m_identity = idString;
+        }
+    }
+    return id;
+}
+
+InitStateString UserIdentity::toString() const
+{
+    std::string str;
+    if (m_provider.wasSet()) {
+        str += m_provider;
+        str += ':';
+    }
+    str += m_identity;
+    return InitStateString(str, m_provider.wasSet() || m_identity.wasSet());
 }
 
 std::string PropertySpecifier::toString()
@@ -294,6 +330,7 @@ SyncConfig::SyncConfig() :
 void SyncConfig::makeVolatile()
 {
     m_tree.reset(new VolatileConfigTree());
+    m_fileTree.reset();
     m_peerNode.reset(new VolatileConfigNode());
     m_hiddenPeerNode = m_peerNode;
     m_globalNode = m_peerNode;
@@ -301,6 +338,106 @@ void SyncConfig::makeVolatile()
     m_contextHiddenNode = m_peerNode;
     m_props[false] = m_peerNode;
     m_props[true] = m_peerNode;
+}
+
+void SyncConfig::makeEphemeral()
+{
+    m_ephemeral = true;
+    // m_hiddenPeerNode.reset(new VolatileConfigNode());
+    // m_contextHiddenNode = m_hiddenPeerNode;
+}
+
+/**
+ * The goal is to have only one FileConfigTree instance per file system
+ * location. This ensures that in-memory representations remain in sync
+ * when instantiating a SyncConfig is created multiple times. In addition,
+ * FilterConfigNodes also must only exit once per underlying node. This
+ * allows sharing cached passwords between configs when using indirect
+ * password lookup.
+ *
+ * The implementation in both cases is the same: keep a cache with
+ * weak pointers. When asked for an instance, consult the cache first.
+ * If the instance still exists, we can return that shared pointer. If
+ * not, we create a new one.
+ *
+ * It is necessary to garbage-collect obsolete entries, because the
+ * lookup parameters might never be used again.
+ */
+class ConfigCache
+{
+    typedef std::map< std::pair<std::string, SyncConfig::Layout>, boost::weak_ptr<FileConfigTree> > TreeMap;
+    TreeMap m_trees;
+    typedef std::map< ConfigNode *,  boost::weak_ptr<FilterConfigNode> > NodeMap;
+    NodeMap m_nodes;
+
+    template<class M> void purge(M &map)
+    {
+        typename M::iterator it = map.begin();
+        while (it != map.end()) {
+            if (!it->second.lock()) {
+                typename M::iterator next = it;
+                ++next;
+                map.erase(it);
+                it = next;
+            } else {
+                ++it;
+            }
+        }
+    }
+    void purge();
+
+public:
+    boost::shared_ptr<FileConfigTree> createTree(const std::string &root,
+                                                 SyncConfig::Layout layout);
+    /**
+     * The filter is only installed when creating a new node. It is
+     * assumed to be the same when reusing the node.
+     */
+    boost::shared_ptr<FilterConfigNode> createNode(const boost::shared_ptr<ConfigNode> &node,
+                                                   const FilterConfigNode::ConfigFilter &filter = FilterConfigNode::ConfigFilter());
+    static ConfigCache &singleton();
+};
+
+ConfigCache &ConfigCache::singleton()
+{
+    static ConfigCache instance;
+    return instance;
+}
+
+void ConfigCache::purge()
+{
+    purge(m_trees);
+    purge(m_nodes);
+}
+
+boost::shared_ptr<FileConfigTree> ConfigCache::createTree(const std::string &root,
+                                                          SyncConfig::Layout layout)
+{
+    TreeMap::mapped_type &entry = m_trees[TreeMap::key_type(root, layout)];
+    boost::shared_ptr<FileConfigTree> result;
+    result = entry.lock();
+    if (!result) {
+        result.reset(new FileConfigTree(root, layout));
+        entry = result;
+    }
+
+    purge();
+    return result;
+}
+
+boost::shared_ptr<FilterConfigNode> ConfigCache::createNode(const boost::shared_ptr<ConfigNode> &node,
+                                                            const FilterConfigNode::ConfigFilter &filter)
+{
+    NodeMap::mapped_type &entry = m_nodes[node.get()];
+    boost::shared_ptr<FilterConfigNode> result;
+    result = entry.lock();
+    if (!result) {
+        result.reset(new FilterConfigNode(node, filter));
+        entry = result;
+    }
+
+    purge();
+    return result;
 }
 
 SyncConfig::SyncConfig(const string &peer,
@@ -338,6 +475,7 @@ SyncConfig::SyncConfig(const string &peer,
         if (!access((path + "/spds/syncml/config.txt").c_str(), F_OK)) {
             m_layout = SYNC4J_LAYOUT;
         } else {
+            m_layout = SHARED_LAYOUT;
             root = getNewRoot();
             path = root + "/" + m_peerPath;
             if (!access((path + "/config.ini").c_str(), F_OK) &&
@@ -353,9 +491,8 @@ SyncConfig::SyncConfig(const string &peer,
                 }
             }
         }
-        m_tree.reset(new FileConfigTree(root,
-                                        m_peerPath.empty() ? m_contextPath : m_peerPath,
-                                        m_layout));
+        m_fileTree = ConfigCache::singleton().createTree(root, m_layout);
+        m_tree = m_fileTree;
     }
 
     string path;
@@ -365,7 +502,7 @@ SyncConfig::SyncConfig(const string &peer,
         // all properties reside in the same node
         path = m_peerPath + "/spds/syncml";
         node = m_tree->open(path, ConfigTree::visible);
-        m_peerNode.reset(new FilterConfigNode(node));
+        m_peerNode = ConfigCache::singleton().createNode(node);
         m_globalNode =
             m_contextNode = m_peerNode;
         m_hiddenPeerNode =
@@ -373,7 +510,7 @@ SyncConfig::SyncConfig(const string &peer,
             m_globalHiddenNode =
             node;
         m_props[false] = m_peerNode;
-        m_props[true].reset(new FilterConfigNode(m_hiddenPeerNode));
+        m_props[true] = ConfigCache::singleton().createNode(m_hiddenPeerNode);
         break;
     case HTTP_SERVER_LAYOUT: {
         // properties which are normally considered shared are
@@ -381,13 +518,13 @@ SyncConfig::SyncConfig(const string &peer,
         // except for global ones
         path = "";
         node = m_tree->open(path, ConfigTree::visible);
-        m_globalNode.reset(new FilterConfigNode(node));
+        m_globalNode = ConfigCache::singleton().createNode(node);
         node = m_tree->open(path, ConfigTree::hidden);
         m_globalHiddenNode = node;
 
         path = m_peerPath;      
         node = m_tree->open(path, ConfigTree::visible);
-        m_peerNode.reset(new FilterConfigNode(node));
+        m_peerNode = ConfigCache::singleton().createNode(node);
         m_contextNode = m_peerNode;
         m_hiddenPeerNode =
             m_contextHiddenNode =
@@ -422,7 +559,7 @@ SyncConfig::SyncConfig(const string &peer,
         // really use different nodes for everything
         path = "";
         node = m_tree->open(path, ConfigTree::visible);
-        m_globalNode.reset(new FilterConfigNode(node));
+        m_globalNode = ConfigCache::singleton().createNode(node);
         node = m_tree->open(path, ConfigTree::hidden);
         m_globalHiddenNode = node;
 
@@ -440,7 +577,7 @@ SyncConfig::SyncConfig(const string &peer,
         } else {
             node = m_tree->open(path, ConfigTree::visible);
         }
-        m_peerNode.reset(new FilterConfigNode(node));
+        m_peerNode = ConfigCache::singleton().createNode(node);
         if (path.empty()) {
             m_hiddenPeerNode = m_peerNode;
         } else {
@@ -449,7 +586,7 @@ SyncConfig::SyncConfig(const string &peer,
 
         path = m_contextPath;
         node = m_tree->open(path, ConfigTree::visible);
-        m_contextNode.reset(new FilterConfigNode(node));
+        m_contextNode = ConfigCache::singleton().createNode(node);
         m_contextHiddenNode = m_tree->open(path, ConfigTree::hidden);
 
         // Instantiate multiplexer with the most specific node name in
@@ -491,7 +628,7 @@ SyncConfig::SyncConfig(const string &peer,
          level = (ConfigLevel)(level + 1)) {
         if (exists(level)) {
             if (getConfigVersion(level, CONFIG_MIN_VERSION) > ConfigVersions[level][CONFIG_CUR_VERSION]) {
-                SE_LOG_INFO(NULL, NULL, "config version check failed: %s has format %d, but this SyncEvolution release only supports format %d",
+                SE_LOG_INFO(NULL, "config version check failed: %s has format %d, but this SyncEvolution release only supports format %d",
                             ConfigLevel2String(level).c_str(),
                             getConfigVersion(level, CONFIG_MIN_VERSION),
                             ConfigVersions[level][CONFIG_CUR_VERSION]);
@@ -539,7 +676,7 @@ void SyncConfig::prepareConfigForWrite()
                     // keep compiler happy, not reached for _MAX
                     break;
                 }
-                SE_LOG_INFO(NULL, NULL, "must change format of %s '%s' in backward-incompatible way",
+                SE_LOG_INFO(NULL, "must change format of %s '%s' in backward-incompatible way",
                             ConfigLevel2String(level).c_str(),
                             config.c_str());
                 if (m_configWriteMode == MIGRATE_AUTOMATICALLY) {
@@ -613,13 +750,16 @@ void SyncConfig::migrate(const std::string &config)
 
 string SyncConfig::getRootPath() const
 {
-    return m_tree->getRootPath();
+    return m_fileTree ?
+        normalizePath(m_fileTree->getRoot() + "/" +
+                      ((m_layout == SYNC4J_LAYOUT || hasPeerProperties()) ? m_peerPath : m_contextPath)) :
+        "";
 }
 
 void SyncConfig::addPeers(const string &root,
                           const std::string &configname,
                           SyncConfig::ConfigList &res) {
-    FileConfigTree tree(root, "", SyncConfig::HTTP_SERVER_LAYOUT);
+    FileConfigTree tree(root, SyncConfig::HTTP_SERVER_LAYOUT);
     list<string> servers = tree.getChildren("");
     BOOST_FOREACH(const string &server, servers) {
         // sanity check: only list server directories which actually
@@ -887,8 +1027,11 @@ list<string> SyncConfig::getPeers() const
     list<string> res;
 
     if (!hasPeerProperties()) {
-        FileConfigTree tree(getRootPath(), "", SHARED_LAYOUT);
-        res = tree.getChildren("peers");
+        std::string rootPath = getRootPath();
+        if (!rootPath.empty()) {
+            FileConfigTree tree(getRootPath(), SHARED_LAYOUT);
+            res = tree.getChildren("peers");
+        }
     }
 
     return res;
@@ -902,7 +1045,7 @@ void SyncConfig::preFlush(UserInterface &ui)
     /* save password in the global config node */
     ConfigPropertyRegistry& registry = getRegistry();
     BOOST_FOREACH(const ConfigProperty *prop, registry) {
-        prop->savePassword(ui, m_peer, *getProperties());
+        prop->savePassword(ui, *this);
     }
 
     /** grep each source and save their password */
@@ -913,15 +1056,23 @@ void SyncConfig::preFlush(UserInterface &ui)
         SyncSourceNodes sourceNodes = getSyncSourceNodes(sourceName);
 
         BOOST_FOREACH(const ConfigProperty *prop, registry) {
-            prop->savePassword(ui, m_peer, *getProperties(),
-                               sourceName, sourceNodes.getProperties());
+            prop->savePassword(ui, *this, sourceName);
         }
     }
 }
 
 void SyncConfig::flush()
 {
-    m_tree->flush();
+    if (!isEphemeral()) {
+        if (m_fileTree && m_layout == SHARED_LAYOUT && !hasPeerProperties()) {
+            // Ensure that "peers" directory exists for new-style
+            // configs.  It would not get created when flushing nodes
+            // for pure context configs otherwise (it's empty), and we
+            // need it to detect new-syle configs.
+            mkdir_p(m_fileTree->getRoot() + "/" + m_contextPath + "/peers");
+        }
+        m_tree->flush();
+    }
 }
 
 void SyncConfig::remove()
@@ -1048,14 +1199,20 @@ SyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
 
     if (peerPath.empty()) {
         node.reset(new DevNullConfigNode(m_contextPath + " without peer configuration"));
-        peerNode.reset(new FilterConfigNode(node));
+        peerNode = ConfigCache::singleton().createNode(node);
         hiddenPeerNode =
             trackingNode =
             serverNode = node;
     } else {
         // Here we assume that m_tree is a FileConfigTree. Otherwise getRootPath()
-        // will not point into a normal file system.
-        cacheDir = m_tree->getRootPath() + "/" + peerPath + "/.cache";
+        // will not point into a normal file system. We fall back to not allowing
+        // the usage of a cache dir by using /dev/null in that case.
+        std::string rootPath = getRootPath();
+        if (rootPath.empty()) {
+            cacheDir = "/dev/null";
+        } else {
+            cacheDir = rootPath + "/" + peerPath + "/.cache";
+        }
 
         node = m_tree->open(peerPath, ConfigTree::visible);
         if (compatMode) {
@@ -1074,13 +1231,18 @@ SyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
             }
             node = compat;
         }
-        peerNode.reset(new FilterConfigNode(node, m_sourceFilters.createSourceFilter(name)));
+        peerNode = ConfigCache::singleton().createNode(node, m_sourceFilters.createSourceFilter(name));
         hiddenPeerNode = m_tree->open(peerPath, ConfigTree::hidden);
         trackingNode = m_tree->open(peerPath, ConfigTree::other, changeId);
         serverNode = m_tree->open(peerPath, ConfigTree::server, changeId);
     }
 
-    if (!m_redirectPeerRootPath.empty()) {
+    if (isEphemeral()) {
+        // Throw away meta data.
+        trackingNode.reset(new VolatileConfigNode);
+        hiddenPeerNode.reset(new VolatileConfigNode);
+        serverNode.reset(new VolatileConfigNode);
+    } else if (!m_redirectPeerRootPath.empty()) {
         // Local sync: overwrite per-peer nodes with nodes inside the
         // parents tree. Otherwise different configs syncing locally
         // against the same context end up sharing .internal.ini and
@@ -1090,13 +1252,10 @@ SyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
                                                  ".other.ini",
                                                  false));
         trackingNode = m_tree->add(path + "/.other.ini", trackingNode);
-        boost::shared_ptr<ConfigNode> node(new IniHashConfigNode(path,
-                                                                 ".internal.ini",
-                                                                 false));
-        hiddenPeerNode.reset(new FilterConfigNode(node));
-        hiddenPeerNode = boost::static_pointer_cast<FilterConfigNode>(m_tree->add(path + "/.internal.ini", peerNode));
         if (peerPath.empty()) {
             hiddenPeerNode = peerNode;
+        } else {
+            hiddenPeerNode = boost::static_pointer_cast<FilterConfigNode>(m_tree->add(path + "/.internal.ini", peerNode));
         }
     }
 
@@ -1112,7 +1271,7 @@ SyncSourceNodes SyncConfig::getSyncSourceNodes(const string &name,
                               InitStateString(sourceType.m_backend, !sourceType.m_backend.empty()));
             node = compat;
         }
-        sharedNode.reset(new FilterConfigNode(node, m_sourceFilters.createSourceFilter(name)));
+        sharedNode = ConfigCache::singleton().createNode(node, m_sourceFilters.createSourceFilter(name));
     }
 
     SyncSourceNodes nodes(!peerPath.empty(), sharedNode, peerNode, hiddenPeerNode, trackingNode, serverNode, cacheDir);
@@ -1170,14 +1329,85 @@ static ConfigProperty syncPropDevID("deviceId",
 static ConfigProperty syncPropUsername("username",
                                        "user name used for authorization with the SyncML server",
                                        "");
-static PasswordConfigProperty syncPropPassword("password",
-                                               "password used for authorization with the peer;\n"
-                                               "in addition to specifying it directly as plain text, it can\n"
-                                               "also be read from the standard input or from an environment\n"
-                                               "variable of your choice::\n\n"
-                                               "  plain text  : password = <insert your password here>\n"
-                                               "  ask         : password = -\n"
-                                               "  env variable: password = ${<name of environment variable>}\n");
+
+static BoolConfigProperty syncPropPeerIsClient("PeerIsClient",
+                                          "Indicates whether this configuration is about a\n"
+                                          "client peer or server peer.\n",
+                                          "FALSE");
+static SafeConfigProperty syncPropRemoteDevID("remoteDeviceId",
+                                              "SyncML ID of our peer, empty if unknown; must be set only when\n"
+                                              "the peer is a SyncML client contacting us via HTTP.\n"
+                                              "Clients contacting us via OBEX/Bluetooth can be identified\n"
+                                              "either via this remoteDeviceId property or by their MAC\n"
+                                              "address, if that was set in the syncURL property.\n"
+                                              "\n"
+                                              "If this property is empty and the peer synchronizes with\n"
+                                              "this configuration chosen by some other means, then its ID\n"
+                                              "is recorded here automatically and later used to verify that\n"
+                                              "the configuration is not accidentally used by a different\n"
+                                              "peer.");
+
+static class SyncPasswordConfigProperty : public PasswordConfigProperty
+{
+public:
+    SyncPasswordConfigProperty() :
+        PasswordConfigProperty("password",
+                               "password used for authorization with the peer;\n"
+                               "in addition to specifying it directly as plain text, it can\n"
+                               "also be read from the standard input or from an environment\n"
+                               "variable of your choice::\n\n"
+                               "  plain text  : password = <insert your password here>\n"
+                               "  ask         : password = -\n"
+                               "  env variable: password = ${<name of environment variable>}\n")
+    {}
+
+    virtual void checkPassword(UserInterface &ui,
+                               SyncConfig &config,
+                               int flags,
+                               const std::string &sourceName = "") const {
+        PasswordConfigProperty::checkPassword(ui, config, flags, syncPropUsername, sourceName);
+    }
+
+    virtual void savePassword(UserInterface &ui,
+                              SyncConfig &config,
+                              const std::string &sourceName = "") const {
+        PasswordConfigProperty::savePassword(ui, config, syncPropUsername, sourceName);
+    }
+
+    ConfigPasswordKey getPasswordKey(const string &descr,
+                                     const string &serverName,
+                                     FilterConfigNode &globalConfigNode,
+                                     const string &sourceName,
+                                     const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const {
+        ConfigPasswordKey key;
+
+        bool peerIsClient = syncPropPeerIsClient.getPropertyValue(globalConfigNode);
+        key.server = syncPropSyncURL.getProperty(globalConfigNode);
+        key.description = StringPrintf("sync password for %s", descr.c_str());
+        if (peerIsClient && key.server.empty()) {
+            /**
+             * Fall back to username/remoteDeviceId as key.
+             */
+            key.server = syncPropRemoteDevID.getProperty(globalConfigNode);
+        } else {
+            /**
+             * Here we use server sync url without protocol prefix and
+             * user account name as the key in the keyring.
+             * The URL must not be empty, otherwise we end up
+             * overwriting the password of some other service just
+             * because it happens to have the same username.
+             */
+            size_t start = key.server.find("://");
+            /* we don't preserve protocol prefix for it may change */
+            if (start != key.server.npos) {
+                key.server = key.server.substr(start + 3);
+            }
+        }
+        key.user = getUsername(syncPropUsername, globalConfigNode);
+        return key;
+    }
+} syncPropPassword;
+
 static BoolConfigProperty syncPropPreventSlowSync("preventSlowSync",
                                                   "During a slow sync, the SyncML server must match all items\n"
                                                   "of the client with its own items and detect which ones it\n"
@@ -1212,11 +1442,47 @@ static ConfigProperty syncPropProxyHost("proxyHost",
                                         "proxy URL (``http://<host>:<port>``)");
 static ConfigProperty syncPropProxyUsername("proxyUsername",
                                             "authentication for proxy: username");
-static ProxyPasswordConfigProperty syncPropProxyPassword("proxyPassword",
-                                                         "proxy password, can be specified in different ways,\n"
-                                                         "see SyncML server password for details\n",
-                                                         "",
-                                                         "proxy");
+
+static class ProxyPasswordConfigProperty : public PasswordConfigProperty {
+public:
+    ProxyPasswordConfigProperty() :
+        PasswordConfigProperty("proxyPassword",
+                               "proxy password, can be specified in different ways,\n"
+                               "see SyncML server password for details\n",
+                               "",
+                               "proxy")
+    {}
+    /**
+     * re-implement this function for it is necessary to do a check 
+     * before retrieving proxy password
+     */
+    virtual void checkPassword(UserInterface &ui,
+                               SyncConfig &config,
+                               int flags,
+                               const std::string &sourceName = std::string()) const {
+        /* if useProxy is set 'true', then check proxypassword */
+        if (config.getUseProxy()) {
+            PasswordConfigProperty::checkPassword(ui, config, flags, syncPropProxyUsername, sourceName);
+        }
+    }
+    virtual void savePassword(UserInterface &ui,
+                               SyncConfig &config,
+                               const std::string &sourceName = std::string()) const {
+        PasswordConfigProperty::savePassword(ui, config, syncPropProxyUsername, sourceName);
+    }
+    virtual ConfigPasswordKey getPasswordKey(const std::string &descr,
+                                             const std::string &serverName,
+                                             FilterConfigNode &globalConfigNode,
+                                             const std::string &sourceName,
+                                             const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const {
+        ConfigPasswordKey key;
+        key.server = syncPropProxyHost.getProperty(globalConfigNode);
+        key.user = getUsername(syncPropProxyUsername, globalConfigNode);
+        key.description = StringPrintf("proxy password for %s", descr.c_str());
+        return key;
+    }
+} syncPropProxyPassword;
+
 static StringConfigProperty syncPropClientAuthType("clientAuthType",
                                                    "- empty or \"md5\" for secure method (recommended)\n"
                                                    "- \"basic\" for insecure method\n"
@@ -1327,29 +1593,50 @@ static SecondsConfigProperty syncPropRetryInterval("RetryInterval",
                                           "to obtain the initial delay (default: 2m => 5s), which is then\n"
                                           "doubled for each retry."
                                           ,"2M");
-static BoolConfigProperty syncPropPeerIsClient("PeerIsClient",
-                                          "Indicates whether this configuration is about a\n"
-                                          "client peer or server peer.\n",
-                                          "FALSE");
 static SafeConfigProperty syncPropPeerName("PeerName",
                                            "An arbitrary name for the peer referenced by this config.\n"
                                            "Might be used by a GUI. The command line tool always uses the\n"
                                            "the configuration name.");
-static StringConfigProperty syncPropSyncMLVersion("SyncMLVersion",
-                                           "On a client, the latest commonly supported SyncML version \n"
-                                           "is used when contacting a server. one of '1.0/1.1/1.2' can\n"
-                                           "be used to pick a specific version explicitly.\n"
-                                           "\n"
-                                           "On a server, this option controls what kind of Server Alerted \n"
-                                           "Notification is sent to the client to start a synchronization.\n"
-                                           "By default, first the format from 1.2 is tried, then in case \n"
-                                           "of failure, the older one from 1.1. 1.2/1.1 can be choosen \n"
-                                           "explictely which disables the automatism\n",
-                                           "",
-                                           "",
-                                           Values() +
-                                           Aliases("") + Aliases("1.0") + Aliases ("1.1") + Aliases ("1.2")
-                                           );
+static ConfigProperty syncPropSyncMLVersion("SyncMLVersion",
+                                            "On a client, the latest commonly supported SyncML version\n"
+                                            "is used when contacting a server. One of '1.0/1.1/1.2' can\n"
+                                            "be used to pick a specific version explicitly.\n"
+                                            "\n"
+                                            "On a server, this option controls what kind of Server Alerted\n"
+                                            "Notification is sent to the client to start a synchronization.\n"
+                                            "By default, first the format from 1.2 is tried, then in case\n"
+                                            "of failure, the older one from 1.1. 1.2/1.1 can be set\n"
+                                            "explicitly, which disables the automatism.\n"
+                                            "\n"
+                                            "Instead or in adddition to the version, several keywords can\n"
+                                            "be set in this property (separated by spaces or commas):\n"
+                                            "\n"
+                                            "- NOCTCAP - avoid sending CtCap meta information\n"
+                                            "- NORESTART - disable the sync mode extension that SyncEvolution\n"
+                                            "  client and server use to negotiate whether both sides support\n"
+                                            "  running multiple sync iterations in the same session\n"
+                                            "- REQUESTMAXTIME=<time> - override the rate at which the\n"
+                                            "  SyncML server sends preliminary replies while preparing\n"
+                                            "  local storages in the background. This helps to avoid timeouts\n"
+                                            "  in the SyncML client. Depends on multithreading.\n"
+#ifdef HAVE_THREAD_SUPPORT
+                                            // test-dbus.py checks for 'is thread-safe'!
+                                            "  This SyncEvolution binary is thread-safe and thus this feature\n"
+                                            "  is enabled by default for HTTP servers, with a delay of 2 minutes\n"
+                                            "  between messages. Other servers (Bluetooth, local sync) should not\n"
+                                            "  need preliminary replies and the feature is disabled, although\n"
+                                            "  it can be enabled by setting the time explicitly.\n"
+#else
+                                            "  This SyncEvolution binary is not thread-safe and thus this feature\n"
+                                            "  is disabled by default, although it can be enabled if absolutely\n"
+                                            "  needed by setting the time explicitly.\n"
+#endif
+                                            "  <time> can be specified like other durations in the config,\n"
+                                            "  for example as REQUESTMAXTIME=2m.\n"
+                                            "\n"
+                                            "Setting these flags should only be necessary as workaround for\n"
+                                            "broken peers.\n"
+                                            );
 
 static ConfigProperty syncPropRemoteIdentifier("remoteIdentifier",
                                       "the identifier sent to the remote peer for a server initiated sync.\n"
@@ -1418,19 +1705,6 @@ static ULongConfigProperty syncPropHashCode("HashCode", "used by the SyncML libr
 
 static ConfigProperty syncPropConfigDate("ConfigDate", "used by the SyncML library internally; do not modify");
 
-static SafeConfigProperty syncPropRemoteDevID("remoteDeviceId",
-                                              "SyncML ID of our peer, empty if unknown; must be set only when\n"
-                                              "the peer is a SyncML client contacting us via HTTP.\n"
-                                              "Clients contacting us via OBEX/Bluetooth can be identified\n"
-                                              "either via this remoteDeviceId property or by their MAC\n"
-                                              "address, if that was set in the syncURL property.\n"
-                                              "\n"
-                                              "If this property is empty and the peer synchronizes with\n"
-                                              "this configuration chosen by some other means, then its ID\n"
-                                              "is recorded here automatically and later used to verify that\n"
-                                              "the configuration is not accidentally used by a different\n"
-                                              "peer.");
-
 static SafeConfigProperty syncPropNonce("lastNonce",
                                         "MD5 nonce of our peer, empty if not set yet; do not edit, used internally");
 
@@ -1452,14 +1726,11 @@ static ConfigProperty globalPropKeyring("keyring",
                                         "yes/true/1\n  pick one automatically\n"
                                         "no/false/0\n  store passwords in SyncEvolution config files\n"
                                         "\n"
-                                        "If unset, the default is to pick one automatically in\n"
-                                        "the D-Bus server and not use any keyring in the command\n"
-                                        "tool when running without that D-Bus server (because the\n"
-                                        "keyring might not be usable without a desktop session).\n"
-                                        "If support for only storage was compiled and installed,\n"
-                                        "then that is the one which gets picked. Otherwise the\n"
-                                        "default is to use GNOME Keyring (because distinguishing\n"
-                                        "between KDE and GNOME sessions automatically is tricky).\n"
+                                        "If unset, the default is to pick one automatically if support\n"
+                                        "for any kind of password storage was enabled and use the config files\n"
+                                        "otherwise. When choosing automatically, GNOME keyring is tried\n"
+                                        "first because distinguishing between KDE and GNOME sessions\n"
+                                        "automatically is tricky.\n"
                                         "\n"
                                         "Note that using this option applies to *all* passwords in\n"
                                         "a configuration and that the --keyring command line option\n"
@@ -1470,12 +1741,17 @@ static ConfigProperty globalPropKeyring("keyring",
                                         "\n"
                                         "     --keyring --configure proxyPassword=foo\n"
                                         "\n"
-                                        "When passwords were stored in the keyring, their value is set to a single\n"
+                                        "When passwords were stored in a safe storage, their value is set to a single\n"
                                         "hyphen (\"-\") in the configuration. This means that when running a\n"
-                                        "synchronization without the --keyring argument, the password has to be\n"
+                                        "synchronization without using the storage, the password has to be\n"
                                         "entered interactively. The --print-config output always shows \"-\" instead\n"
                                         "of retrieving the password from the keyring.\n",
-                                        "yes");
+#ifdef HAVE_KEYRING
+                                        "yes"
+#else
+                                        "no"
+#endif
+                                        );
 
 static StringConfigProperty syncPropAutoSync("autoSync",
                                              "Controls automatic synchronization. Currently,\n"
@@ -1496,8 +1772,8 @@ static StringConfigProperty syncPropAutoSync("autoSync",
                                              "0");
 
 static SecondsConfigProperty syncPropAutoSyncInterval("autoSyncInterval",
-                                                      "This is the minimum number of seconds between two\n"
-                                                      "synchronizations that has to pass before starting\n"
+                                                      "This is the minimum number of seconds since the start of\n"
+                                                      "the last synchronization that has to pass before starting\n"
                                                       "an automatic synchronization. Can be specified using\n"
                                                       "a 1h30m5s format.\n"
                                                       "\n"
@@ -1693,152 +1969,250 @@ ConfigPropertyRegistry &SyncConfig::getRegistry()
     return registry;
 }
 
-InitStateString SyncConfig::getSyncUsername() const { return syncPropUsername.getProperty(*getNode(syncPropUsername)); }
+UserIdentity SyncConfig::getSyncUser() const {
+    InitStateString user = syncPropUsername.getProperty(*getNode(syncPropUsername));
+    UserIdentity id(UserIdentity::fromString(user));
+    return id;
+}
 void SyncConfig::setSyncUsername(const string &value, bool temporarily) { syncPropUsername.setProperty(*getNode(syncPropUsername), value, temporarily); }
 InitStateString SyncConfig::getSyncPassword() const {
-    return syncPropPassword.getCachedProperty(*getNode(syncPropPassword), m_cachedPassword);
+    return syncPropPassword.getProperty(*getNode(syncPropPassword));
 }
 void PasswordConfigProperty::checkPassword(UserInterface &ui,
-                                           const string &serverName,
-                                           FilterConfigNode &globalConfigNode,
-                                           const string &sourceName,
-                                           const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const
+                                           SyncConfig &config,
+                                           int flags,
+                                           const ConfigProperty &usernameProperty,
+                                           const std::string &sourceName) const
 {
-    string password, passwordSave;
-    /* if no source config node, then it should only be password in the global config node */
-    if(sourceConfigNode.get() == NULL) {
-        password = getProperty(globalConfigNode);
-    } else {
-        password = getProperty(*sourceConfigNode);
+    std::string serverName = config.getConfigName();
+    boost::shared_ptr<FilterConfigNode> globalConfigNode = config.getProperties();
+    boost::shared_ptr<FilterConfigNode> sourceConfigNode;
+    if (!sourceName.empty()) {
+        sourceConfigNode = config.getSyncSourceNodes(sourceName).getNode(*this);
     }
+    FilterConfigNode &configNode = sourceConfigNode ? *sourceConfigNode : *globalConfigNode;
+    InitStateString username = usernameProperty.getProperty(configNode);
+    if (sourceName.empty()) {
+        SE_LOG_DEBUG(NULL, "checking password property '%s' in config '%s' with user identity '%s'",
+                     getMainName().c_str(),
+                     serverName.c_str(),
+                     username.c_str());
+    } else {
+        SE_LOG_DEBUG(NULL, "checking password property '%s' in source '%s' of config '%s' with user identity '%s'",
+                     getMainName().c_str(),
+                     sourceName.c_str(),
+                     serverName.c_str(),
+                     username.c_str());
+    }
+    UserIdentity identity(UserIdentity::fromString(username));
 
-    string descr = getDescr(serverName,globalConfigNode,sourceName,sourceConfigNode);
-    if (password == "-") {
-        ConfigPasswordKey key = getPasswordKey(descr,serverName,globalConfigNode,sourceName,sourceConfigNode);
-        passwordSave = ui.askPassword(getMainName(),descr, key);
-    } else if(boost::starts_with(password, "${") &&
-              boost::ends_with(password, "}")) {
-        string envname = password.substr(2, password.size() - 3);
-        const char *envval = getenv(envname.c_str());
-        if (!envval) {
-            SyncContext::throwError(string("the environment variable '") +
-                                            envname +
-                                            "' for the '" +
-                                            descr +
-                                            "' password is not set");
-        } else {
-            passwordSave = envval;
+    InitStateString passwordToSave;
+    InitStateString usernameToSave;
+    if (identity.m_provider == USER_IDENTITY_SYNC_CONFIG) {
+        const std::string &credConfigName = identity.m_identity;
+        SE_LOG_INFO(NULL, "using %s/%s from config '%s' as credentials for %s%s%s",
+                    syncPropUsername.getMainName().c_str(),
+                    syncPropPassword.getMainName().c_str(),
+                    credConfigName.c_str(),
+                    serverName.c_str(),
+                    sourceName.empty() ? "" : "/",
+                    sourceName.c_str());
+        // Actual username/password are stored in a different config. Go find it...
+        SyncConfig::Layout layout = config.getLayout();
+        if (layout != SyncConfig::SHARED_LAYOUT) {
+            SE_THROW(StringPrintf("%s = %s: only supported in configs using the current config storage, please migrate config %s",
+                                  usernameProperty.getMainName().c_str(),
+                                  username.c_str(),
+                                  config.getConfigName().c_str()));
+        }
+        boost::shared_ptr<SyncConfig> credConfig(new SyncConfig(credConfigName));
+        if (!credConfig->exists()) {
+            SE_THROW(StringPrintf("%s = %s: config '%s' not found, cannot look up credentials",
+                                  usernameProperty.getMainName().c_str(),
+                                  username.c_str(),
+                                  credConfigName.c_str()));
+        }
+        syncPropPassword.checkPassword(ui, *credConfig, flags);
+        // Always store the new values.
+        passwordToSave = InitStateString(credConfig->getSyncPassword(), true);
+        usernameToSave = InitStateString(credConfig->getSyncUser().toString(), true);
+    } else if (identity.m_provider != USER_IDENTITY_PLAIN_TEXT) {
+        // Can some provider give us the plain text password? Not at the moment,
+        // so we've got nothing to do here.
+    } else {
+        // Default, internal password handling.
+        InitStateString password = getProperty(configNode);
+
+        string descr = getDescr(serverName,*globalConfigNode,sourceName,sourceConfigNode);
+        if (password == "-") {
+            ConfigPasswordKey key = getPasswordKey(descr,serverName,*globalConfigNode,sourceName,sourceConfigNode);
+            SE_LOG_DEBUG(NULL, "loading password from keyring with key %s", key.toString().c_str());
+            std::string uiPassword = ui.askPassword(getMainName(),descr, key);
+            // Empty means "no response". askPassword() pre-dates the
+            // InitStateString class, and probably should be changed
+            // to use it to avoid this kind of ambiguity, but for now
+            // keep this semantic. Therefore don't use the result if
+            // empty.
+            if (!uiPassword.empty()) {
+                passwordToSave = uiPassword;
+            }
+        } else if(boost::starts_with(password, "${") &&
+                  boost::ends_with(password, "}")) {
+            string envname = password.substr(2, password.size() - 3);
+            const char *envval = getenv(envname.c_str());
+            SE_LOG_DEBUG(NULL, "using password from env var %s", envname.c_str());
+            if (!envval) {
+                SyncContext::throwError(string("the environment variable '") +
+                                        envname +
+                                        "' for the '" +
+                                        descr +
+                                        "' password is not set");
+            } else {
+                passwordToSave = envval;
+            }
         }
     }
-    /* If password is from ui or environment variable, set them in the config node on fly
-     * Previous impl use temp string to store them, this is not good for expansion in the backend */
-    if(!passwordSave.empty()) {
-        if(sourceConfigNode.get() == NULL) {
-            globalConfigNode.addFilter(getMainName(), InitStateString(passwordSave, true));
-        } else {
-            sourceConfigNode->addFilter(getMainName(), InitStateString(passwordSave, true));
+
+    // If we found a password, then set it in the config node
+    // temporarily.  That way, all following "get password" calls will
+    // be able to return it without having to make all callers away of
+    // password handling.
+    if (passwordToSave.wasSet() && (flags & CHECK_PASSWORD_RESOLVE_PASSWORD)) {
+        configNode.addFilter(getMainName(), InitStateString(passwordToSave, true));
+    }
+    if (usernameToSave.wasSet() && (flags & CHECK_PASSWORD_RESOLVE_USERNAME)) {
+        configNode.addFilter(usernameProperty.getMainName(), InitStateString(usernameToSave, true));
+    }
+}
+
+void PasswordConfigProperty::checkPasswords(UserInterface &ui,
+                                            SyncConfig &config,
+                                            int flags,
+                                            const std::list<std::string> &sourceNames)
+{
+    if (flags & CHECK_PASSWORD_SYNC) {
+        ConfigPropertyRegistry& registry = SyncConfig::getRegistry();
+        BOOST_FOREACH(const ConfigProperty *prop, registry) {
+            prop->checkPassword(ui, config, flags);
+        }
+    }
+    if (flags & CHECK_PASSWORD_SOURCE) {
+        BOOST_FOREACH (const std::string &sourceName, sourceNames) {
+            ConfigPropertyRegistry &registry = SyncSourceConfig::getRegistry();
+            BOOST_FOREACH(const ConfigProperty *prop, registry) {
+                prop->checkPassword(ui, config, flags, sourceName);
+            }
         }
     }
 }
+
+std::string PasswordConfigProperty::getUsername(const ConfigProperty &usernameProperty,
+                                                const FilterConfigNode &node)
+{
+    InitStateString username = usernameProperty.getProperty(node);
+    UserIdentity id(UserIdentity::fromString(username));
+    return id.m_identity;
+}
+
 void PasswordConfigProperty::savePassword(UserInterface &ui,
-                                          const string &serverName,
-                                          FilterConfigNode &globalConfigNode,
-                                          const string &sourceName,
-                                          const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const
+                                          SyncConfig &config,
+                                          const ConfigProperty &usernameProperty,
+                                          const std::string &sourceName) const
 {
-    /** here we don't invoke askPassword for this function has different logic from it */
-    string password;
-    if(sourceConfigNode.get() == NULL) {
-        password = getProperty(globalConfigNode);
+    std::string serverName = config.getConfigName();
+    boost::shared_ptr<FilterConfigNode> globalConfigNode = config.getProperties();
+    boost::shared_ptr<FilterConfigNode> sourceConfigNode;
+    if (!sourceName.empty()) {
+        sourceConfigNode = config.getSyncSourceNodes(sourceName).getNode(*this);
+    }
+    FilterConfigNode &configNode = sourceConfigNode ? *sourceConfigNode : *globalConfigNode;
+
+    InitStateString username = usernameProperty.getProperty(configNode);
+    // In checkPassword() we retrieve from background storage and store as temporary value.
+    // Here we use the temporary value and move it in the background storage.
+    // We allow empty passwords to be stored in the config although
+    // that might leak some information, because that is how SyncEvolution
+    // traditionally worked. Changing this now breaks tests and possibly
+    // causes problems for users depending on the old behavior.
+    InitStateString password = getProperty(configNode);
+    if (!password.wasSet() || password.empty()) {
+        return;
+    }
+
+    if (sourceName.empty()) {
+        SE_LOG_DEBUG(NULL, "possibly saving password property '%s' in config '%s' with user identity '%s'",
+                     getMainName().c_str(),
+                     serverName.c_str(),
+                     username.c_str());
     } else {
-        password = getProperty(*sourceConfigNode);
+        SE_LOG_DEBUG(NULL, "possibly saving password property '%s' in source '%s' of config '%s' with user identity '%s'",
+                     getMainName().c_str(),
+                     sourceName.c_str(),
+                     serverName.c_str(),
+                     username.c_str());
     }
-    /** if it has been stored or it has no value, do nothing */
-    if(password == "-" || password == "") {
-        return;
-    } else if(boost::starts_with(password, "${") &&
-              boost::ends_with(password, "}")) {
-        /** we delay this calculation of environment variable for 
-         * it might be changed in the sync time. */
-        return;
-    }
-    string descr = getDescr(serverName,globalConfigNode,sourceName,sourceConfigNode);
-    ConfigPasswordKey key = getPasswordKey(descr,serverName,globalConfigNode,sourceName,sourceConfigNode);
-    if(ui.savePassword(getMainName(), password, key)) {
-        string value = "-";
-        if(sourceConfigNode.get() == NULL) {
-            setProperty(globalConfigNode, value);
+    UserIdentity identity(UserIdentity::fromString(username));
+
+
+    bool updatePassword = false;
+    InitStateString passwordToSave;
+    if (identity.m_provider == USER_IDENTITY_SYNC_CONFIG) {
+        // Store in the other config and unset it here.
+        updatePassword = true;
+
+        const std::string &credConfigName = identity.m_identity;
+        SE_LOG_INFO(NULL, "setting %s in config '%s' as part of credentials for %s%s%s",
+                    syncPropPassword.getMainName().c_str(),
+                    credConfigName.c_str(),
+                    serverName.c_str(),
+                    sourceName.empty() ? "" : "/",
+                    sourceName.c_str());
+        // Actual username/password are stored in a different config. Go find it...
+        SyncConfig::Layout layout = config.getLayout();
+        if (layout != SyncConfig::SHARED_LAYOUT) {
+            SE_THROW(StringPrintf("%s = %s: only supported in configs using the current config storage, please migrate config %s",
+                                  usernameProperty.getMainName().c_str(),
+                                  username.c_str(),
+                                  config.getConfigName().c_str()));
+        }
+        boost::shared_ptr<SyncConfig> credConfig(new SyncConfig(credConfigName));
+        if (!credConfig->exists()) {
+            SE_THROW(StringPrintf("%s = %s: config '%s' not found, cannot look up credentials",
+                                  usernameProperty.getMainName().c_str(),
+                                  username.c_str(),
+                                  credConfigName.c_str()));
+        }
+        credConfig->setSyncPassword(password, false);
+        syncPropPassword.savePassword(ui, *credConfig);
+    } else if (identity.m_provider != USER_IDENTITY_PLAIN_TEXT) {
+        // Cannot store passwords in providers.
+        if (password.wasSet() && !password.empty()) {
+            SE_THROW(StringPrintf("setting property '%s' not supported for provider '%s' from property '%s'",
+                                  getMainName().c_str(),
+                                  identity.m_provider.c_str(),
+                                  usernameProperty.getMainName().c_str()));
+        }
+    } else {
+        if (password == "-" || password == "" ||
+            (boost::starts_with(password, "${") && boost::ends_with(password, "}"))) {
+            // Nothing to do, leave it as is.
+            SE_LOG_DEBUG(NULL, "no need to save, interactive or env var password");
         } else {
-            setProperty(*sourceConfigNode,value);
+            string descr = getDescr(serverName,*globalConfigNode,sourceName,sourceConfigNode);
+            ConfigPasswordKey key = getPasswordKey(descr,serverName,*globalConfigNode,sourceName,sourceConfigNode);
+            SE_LOG_DEBUG(NULL, "saving password in keyring with key %s", key.toString().c_str());
+            if (ui.savePassword(getMainName(), password, key)) {
+                passwordToSave = "-";
+                updatePassword = true;
+            }
         }
     }
-}
-
-InitStateString PasswordConfigProperty::getCachedProperty(const ConfigNode &node,
-                                                          const string &cachedPassword)
-{
-    InitStateString password;
-
-    if (!cachedPassword.empty()) {
-        password = InitStateString(cachedPassword, true);
-    } else {
-        password = getProperty(node);
-    }
-    return password;
-}
-
-/**
- * remove some unnecessary parts of server URL.
- * internal use.
- */
-static void purifyServer(string &server)
-{
-    /** here we use server sync url without protocol prefix and
-     * user account name as the key in the keyring */
-    size_t start = server.find("://");
-    /** we don't reserve protocol prefix for it may change*/
-    if(start != server.npos) {
-        server = server.substr(start + 3);
+    if (updatePassword) {
+        setProperty(configNode, passwordToSave);
     }
 }
 
-ConfigPasswordKey PasswordConfigProperty::getPasswordKey(const string &descr,
-                                                         const string &serverName,
-                                                         FilterConfigNode &globalConfigNode,
-                                                         const string &sourceName,
-                                                         const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const 
-{
-    ConfigPasswordKey key;
-    key.server = syncPropSyncURL.getProperty(globalConfigNode);
-    purifyServer(key.server);
-    key.user   = syncPropUsername.getProperty(globalConfigNode);
-    return key;
-}
-void ProxyPasswordConfigProperty::checkPassword(UserInterface &ui,
-                                           const string &serverName,
-                                           FilterConfigNode &globalConfigNode,
-                                           const string &sourceName,
-                                           const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const
-{
-    /* if useProxy is set 'true', then check proxypassword */
-    if(syncPropUseProxy.getPropertyValue(globalConfigNode)) {
-        PasswordConfigProperty::checkPassword(ui, serverName, globalConfigNode, sourceName, sourceConfigNode);
-    }
-}
-
-ConfigPasswordKey ProxyPasswordConfigProperty::getPasswordKey(const string &descr,
-                                                              const string &serverName,
-                                                              FilterConfigNode &globalConfigNode,
-                                                              const string &sourceName,
-                                                              const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const
-{
-    ConfigPasswordKey key;
-    key.server = syncPropProxyHost.getProperty(globalConfigNode);
-    key.user   = syncPropProxyUsername.getProperty(globalConfigNode);
-    return key;
-}
-
-void SyncConfig::setSyncPassword(const string &value, bool temporarily) { m_cachedPassword = ""; syncPropPassword.setProperty(*getNode(syncPropPassword), value, temporarily); }
+void SyncConfig::setSyncPassword(const string &value, bool temporarily) { syncPropPassword.setProperty(*getNode(syncPropPassword), value, temporarily); }
 
 InitState<bool> SyncConfig::getPreventSlowSync() const {
     return syncPropPreventSlowSync.getPropertyValue(*getNode(syncPropPreventSlowSync));
@@ -1876,14 +2250,18 @@ InitStateString SyncConfig::getProxyHost() const {
 
 void SyncConfig::setProxyHost(const string &value, bool temporarily) { syncPropProxyHost.setProperty(*getNode(syncPropProxyHost), value, temporarily); }
 
-InitStateString SyncConfig::getProxyUsername() const { return syncPropProxyUsername.getProperty(*getNode(syncPropProxyUsername)); }
+UserIdentity SyncConfig::getProxyUser() const {
+    InitStateString username = syncPropProxyUsername.getProperty(*getNode(syncPropProxyUsername));
+    UserIdentity id(UserIdentity::fromString(username));
+    return id;
+}
 void SyncConfig::setProxyUsername(const string &value, bool temporarily) { syncPropProxyUsername.setProperty(*getNode(syncPropProxyUsername), value, temporarily); }
 
 InitStateString SyncConfig::getProxyPassword() const {
-    return syncPropProxyPassword.getCachedProperty(*getNode(syncPropProxyPassword), m_cachedProxyPassword);
+    return syncPropProxyPassword.getProperty(*getNode(syncPropProxyPassword));
 }
-void SyncConfig::setProxyPassword(const string &value, bool temporarily) { m_cachedProxyPassword = ""; syncPropProxyPassword.setProperty(*getNode(syncPropProxyPassword), value, temporarily); }
-InitStateClass< vector<string> > SyncConfig::getSyncURL() const { 
+void SyncConfig::setProxyPassword(const string &value, bool temporarily) { syncPropProxyPassword.setProperty(*getNode(syncPropProxyPassword), value, temporarily); }
+InitState< vector<string> > SyncConfig::getSyncURL() const { 
     InitStateString s = syncPropSyncURL.getProperty(*getNode(syncPropSyncURL));
     vector<string> urls;
     if (!s.empty()) {
@@ -1892,7 +2270,7 @@ InitStateClass< vector<string> > SyncConfig::getSyncURL() const {
         static const string sep(" \t");
         boost::split(urls, s.get(), boost::is_any_of(sep));
     }
-    return InitStateClass< vector<string> >(urls, s.wasSet());
+    return InitState< vector<string> >(urls, s.wasSet());
 }
 void SyncConfig::setSyncURL(const string &value, bool temporarily) { syncPropSyncURL.setProperty(*getNode(syncPropSyncURL), value, temporarily); }
 void SyncConfig::setSyncURL(const vector<string> &value, bool temporarily) { 
@@ -1937,8 +2315,50 @@ void SyncConfig::setRemoteIdentifier (const string &value, bool temporarily) { r
 InitState<bool> SyncConfig::getPeerIsClient() const { return syncPropPeerIsClient.getPropertyValue(*getNode(syncPropPeerIsClient)); }
 void SyncConfig::setPeerIsClient(bool value, bool temporarily) { syncPropPeerIsClient.setProperty(*getNode(syncPropPeerIsClient), value, temporarily); }
 
-InitStateString SyncConfig::getSyncMLVersion() const { return syncPropSyncMLVersion.getProperty(*getNode(syncPropSyncMLVersion)); }
-void SyncConfig::setSyncMLVersion(const string &value, bool temporarily) { syncPropSyncMLVersion.setProperty(*getNode(syncPropSyncMLVersion), value, temporarily); }
+InitStateString SyncConfig::getSyncMLVersion() const {
+    InitState< std::set<std::string> > flags = getSyncMLFlags();
+    static const char * const versions[] = { "1.2", "1.1", "1.0" };
+    BOOST_FOREACH (const char *version, versions) {
+        if (flags.find(version) != flags.end()) {
+            return InitStateString(version, flags.wasSet());
+        }
+    }
+    return InitStateString("", flags.wasSet());
+}
+InitState<unsigned int> SyncConfig::getRequestMaxTime() const {
+    InitState<unsigned int> requestmaxtime;
+    InitState< std::set<std::string> > flags = getSyncMLFlags();
+    BOOST_FOREACH(const std::string &flag, flags) {
+        size_t offset = flag.find('=');
+        if (offset != flag.npos) {
+            std::string key = flag.substr(0, offset);
+            if (boost::iequals(key, "RequestMaxTime")) {
+                std::string value = flag.substr(offset + 1);
+                unsigned int seconds;
+                std::string error;
+                if (!SecondsConfigProperty::parseDuration(value, error, seconds)) {
+                    SE_THROW("invalid RequestMaxTime value in SyncMLVersion property: " + error);
+                }
+                requestmaxtime = seconds;
+                break;
+            }
+        }
+    }
+    return requestmaxtime;
+}
+InitState< std::set<std::string> > SyncConfig::getSyncMLFlags() const {
+    InitStateString value = syncPropSyncMLVersion.getProperty(*getNode(syncPropSyncMLVersion));
+    std::list<std::string> keywords;
+    // Work around g++ 4.4 + "array out of bounds" when using is_any_of() on plain string.
+    static const std::string delim(" ,");
+    boost::split(keywords, value, boost::is_any_of(delim));
+    std::set<std::string> flags;
+    BOOST_FOREACH (std::string &keyword, keywords) {
+        boost::to_lower(keyword);
+        flags.insert(keyword);
+    }
+    return InitState< std::set<std::string> >(flags, value.wasSet());
+}
 
 InitStateString SyncConfig::getUserPeerName() const { return syncPropPeerName.getProperty(*getNode(syncPropPeerName)); }
 void SyncConfig::setUserPeerName(const InitStateString &name) { syncPropPeerName.setProperty(*getNode(syncPropPeerName), name); }
@@ -2238,6 +2658,11 @@ StringConfigProperty SyncSourceConfig::m_sourcePropSync("sync",
                                            "    transmit changes from peer\n"
                                            "  one-way-from-local\n"
                                            "    transmit local changes\n"
+                                           "  local-cache-slow (server only)\n"
+                                           "    mirror remote data locally, transferring all data\n"
+                                           "  local-cache-incremental (server only)\n"
+                                           "    mirror remote data locally, transferring only changes;\n"
+                                           "    falls back to local-cache-slow automatically if necessary\n"
                                            "  disabled (or none)\n"
                                            "    synchronization disabled\n"
                                            "\n"
@@ -2267,6 +2692,8 @@ StringConfigProperty SyncSourceConfig::m_sourcePropSync("sync",
                                            (Aliases("refresh-from-server") + "refresh-server") +
                                            (Aliases("one-way-from-client") + "one-way-client") +
                                            (Aliases("one-way-from-server") + "one-way-server") +
+                                           (Aliases("local-cache-slow")) +
+                                           (Aliases("local-cache-incremental") + "local-cache") +
                                            (Aliases("disabled") + "none"));
 
 static class SourceBackendConfigProperty : public StringConfigProperty {
@@ -2419,7 +2846,54 @@ static ConfigProperty sourcePropUser(Aliases("databaseUser") + "evolutionuser",
                                      "Warning: setting database user/password in cases where it is not\n"
                                      "needed, as for example with local Evolution calendars and addressbooks,\n"
                                      "can cause the Evolution backend to hang.");
-static DatabasePasswordConfigProperty sourcePropPassword(Aliases("databasePassword") + "evolutionpassword", "","", "backend");
+
+static class DatabasePasswordConfigProperty : public PasswordConfigProperty {
+public:
+    DatabasePasswordConfigProperty() :
+        PasswordConfigProperty(Aliases("databasePassword") + "evolutionpassword", "","", "backend")
+    {}
+
+    virtual void checkPassword(UserInterface &ui,
+                               SyncConfig &config,
+                               int flags,
+                               const std::string &sourceName) const {
+        PasswordConfigProperty::checkPassword(ui, config, flags, sourcePropUser, sourceName);
+    }
+    virtual void savePassword(UserInterface &ui,
+                               SyncConfig &config,
+                               const std::string &sourceName) const {
+        PasswordConfigProperty::savePassword(ui, config, sourcePropUser, sourceName);
+    }
+
+    virtual ConfigPasswordKey getPasswordKey(const std::string &descr,
+                                             const std::string &serverName,
+                                             FilterConfigNode &globalConfigNode,
+                                             const std::string &sourceName = std::string(),
+                                             const boost::shared_ptr<FilterConfigNode> &sourceConfigNode=boost::shared_ptr<FilterConfigNode>()) const {
+        ConfigPasswordKey key;
+        key.user = getUsername(sourcePropUser, *sourceConfigNode);
+        std::string configName = SyncConfig::normalizeConfigString(serverName, SyncConfig::NORMALIZE_LONG_FORMAT);
+        std::string peer, context;
+        SyncConfig::splitConfigString(configName, peer, context);
+        key.object = "@";
+        key.object += context;
+        key.object += " ";
+        key.object += sourceName;
+        key.object += " backend";
+        key.description = StringPrintf("databasePassword for %s in source %s",
+                                       descr.c_str(), sourceName.c_str());
+        return key;
+    }
+    virtual const std::string getDescr(const std::string &serverName,
+                                  FilterConfigNode &globalConfigNode,
+                                  const std::string &sourceName,
+                                  const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const {
+        std::string descr = sourceName;
+        descr += " ";
+        descr += ConfigProperty::getDescr();
+        return descr;
+    }
+} sourcePropPassword;
 
 static ConfigProperty sourcePropAdminData(SourceAdminDataName,
                                           "used by the Synthesis library internally; do not modify");
@@ -2543,22 +3017,17 @@ SyncSourceNodes::getNode(const ConfigProperty &prop) const
 
 InitStateString SyncSourceConfig::getDatabaseID() const { return sourcePropDatabaseID.getProperty(*getNode(sourcePropDatabaseID)); }
 void SyncSourceConfig::setDatabaseID(const string &value, bool temporarily) { sourcePropDatabaseID.setProperty(*getNode(sourcePropDatabaseID), value, temporarily); }
-InitStateString SyncSourceConfig::getUser() const { return sourcePropUser.getProperty(*getNode(sourcePropUser)); }
-void SyncSourceConfig::setUser(const string &value, bool temporarily) { sourcePropUser.setProperty(*getNode(sourcePropUser), value, temporarily); }
+UserIdentity SyncSourceConfig::getUser() const {
+    InitStateString user = sourcePropUser.getProperty(*getNode(sourcePropUser));
+    UserIdentity id(UserIdentity::fromString(user));
+    return id;
+}
+
+void SyncSourceConfig::setUsername(const string &value, bool temporarily) { sourcePropUser.setProperty(*getNode(sourcePropUser), value, temporarily); }
 InitStateString SyncSourceConfig::getPassword() const {
-    return sourcePropPassword.getCachedProperty(*getNode(sourcePropPassword), m_cachedPassword);
+    return sourcePropPassword.getProperty(*getNode(sourcePropPassword));
 }
-void SyncSourceConfig::checkPassword(UserInterface &ui, 
-                                     const string &serverName, 
-                                     FilterConfigNode& globalConfigNode) {
-    sourcePropPassword.checkPassword(ui, serverName, globalConfigNode, m_name, getNode(sourcePropPassword));
-}
-void SyncSourceConfig::savePassword(UserInterface &ui, 
-                                    const string &serverName, 
-                                    FilterConfigNode& globalConfigNode) {
-    sourcePropPassword.savePassword(ui, serverName, globalConfigNode, m_name, getNode(sourcePropPassword));
-}
-void SyncSourceConfig::setPassword(const string &value, bool temporarily) { m_cachedPassword = ""; sourcePropPassword.setProperty(*getNode(sourcePropPassword), value, temporarily); }
+void SyncSourceConfig::setPassword(const string &value, bool temporarily) { sourcePropPassword.setProperty(*getNode(sourcePropPassword), value, temporarily); }
 InitStateString SyncSourceConfig::getURI() const { return sourcePropURI.getProperty(*getNode(sourcePropURI)); }
 InitStateString SyncSourceConfig::getURINonEmpty() const {
     InitStateString uri = sourcePropURI.getProperty(*getNode(sourcePropURI));
@@ -2610,14 +3079,14 @@ string SourceType::toString() const
     return type;
 }
 
-InitStateClass<SourceType> SyncSourceConfig::getSourceType(const SyncSourceNodes &nodes)
+InitState<SourceType> SyncSourceConfig::getSourceType(const SyncSourceNodes &nodes)
 {
     // legacy "type" property is tried if the backend property is not set
     InitStateString backend = sourcePropBackend.getProperty(*nodes.getNode(sourcePropBackend));
     if (!backend.wasSet()) {
         string type;
         if (nodes.getNode(sourcePropBackend)->getProperty("type", type)) {
-            return InitStateClass<SourceType>(SourceType(type), true);
+            return InitState<SourceType>(SourceType(type), true);
         }
     }
 
@@ -2626,9 +3095,9 @@ InitStateClass<SourceType> SyncSourceConfig::getSourceType(const SyncSourceNodes
     sourceType.m_localFormat = sourcePropDatabaseFormat.getProperty(*nodes.getNode(sourcePropDatabaseFormat));
     sourceType.m_format = sourcePropSyncFormat.getProperty(*nodes.getNode(sourcePropSyncFormat));
     sourceType.m_forceFormat = sourcePropForceSyncFormat.getPropertyValue(*nodes.getNode(sourcePropForceSyncFormat));
-    return InitStateClass<SourceType>(sourceType, backend.wasSet());
+    return InitState<SourceType>(sourceType, backend.wasSet());
 }
-InitStateClass<SourceType> SyncSourceConfig::getSourceType() const { return getSourceType(m_nodes); }
+InitState<SourceType> SyncSourceConfig::getSourceType() const { return getSourceType(m_nodes); }
 
 void SyncSourceConfig::setSourceType(const SourceType &type, bool temporarily)
 {
@@ -2684,27 +3153,17 @@ InitState<bool> SyncSourceConfig::getForceSyncFormat() const
     return sourcePropForceSyncFormat.getPropertyValue(*getNode(sourcePropForceSyncFormat));
 }
 
-InitState<int> SyncSourceConfig::getSynthesisID() const { return sourcePropSynthesisID.getPropertyValue(*getNode(sourcePropSynthesisID)); }
-void SyncSourceConfig::setSynthesisID(int value, bool temporarily) { sourcePropSynthesisID.setProperty(*getNode(sourcePropSynthesisID), value, temporarily); }
-
-ConfigPasswordKey DatabasePasswordConfigProperty::getPasswordKey(const string &descr,
-                                                                 const string &serverName,
-                                                                 FilterConfigNode &globalConfigNode,
-                                                                 const string &sourceName,
-                                                                 const boost::shared_ptr<FilterConfigNode> &sourceConfigNode) const
-{
-    ConfigPasswordKey key;
-    key.user = sourcePropUser.getProperty(*sourceConfigNode);
-    std::string configName = SyncConfig::normalizeConfigString(serverName, SyncConfig::NORMALIZE_LONG_FORMAT);
-    std::string peer, context;
-    SyncConfig::splitConfigString(configName, peer, context);
-    key.object = "@";
-    key.object += context;
-    key.object += " ";
-    key.object += sourceName;
-    key.object += " backend";
-    return key;
+InitState<int> SyncSourceConfig::getSynthesisID() const {
+    if (!m_synthesisID.wasSet()) {
+        const_cast<InitState<int> &>(m_synthesisID) = sourcePropSynthesisID.getPropertyValue(*getNode(sourcePropSynthesisID));
+    }
+    return m_synthesisID;
 }
+void SyncSourceConfig::setSynthesisID(int value, bool temporarily) {
+    m_synthesisID = value;
+    sourcePropSynthesisID.setProperty(*getNode(sourcePropSynthesisID), value, temporarily);
+}
+
 
 // Used for built-in templates
 SyncConfig::TemplateDescription::TemplateDescription (const std::string &name, const std::string &description)
@@ -2967,8 +3426,13 @@ private:
         CPPUNIT_ASSERT_EQUAL(std::string("foobar@default"),
                              SyncConfig::normalizeConfigString("FooBar", SyncConfig::NORMALIZE_LONG_FORMAT));
 
-        // test config lookup
+        // Test config lookup. We expect all of these to exist on disk, so
+        // set some property. Empty configs do not get written to disk.
+        // This allows testing for existance.
         SyncConfig foo_default("foo"), foo_other("foo@other"), bar("bar@other");
+        foo_default.setLogLevel(10);
+        foo_other.setLogLevel(10);
+        bar.setLogLevel(10);
         foo_default.flush();
         foo_other.flush();
         bar.flush();

@@ -33,6 +33,9 @@
 #include "restart.h"
 #include "client.h"
 #include "auto-sync-manager.h"
+#include "connman-client.h"
+#include "network-manager-client.h"
+#include "presence-status.h"
 
 #include <boost/pointer_cast.hpp>
 
@@ -40,10 +43,96 @@ using namespace GDBusCXX;
 
 SE_BEGIN_CXX
 
-static void logIdle(bool idle)
+void Server::onIdleChange(bool idle)
 {
-    SE_LOG_DEBUG(NULL, NULL, "server is %s", idle ? "idle" : "not idle");
+    SE_LOG_DEBUG(NULL, "server is %s", idle ? "idle" : "not idle");
+    if (idle) {
+        autoTermUnref();
+    } else {
+        autoTermRef();
+    }
 }
+
+class ServerLogger : public Logger
+{
+    Logger::Handle m_parentLogger;
+    // Currently a strong reference. Would be a weak reference
+    // if we had proper reference counting for Server.
+    boost::shared_ptr<Server> m_server;
+
+public:
+    ServerLogger(const boost::shared_ptr<Server> &server) :
+        m_parentLogger(Logger::instance()),
+        m_server(server)
+    {
+    }
+
+    virtual void remove() throw ()
+    {
+        // Hold the Logger mutex while cutting our connection to the
+        // server. The code using m_server below does the same and
+        // holds the mutex while logging. That way we prevent threads
+        // from holding onto the server while it tries to shut down.
+        //
+        // This is important because the server's live time is not
+        // really controlled via the boost::shared_ptr, it may
+        // destruct while there are still references. See
+        // Server::m_logger instantiation below.
+        RecMutex::Guard guard = lock();
+        m_server.reset();
+    }
+
+    virtual void messagev(const MessageOptions &options,
+                          const char *format,
+                          va_list args)
+    {
+        // Ensure that remove() cannot proceed while we have the
+        // server in use.
+        RecMutex::Guard guard = lock();
+        Server *server = m_server.get();
+        message2DBus(server,
+                     options,
+                     format,
+                     args,
+                     server ? server->getPath() : "",
+                     getProcessName());
+    }
+
+    /**
+     * @param server    may be NULL, in which case logging only goes to parent
+     */
+    void message2DBus(Server *server,
+                      const MessageOptions &options,
+                      const char *format,
+                      va_list args,
+                      const std::string &dbusPath,
+                      const std::string &procname)
+    {
+        // Keeps logging consistent: otherwise thread A might log to
+        // parent, thread B to parent and D-Bus, then thread A
+        // finishes its logging via D-Bus.  The order of log messages
+        // would then not be the same in the parent and D-Bus.
+        RecMutex::Guard guard = lock();
+
+        // iterating over args in messagev() is destructive, must make a copy first
+        va_list argsCopy;
+        va_copy(argsCopy, args);
+        m_parentLogger.messagev(options, format, args);
+
+        if (server) {
+            try {
+                if (options.m_level <= server->getDBusLogLevel()) {
+                    string log = StringPrintfV(format, argsCopy);
+                    server->logOutput(dbusPath, options.m_level, log, procname);
+                }
+            } catch (...) {
+                remove();
+                // Give up on server logging silently.
+            }
+        }
+        va_end(argsCopy);
+    }
+};
 
 void Server::clientGone(Client *c)
 {
@@ -51,14 +140,14 @@ void Server::clientGone(Client *c)
         it != m_clients.end();
         ++it) {
         if (it->second.get() == c) {
-            SE_LOG_DEBUG(NULL, NULL, "D-Bus client %s has disconnected",
+            SE_LOG_DEBUG(NULL, "D-Bus client %s has disconnected",
                          c->m_ID.c_str());
             autoTermUnref(it->second->getAttachCount());
             m_clients.erase(it);
             return;
         }
     }
-    SE_LOG_DEBUG(NULL, NULL, "unknown client has disconnected?!");
+    SE_LOG_DEBUG(NULL, "unknown client has disconnected?!");
 }
 
 std::string Server::getNextSession()
@@ -165,7 +254,7 @@ void Server::connect(const Caller_t &caller,
                                                                  new_session,
                                                                  peer,
                                                                  must_authenticate));
-    SE_LOG_DEBUG(NULL, NULL, "connecting D-Bus client %s with connection %s '%s'",
+    SE_LOG_DEBUG(NULL, "connecting D-Bus client %s with connection %s '%s'",
                  caller.c_str(),
                  c->getPath(),
                  c->m_description.c_str());
@@ -203,11 +292,42 @@ void Server::startSessionWithFlags(const Caller_t &caller,
     object = session->getPath();
 }
 
+
+boost::shared_ptr<Session> Server::startInternalSession(const std::string &server,
+                                                        SessionFlags flags,
+                                                        const boost::function<void (const boost::weak_ptr<Session> &session)> &callback)
+{
+    if (m_shutdownRequested) {
+        // don't allow new sessions, we cannot activate them
+        SE_THROW("server shutting down");
+    }
+
+    std::vector<std::string> dbusFlags;
+    if (flags & SESSION_FLAG_NO_SYNC) {
+        dbusFlags.push_back("no-sync");
+    }
+    if (flags & SESSION_FLAG_ALL_CONFIGS) {
+        dbusFlags.push_back("all-configs");
+    }
+
+    std::string new_session = getNextSession();
+    boost::shared_ptr<Session> session = Session::createSession(*this,
+                                                                "is this a client or server session?",
+                                                                server,
+                                                                new_session,
+                                                                dbusFlags);
+    session->m_sessionActiveSignal.connect(boost::bind(callback, boost::weak_ptr<Session>(session)));
+    session->activate();
+    enqueue(session);
+    return session;
+}
+
+
 void Server::checkPresence(const std::string &server,
                            std::string &status,
                            std::vector<std::string> &transports)
 {
-    return m_presence.checkPresence(server, status, transports);
+    return getPresenceStatus().checkPresence(server, status, transports);
 }
 
 void Server::getSessions(std::vector<DBusObject_t> &sessions)
@@ -245,12 +365,14 @@ Server::Server(GMainLoop *loop,
     templatesChanged(*this, "TemplatesChanged"),
     configChanged(*this, "ConfigChanged"),
     infoRequest(*this, "InfoRequest"),
-    logOutput(*this, "LogOutput"),
-    m_presence(*this),
-    m_connman(*this),
-    m_networkManager(*this),
+    m_logOutputSignal(*this, "LogOutput"),
     m_autoTerm(m_loop, m_shutdownRequested, duration),
-    m_parentLogger(LoggerBase::instance())
+    m_dbusLogLevel(Logger::INFO),
+    // TODO (?): turn Server into a proper reference counted instance.
+    // This would help with dangling references to it when other threads
+    // use it for logging, see ServerLogger. However, with mutex locking
+    // in ServerLogger that shouldn't be a problem.
+    m_logger(new ServerLogger(boost::shared_ptr<Server>(this, NopDestructor())))
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -278,27 +400,43 @@ Server::Server(GMainLoop *loop,
     add(configChanged);
     add(presence);
     add(infoRequest);
-    add(logOutput);
+    add(m_logOutputSignal);
 
-    LoggerBase::pushLogger(this);
-    setLevel(LoggerBase::DEBUG);
+    // Log entering and leaving idle state and
+    // allow/prevent auto-termination.
+    m_idleSignal.connect(boost::bind(&Server::onIdleChange, this, _1));
+
+    // connect ConfigChanged signal to source for that information
+    m_configChangedSignal.connect(boost::bind(boost::ref(configChanged)));
+}
+
+void Server::activate()
+{
+    // Activate our D-Bus object *before* interacting with D-Bus
+    // any further. Otherwise GIO D-Bus will start processing
+    // messages for us while we start up and reject them because
+    // out object isn't visible to it yet.
+    GDBusCXX::DBusObjectHelper::activate();
+
+    // Push ourselves as logger for the time being.
+    m_logger->setLevel(Logger::DEBUG);
+    m_pushLogger.reset(m_logger);
+
+    m_presence.reset(new PresenceStatus(*this));
 
     // Assume that Bluetooth is available. Neither ConnMan nor Network
     // manager can tell us about that. The "Bluetooth" ConnMan technology
     // is about IP connection via Bluetooth - not what we need.
     getPresenceStatus().updatePresenceStatus(true, PresenceStatus::BT_TRANSPORT);
 
-    if (!m_connman.isAvailable() &&
-        !m_networkManager.isAvailable()) {
+    m_connman.reset(new ConnmanClient(*this));
+    m_networkManager.reset(new NetworkManagerClient(*this));
+
+    if ((!m_connman || !m_connman->isAvailable()) &&
+        (!m_networkManager || !m_networkManager->isAvailable())) {
         // assume that we are online if no network manager was found at all
         getPresenceStatus().updatePresenceStatus(true, PresenceStatus::HTTP_TRANSPORT);
     }
-
-    // log entering and leaving idle state
-    m_idleSignal.connect(boost::bind(logIdle, _1));
-
-    // connect ConfigChanged signal to source for that information
-    m_configChangedSignal.connect(boost::bind(boost::ref(configChanged)));
 
     // create auto sync manager, now that server is ready
     m_autoSync = AutoSyncManager::createAutoSyncManager(*this);
@@ -314,24 +452,29 @@ Server::~Server()
     m_infoReqMap.clear();
     m_timeouts.clear();
     m_delayDeletion.clear();
-    LoggerBase::popLogger();
+    m_connman.reset();
+    m_networkManager.reset();
+    m_presence.reset();
+
+    m_pushLogger.reset();
+    m_logger.reset();
 }
 
 bool Server::shutdown()
 {
     Timespec now = Timespec::monotonic();
     bool autosync = m_autoSync && m_autoSync->preventTerm();
-    SE_LOG_DEBUG(NULL, NULL, "shut down or restart server at %lu.%09lu because of file modifications, auto sync %s",
+    SE_LOG_DEBUG(NULL, "shut down or restart server at %lu.%09lu because of file modifications, auto sync %s",
                  now.tv_sec, now.tv_nsec, autosync ? "on" : "off");
     if (autosync) {
         // suitable exec() call which restarts the server using the same environment it was in
         // when it was started
-        SE_LOG_INFO(NULL, NULL, "server restarting because files loaded into memory were modified on disk");
+        SE_LOG_INFO(NULL, "server restarting because files loaded into memory were modified on disk");
         m_restart->restart();
     } else {
         // leave server now
         g_main_loop_quit(m_loop);
-        SE_LOG_INFO(NULL, NULL, "server shutting down because files loaded into memory were modified on disk");
+        SE_LOG_INFO(NULL, "server shutting down because files loaded into memory were modified on disk");
     }
 
     return false;
@@ -339,7 +482,7 @@ bool Server::shutdown()
 
 void Server::fileModified()
 {
-    SE_LOG_DEBUG(NULL, NULL, "file modified, %s shutdown: %s, %s",
+    SE_LOG_DEBUG(NULL, "file modified, %s shutdown: %s, %s",
                  m_shutdownRequested ? "continuing" : "initiating",
                  m_shutdownTimer ? "timer already active" : "timer not yet active",
                  m_activeSession ? "waiting for active session to finish" : "setting timer");
@@ -357,9 +500,9 @@ void Server::run()
     // memory which might be dynamically loadable, like backend
     // plugins.
     StringMap map = getVersions();
-    SE_LOG_DEBUG(NULL, NULL, "D-Bus server ready to run, versions:");
+    SE_LOG_DEBUG(NULL, "D-Bus server ready to run, versions:");
     BOOST_FOREACH(const StringPair &entry, map) {
-        SE_LOG_DEBUG(NULL, NULL, "%s: %s", entry.first.c_str(), entry.second.c_str());
+        SE_LOG_DEBUG(NULL, "%s: %s", entry.first.c_str(), entry.second.c_str());
     }
 
     // Now that everything is loaded, check memory map for files which we have to monitor.
@@ -377,7 +520,7 @@ void Server::run()
     in.close();
     BOOST_FOREACH(const string &file, files) {
         try {
-            SE_LOG_DEBUG(NULL, NULL, "watching: %s", file.c_str());
+            SE_LOG_DEBUG(NULL, "watching: %s", file.c_str());
             boost::shared_ptr<SyncEvo::GLibNotify> notify(new GLibNotify(file.c_str(), boost::bind(&Server::fileModified, this)));
             m_files.push_back(notify);
         } catch (...) {
@@ -386,12 +529,12 @@ void Server::run()
         }
     }
 
-    SE_LOG_INFO(NULL, NULL, "ready to run");
+    SE_LOG_INFO(NULL, "ready to run");
     if (!m_shutdownRequested) {
         g_main_loop_run(m_loop);
     }
 
-    SE_LOG_DEBUG(NULL, NULL, "%s", "Exiting Server::run");
+    SE_LOG_DEBUG(NULL, "%s", "Exiting Server::run");
 }
 
 
@@ -463,7 +606,7 @@ void Server::killSessionsAsync(const std::string &peerDeviceID,
     while (it != m_workQueue.end()) {
         boost::shared_ptr<Session> session = it->lock();
         if (session && session->getPeerDeviceID() == peerDeviceID) {
-            SE_LOG_DEBUG(NULL, NULL, "removing pending session %s because it matches deviceID %s",
+            SE_LOG_DEBUG(NULL, "removing pending session %s because it matches deviceID %s",
                          session->getSessionID().c_str(),
                          peerDeviceID.c_str());
             // remove session and its corresponding connection
@@ -481,7 +624,7 @@ void Server::killSessionsAsync(const std::string &peerDeviceID,
     boost::shared_ptr<Session> active = m_activeSessionRef.lock();
     if (active &&
         active->getPeerDeviceID() == peerDeviceID) {
-        SE_LOG_DEBUG(NULL, NULL, "aborting active session %s because it matches deviceID %s",
+        SE_LOG_DEBUG(NULL, "aborting active session %s because it matches deviceID %s",
                      active->getSessionID().c_str(),
                      peerDeviceID.c_str());
         // hand over work to session
@@ -557,14 +700,14 @@ void Server::removeSyncSession(Session *session)
         delaySessionDestruction(m_syncSession);
         m_syncSession.reset();
     } else {
-        SE_LOG_DEBUG(NULL, NULL, "ignoring removeSyncSession() for session %s, it is not the sync session",
+        SE_LOG_DEBUG(NULL, "ignoring removeSyncSession() for session %s, it is not the sync session",
                      session->getSessionID().c_str());
     }
 }
 
 static void quitLoop(GMainLoop *loop)
 {
-    SE_LOG_DEBUG(NULL, NULL, "stopping server's event loop");
+    SE_LOG_DEBUG(NULL, "stopping server's event loop");
     g_main_loop_quit(loop);
 }
 
@@ -580,7 +723,7 @@ void Server::checkQueue()
         // But don't do it immediately: when done inside the Session.Detach()
         // call, the D-Bus response was not delivered reliably to the client
         // which caused the shutdown.
-        SE_LOG_DEBUG(NULL, NULL, "shutting down in checkQueue(), idle and shutdown was requested");
+        SE_LOG_DEBUG(NULL, "shutting down in checkQueue(), idle and shutdown was requested");
         addTimeout(boost::bind(quitLoop, m_loop), 0);
         return;
     }
@@ -592,6 +735,7 @@ void Server::checkQueue()
             // activate the session
             m_activeSession = session.get();
             m_activeSessionRef = session;
+            SE_LOG_DEBUG(NULL, "activating session %p", m_activeSession);
             session->activateSession();
             sessionChanged(session->getPath(), true);
             return;
@@ -601,7 +745,7 @@ void Server::checkQueue()
 
 void Server::sessionExpired(const boost::shared_ptr<Session> &session)
 {
-    SE_LOG_DEBUG(NULL, NULL, "session %s expired",
+    SE_LOG_DEBUG(NULL, "session %s expired",
                  session->getSessionID().c_str());
 }
 
@@ -611,7 +755,7 @@ void Server::delaySessionDestruction(const boost::shared_ptr<Session> &session)
         return;
     }
 
-    SE_LOG_DEBUG(NULL, NULL, "delaying destruction of session %s by one minute",
+    SE_LOG_DEBUG(NULL, "delaying destruction of session %s by one minute",
                  session->getSessionID().c_str());
     addTimeout(boost::bind(&Server::sessionExpired,
                            session),
@@ -690,6 +834,10 @@ void Server::passwordResponse(const InfoReq::InfoMap &response,
 bool Server::callTimeout(const boost::shared_ptr<Timeout> &timeout, const boost::function<void ()> &callback)
 {
     callback();
+    // We are executing the timeout, don't invalidate the instance
+    // until later when our caller is no longer using the instance to
+    // call us.
+    delayDeletion(timeout);
     m_timeouts.remove(timeout);
     return false;
 }
@@ -758,6 +906,14 @@ void Server::removeInfoReq(const std::string &id)
 {
     // remove InfoRequest from hash map
     m_infoReqMap.erase(id);
+}
+
+PresenceStatus &Server::getPresenceStatus()
+{
+    if (!m_presence) {
+        SE_THROW("internal error: Server::getPresenceStatus() called while server has no instance");
+    }
+    return *m_presence;
 }
 
 void Server::getDeviceList(SyncConfig::DeviceList &devices)
@@ -848,28 +1004,27 @@ void Server::updateDevice(const string &deviceId,
     }
 }
 
-void Server::messagev(Level level,
-                      const char *prefix,
-                      const char *file,
-                      int line,
-                      const char *function,
-                      const char *format,
-                      va_list args,
-                      const std::string &dbusPath,
-                      const std::string &procname)
+void Server::message2DBus(const Logger::MessageOptions &options,
+                          const char *format,
+                          va_list args,
+                          const std::string &dbusPath,
+                          const std::string &procname)
 {
-    // iterating over args in messagev() is destructive, must make a copy first
-    va_list argsCopy;
-    va_copy(argsCopy, args);
-    m_parentLogger.messagev(level, prefix, file, line, function, format, args);
-    string log = StringPrintfV(format, argsCopy);
-    va_end(argsCopy);
-
     // prefix is used to set session path
     // for general server output, the object path field is dbus server
     // the object path can't be empty for object paths prevent using empty string.
-    string strLevel = Logger::levelToStr(level);
-    logOutput(dbusPath, strLevel, log, procname);
+    m_logger->message2DBus(this, options, format, args, dbusPath, procname);
+}
+
+void Server::logOutput(const GDBusCXX::DBusObject_t &path,
+                       Logger::Level level,
+                       const std::string &explanation,
+                       const std::string &procname)
+{
+    if (level <= m_dbusLogLevel) {
+        string strLevel = Logger::levelToStr(level);
+        m_logOutputSignal(path, strLevel, explanation, procname);
+    }
 }
 
 SE_END_CXX

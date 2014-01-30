@@ -99,7 +99,15 @@ class LogRedirect : public LoggerStdout
     };
 
     /** ignore any error output containing "error" */
-    static void addIgnoreError(const std::string &error) { m_knownErrors.insert(error); }
+    static void addIgnoreError(const std::string &error);
+
+    /**
+     * Messages containing text listed in
+     * SYNCEVOLUTION_SUPPRESS_ERRORS env variable (new-line separated)
+     * or registered via addIgnoreError() are not real errors and
+     * should only be logged for developers.
+     */
+    static bool ignoreError(const std::string &text);
 
  private:
     FDs m_stdout, m_stderr;
@@ -122,16 +130,14 @@ class LogRedirect : public LoggerStdout
     bool process(FDs &fds) throw();
     static void abortHandler(int sig) throw();
 
-    /**
-     * ignore error messages containing text listed in
-     * SYNCEVOLUTION_SUPPRESS_ERRORS env variable (new-line
-     * separated)
-     */
-    bool ignoreError(const std::string &text);
-
     void init();
 
  public:
+    enum Mode {
+        STDERR_AND_STDOUT,
+        STDERR
+    };
+
     /** 
      * Redirect both stderr and stdout or just stderr,
      * using UDP so that we don't block when not reading
@@ -140,16 +146,23 @@ class LogRedirect : public LoggerStdout
      * messagev() only writes messages to the previous stdout
      * or the optional file which pass the filtering (relevant,
      * suppress known errors, ...).
+     *
+     * May only be called when there is no other active LogRedirect
+     * instance. Not thread-safe, in contrast to the actual logging
+     * method and redirect handling.
+     *
+     * Does not add or remove the logger from the logger stack.
+     * That must be done by the caller.
      */
-    LogRedirect(bool both = true, const char *filename = NULL) throw();
+    LogRedirect(Mode mode, const char *filename = NULL);
     ~LogRedirect() throw();
 
+    virtual void remove() throw();
+
     /**
-     * re-initialize redirection after a fork:
-     * - closes inherited file descriptors, except for the original output file descriptor
-     * - sets up new sockets
+     * Remove redirection (if any) after a fork and before an exec.
      */
-    void redoRedirect() throw();
+    static void removeRedirect() throw();
 
     /**
      * Meant to be used for redirecting output of a specific command
@@ -191,11 +204,7 @@ class LogRedirect : public LoggerStdout
     void flush() throw();
 
     /** format log messages via normal LogStdout and print to a valid stream owned by us */
-    virtual void messagev(Level level,
-                          const char *prefix,
-                          const char *file,
-                          int line,
-                          const char *function,
+    virtual void messagev(const MessageOptions &options,
                           const char *format,
                           va_list args);
 };

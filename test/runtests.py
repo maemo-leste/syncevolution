@@ -1,5 +1,4 @@
-#!/usr/bin/python
-
+#!/usr/bin/python -u
 
 """
 The general idea is that tests to run are defined as a list of
@@ -19,6 +18,39 @@ import shlex
 import subprocess
 import fnmatch
 import copy
+import errno
+import signal
+
+def log(format, *args):
+    now = time.time()
+    print time.asctime(time.gmtime(now)), 'UTC', '(+ %.1fs / %.1fs)' % (now - log.latest, now - log.start), format % args
+    log.latest = now
+log.start = time.time()
+log.latest = log.start
+
+# Murphy support: as a first step, lock one resource named like the
+# test before running the test.
+gobject = None
+try:
+    import gobject
+except ImportError:
+    try:
+         from gi.repository import GObject as gobject
+    except ImportError:
+         pass
+import dbus
+from dbus.mainloop.glib import DBusGMainLoop
+DBusGMainLoop(set_as_default=True)
+if 'DBUS_SESSION_BUS_ADDRESS' in os.environ:
+    bus = dbus.SessionBus()
+    loop = gobject.MainLoop()
+    murphy = dbus.Interface(bus.get_object('org.Murphy', '/org/murphy/resource'), 'org.murphy.manager')
+    log('using murphy')
+else:
+    bus = None
+    loop = None
+    murphy = None
+    log('not using murphy')
 
 try:
     import gzip
@@ -48,6 +80,11 @@ def findInPaths(name, dirs):
     return fullname
 
 def del_dir(path):
+    # Preserve XDG dirs, if we were set up like that by caller.
+    # These dirs might already contain some relevant data.
+    xdgdirs = list(os.environ.get(x, None) for x in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"))
+    if path in xdgdirs:
+        return
     if not os.access(path, os.F_OK):
         return
     for file in os.listdir(path):
@@ -58,8 +95,12 @@ def del_dir(path):
             del_dir(file_or_dir) #it's a directory recursive call to function again
         else:
             os.remove(file_or_dir) #it's a file, delete it
-    os.rmdir(path)
-
+    # We might have skipped deleting something, allow that.
+    try:
+        os.rmdir(path)
+    except OSError, ex:
+        if ex.errno != errno.ENOTEMPTY:
+            raise
 
 def copyLog(filename, dirname, htaccess, lineFilter=None):
     """Make a gzipped copy (if possible) with the original time stamps and find the most severe problem in it.
@@ -118,6 +159,71 @@ def ShutdownSubprocess(popen, timeout):
         return False
     return True
 
+class Jobserver:
+    '''Allocates the given number of job slots from the "make -j"
+    jobserver, then runs the command and finally returns the slots.
+    See http://mad-scientist.net/make/jobserver.html'''
+    def __init__(self):
+        self.havejobserver = False
+        self.allocated = 0
+
+        # MAKEFLAGS= --jobserver-fds=3,4 -j
+        flags = os.environ.get('MAKEFLAGS', '')
+        m = re.search(r'--jobserver-fds=(\d+),(\d+)', flags)
+        if m:
+            self.receiveslots = int(m.group(1))
+            self.returnslots = int(m.group(2))
+            self.blocked = {}
+            self.havejobserver = True
+            log('using jobserver')
+        else:
+            log('not using jobserver')
+
+    def active(self):
+        return self.havejobserver
+
+    def alloc(self, numjobs = 1):
+        if not self.havejobserver:
+            return
+        n = 0
+        self._block()
+        try:
+            while n < numjobs:
+                os.read(self.receiveslots, 1)
+                n += 1
+            self.allocated += n
+            n = 0
+        except:
+            os.write(self.returnslots, ' ' * n)
+            raise
+        finally:
+            self._unblock()
+
+    def free(self, numjobs = 1):
+        if not self.havejobserver:
+            return
+        try:
+            self.allocated -= numjobs
+            os.write(self.returnslots, ' ' * numjobs)
+        finally:
+            self._unblock()
+
+    def _block(self):
+        '''Block signals if not already done.'''
+        if not self.blocked:
+            for sig in [ signal.SIGINT, signal.SIGTERM ]:
+                self.blocked[sig] = signal.signal(sig, signal.SIG_IGN)
+
+    def _unblock(self):
+        '''Unblock signals if blocked and we currently own no slots.'''
+        if self.blocked and not self.allocated:
+            for sig, handler in self.blocked.items():
+                signal.signal(sig, handler)
+            self.blocked = {}
+
+jobserver = Jobserver()
+
+
 class Action:
     """Base class for all actions to be performed."""
 
@@ -134,6 +240,12 @@ class Action:
         self.summary = ""
         self.dependencies = []
         self.isserver = False;
+        # Assume that each action requires one job slot. Exceptions
+        # are nops (need no slot) and possible test runs (might need
+        # more than one, although at the moment we still approximate
+        # that with one, because most tests involving more than one
+        # process do not have those processes active in parallel).
+        self.numjobs = 1
 
     def execute(self):
         """Runs action. Throws an exeception if anything fails.
@@ -147,7 +259,7 @@ class Action:
 
     def tryexecution(self, step, logs):
         """wrapper around execute which handles exceptions, directories and stdout"""
-        print "*** running action %s" % self.name
+        log('*** running action %s', self.name)
         if logs:
             fd = -1
             oldstdout = os.dup(1)
@@ -155,19 +267,71 @@ class Action:
             oldout = sys.stdout
             olderr = sys.stderr
         cwd = os.getcwd()
+        resourceset = None
+        locked = False
+        jobs = 0
         try:
             subdirname = "%d-%s" % (step, self.name)
-            del_dir(subdirname)
             sys.stderr.flush()
             sys.stdout.flush()
             cd(subdirname)
             if logs:
-                fd = os.open("output.txt", os.O_WRONLY|os.O_CREAT|os.O_TRUNC)
+                # Append, in case that we run multiple times for the same platform.
+                # The second run will typically have fake libsynthesis/syncevolution/compile
+                # runs which must not overwrite previous results. The new operations must
+                # be added at the end of main output.txt, too.
+                fd = os.open("output.txt", os.O_WRONLY|os.O_CREAT|os.O_APPEND)
                 os.dup2(fd, 1)
                 os.dup2(fd, 2)
-                sys.stdout = os.fdopen(fd, "w")
+                sys.stdout = os.fdopen(fd, "w", 0) # unbuffered output!
                 sys.stderr = sys.stdout
-            print "=== starting %s ===" % (self.name)
+            if murphy:
+                log('=== locking resource %s ===', self.name)
+                resourcesetpath = murphy.createResourceSet()
+                resourceset = dbus.Interface(bus.get_object('org.Murphy', resourcesetpath), 'org.murphy.resourceset')
+                resourcepath = resourceset.addResource(self.name)
+                # Allow sharing of the resource. Only works if the resource
+                # was marked as "shareable" in the murphy config, otherwise
+                # we get exclusive access.
+                resource = dbus.Interface(bus.get_object('org.Murphy', resourcepath), 'org.murphy.resource')
+                resource.setProperty('shared', dbus.Boolean(True, variant_level=1))
+
+                # Track pending request separately, because status == 'pending'
+                # either means something else ('unknown'?) or is buggy/unreliable.
+                # See https://github.com/01org/murphy/issues/5
+                pending = False
+                def propertyChanged(prop, value):
+                    global pending
+                    log('property changed: %s = %s', prop, value)
+                    if prop == 'status':
+                        if value == 'acquired':
+                            # Success!
+                            loop.quit()
+                        elif value == 'lost':
+                            # Not yet?!
+                            log('Murphy request failed, waiting for resource to become available.')
+                            pending = False
+                        elif value == 'pending':
+                            pass
+                        elif value == 'available':
+                            if not pending:
+                                log('Murphy request may succeed now, try again.')
+                                resourceset.request()
+                                pending = True
+                        else:
+                            log('Unexpected status: %s', value)
+                try:
+                    match = bus.add_signal_receiver(propertyChanged, 'propertyChanged', 'org.murphy.resourceset', 'org.Murphy', resourcesetpath)
+                    resourceset.request()
+                    pending = True
+                    loop.run()
+                finally:
+                    match.remove()
+            if jobserver.active() and self.numjobs:
+                log('=== allocating %d job slots ===', self.numjobs)
+                jobserver.alloc(self.numjobs)
+                jobs = self.numjobs
+            log('=== starting %s ===', self.name)
             self.execute()
             self.status = Action.DONE
             self.summary = "okay"
@@ -175,8 +339,26 @@ class Action:
             traceback.print_exc()
             self.status = Action.FAILED
             self.summary = str(inst)
+        finally:
+            if jobs:
+                try:
+                    jobserver.free(jobs)
+                except:
+                    traceback.print_exc()
 
-        print "\n=== %s: %s ===" % (self.name, self.status)
+            try:
+                if locked:
+                    log('=== unlocking resource %s ===', self.name)
+                    resourceset.release()
+                if resourceset:
+                    log('=== deleting resource set %s ===', self.name)
+                    resourceset.delete()
+                if locked or resourceset:
+                    log('=== done with Murphy ===')
+            except Exception:
+                traceback.print_exc()
+
+        log('\n=== %s: %s ===', self.name, self.status)
         sys.stdout.flush()
         os.chdir(cwd)
         if logs:
@@ -195,7 +377,7 @@ class Context:
 
     def __init__(self, tmpdir, resultdir, uri, workdir, mailtitle, sender, recipients, mailhost, enabled, skip, nologs, setupcmd, make, sanitychecks, lastresultdir, datadir):
         # preserve normal stdout because stdout/stderr will be redirected
-        self.out = os.fdopen(os.dup(1), "w")
+        self.out = os.fdopen(os.dup(1), "w", 0) # unbuffered
         self.todo = []
         self.actions = {}
         self.tmpdir = abspath(tmpdir)
@@ -221,7 +403,7 @@ class Context:
         generated source of the current test, then the bootstrapping code"""
         return findInPaths(name, (os.path.join(sync.basedir, "test"), self.datadir))
 
-    def runCommand(self, cmdstr, dumpCommands=False):
+    def runCommand(self, cmdstr, dumpCommands=False, runAsIs=False):
         """Log and run the given command, throwing an exception if it fails."""
         cmd = shlex.split(cmdstr)
         if "valgrindcheck.sh" in cmdstr:
@@ -247,12 +429,25 @@ class Context:
             # use env.
             cmd.insert(0, 'env')
 
-        cmdstr = " ".join(map(lambda x: (' ' in x or x == '') and ("'" in x and '"%s"' or "'%s'") % x or x, cmd))
+        if not runAsIs:
+            cmdstr = " ".join(map(lambda x: (' ' in x or '(' in x or '\\' in x or x == '') and ("'" in x and '"%s"' or "'%s'") % x or x, cmd))
         if dumpCommands:
             cmdstr = "set -x; " + cmdstr
-        print "*** ( cd %s; export %s; %s )" % (os.getcwd(),
-                                                " ".join(map(lambda x: "'%s=%s'" % (x, os.getenv(x, "")), [ "LD_LIBRARY_PATH" ])),
-                                                cmdstr)
+
+        cwd = os.getcwd()
+        # Most commands involving schroot need to run with paths as seen inside the chroot.
+        # Detect that in a hackish way by checking for "schroot" and then adapting
+        # paths with search/replace. Exception is resultchecker.py, which runs outside
+        # the chroot, but gets passed "schroot" as parameter.
+        if not runAsIs and 'schroot ' in cmdstr and options.schrootdir and not 'resultchecker.py' in cmdstr:
+            if cwd.startswith(options.schrootdir):
+                relcwd = cwd[len(options.schrootdir):]
+                cmdstr = cmdstr.replace('schroot ', 'schroot -d %s ' % relcwd)
+            cmdstr = cmdstr.replace(options.schrootdir + '/', '/')
+        log('*** ( cd %s; export %s; %s )',
+            cwd,
+            " ".join(map(lambda x: "'%s=%s'" % (x, os.getenv(x, "")), [ "LD_LIBRARY_PATH", "PATH" ])),
+            cmdstr)
         sys.stdout.flush()
         result = os.system(cmdstr)
         if result != 0:
@@ -274,7 +469,8 @@ class Context:
 
     def execute(self):
         cd(self.resultdir)
-        s = open("output.txt", "w+")
+        # Append instead of overwriting, as for other output.txt files, too.
+        s = open("output.txt", "a+")
         status = Action.DONE
 
         step = 0
@@ -344,11 +540,13 @@ class Context:
                                         os.path.join(self.resultdir, file))
 
         # run testresult checker
-        #calculate the src dir where client-test can be located
-        srcdir = os.path.join(compile.builddir, "src")
+        testdir = compile.testdir
         backenddir = os.path.join(compile.installdir, "usr/lib/syncevolution/backends")
         # resultchecker doesn't need valgrind, remove it
         shell = re.sub(r'\S*valgrind\S*', '', options.shell)
+        # When using schroot, run it in /tmp, because the host's directory might
+        # not exist in the chroot.
+        shell = shell.replace('schroot ', 'schroot -d /tmp ', 1)
         prefix = re.sub(r'\S*valgrind\S*', '', options.testprefix)
         uri = self.uri or ("file:///" + self.resultdir)
         resultchecker = self.findTestFile("resultchecker.py")
@@ -357,7 +555,10 @@ class Context:
         commands = []
 
         # produce nightly.xml from plain text log files
-        commands.append(resultchecker + " " +self.resultdir+" "+"'"+",".join(run_servers)+"'"+" "+uri +" "+srcdir + " '" + shell + " " + testprefix +" '"+" '" +backenddir +"'")
+        if options.schrootdir:
+            backenddir = backenddir.replace(options.schrootdir + '/', '/')
+            testdir = testdir.replace(options.schrootdir + '/', '/')
+        commands.append(resultchecker + " " +self.resultdir+" "+"\""+",".join(run_servers)+"\""+" "+uri +" "+testdir + " \"" + shell + " " + testprefix +" \""+" \"" +backenddir + "\"")
         previousxml = os.path.join(self.lastresultdir, "nightly.xml")
 
         if os.path.exists(previousxml):
@@ -394,10 +595,10 @@ class Context:
 
             failed = server.sendmail(self.sender, self.recipients, body.getvalue())
             if failed:
-                print "could not send to: %s" % (failed)
+                log('could not send to: %s', failed)
                 sys.exit(1)
         else:
-            print "\n".join(self.summary), "\n"
+            log('%s\n', '\n'.join(self.summary))
 
         if status in Action.COMPLETED:
             sys.exit(0)
@@ -491,7 +692,8 @@ class GitCheckout(GitCheckoutBase, Action):
                            "((git tag -l | grep -w -q %(rev)s) && git checkout %(rev)s ||"
                            "((git branch -l | grep -w -q %(rev)s) && git checkout %(rev)s || git checkout -b %(rev)s origin/%(rev)s) && git merge origin/%(rev)s)" %
                            {"dir": self.basedir,
-                            "rev": self.revision})
+                            "rev": self.revision},
+                           runAsIs=True)
         os.chdir(self.basedir)
         if os.access("autogen.sh", os.F_OK):
             context.runCommand("%s ./autogen.sh" % (self.runner))
@@ -557,7 +759,7 @@ class GitCopy(GitCheckoutBase, Action):
                 '( git status | grep -q "working directory clean" && echo "working directory clean" || ( echo "working directory dirty" && ( echo From: nightly testing ; echo Subject: [PATCH 1/1] uncommitted changes ; echo ; git status; echo; git diff HEAD ) >../%(name)s-1000-unstaged.patch ) ) >>%(patchlog)s'
                 ]) % self
 
-        context.runCommand(cmd, dumpCommands=True)
+        context.runCommand(cmd, dumpCommands=True, runAsIs=True)
         if os.access("autogen.sh", os.F_OK):
             context.runCommand("%s ./autogen.sh" % (self.runner))
 
@@ -573,11 +775,17 @@ class AutotoolsBuild(Action):
         self.dependencies = dependencies
         self.installdir = os.path.join(context.tmpdir, "install")
         self.builddir = os.path.join(context.tmpdir, "build")
+        self.testdir = os.path.join(self.builddir, "src")
 
     def execute(self):
+        log('removing builddir: %s', self.builddir)
         del_dir(self.builddir)
         cd(self.builddir)
         context.runCommand("%s %s/configure %s" % (self.runner, self.src, self.configargs))
+        # We have permission to run one job, obtained for us by
+        # tryexecution(). Pass that right on to make, which will then
+        # run in parallel mode thanks to env variables and ask for
+        # more jobs at runtime.
         context.runCommand("%s %s install DESTDIR=%s" % (self.runner, context.make, self.installdir))
 
 
@@ -588,7 +796,7 @@ class SyncEvolutionTest(Action):
         Action.__init__(self, name)
         self.isserver = True
         self.build = build
-        self.srcdir = os.path.join(build.builddir, "src")
+        self.testdir = build.testdir
         self.serverlogs = serverlogs
         self.runner = runner
         self.tests = tests
@@ -609,7 +817,7 @@ class SyncEvolutionTest(Action):
         os.chdir(self.build.builddir)
         # clear previous test results
         context.runCommand("%s %s testclean" % (self.runner, context.make))
-        os.chdir(self.srcdir)
+        os.chdir(self.testdir)
         try:
             # use installed backends if available
             backenddir = os.path.join(self.build.installdir, "usr/lib/syncevolution/backends")
@@ -631,39 +839,29 @@ class SyncEvolutionTest(Action):
                 # fallback works for bluetooth_products.ini but will fail for other files
                 datadir = os.path.join(sync.basedir, "src/dbus/server")
 
-            installenv = \
-                "SYNCEVOLUTION_DATA_DIR=%s "\
-                "SYNCEVOLUTION_TEMPLATE_DIR=%s " \
-                "SYNCEVOLUTION_XML_CONFIG_DIR=%s " \
-                "SYNCEVOLUTION_BACKEND_DIR=%s " \
-                % ( datadir, templatedir, confdir, backenddir )
-
-            # Translations have no fallback, they must be installed. Leave unset
-            # if not found.
-            localedir = os.path.join(self.build.installdir, "usr/share/locale")
-            print localedir
-            if os.access(localedir, os.F_OK):
-                installenv = installenv + \
-                    ("SYNCEVOLUTION_LOCALE_DIR=%s " % localedir)
+            if self.build.installed:
+                # No need for special env variables.
+                installenv = ""
             else:
-                print 'locale dir not found'
+                installenv = \
+                    "SYNCEVOLUTION_DATA_DIR=%s "\
+                    "SYNCEVOLUTION_TEMPLATE_DIR=%s " \
+                    "SYNCEVOLUTION_XML_CONFIG_DIR=%s " \
+                    "SYNCEVOLUTION_BACKEND_DIR=%s " \
+                    % ( datadir, templatedir, confdir, backenddir )
+
+                # Translations have no fallback, they must be installed. Leave unset
+                # if not found.
+                localedir = os.path.join(self.build.installdir, "usr/share/locale")
+                if os.access(localedir, os.F_OK):
+                    installenv = installenv + \
+                        ("SYNCEVOLUTION_LOCALE_DIR=%s " % localedir)
 
             cmd = "%s %s %s %s %s ./syncevolution" % (self.testenv, installenv, self.runner, context.setupcmd, self.name)
             context.runCommand(cmd)
 
             # proxy must be set in test config! Necessary because not all tests work with the env proxy (local CalDAV, for example).
-            basecmd = "http_proxy= " \
-                      "CLIENT_TEST_SERVER=%(server)s " \
-                      "CLIENT_TEST_SOURCES=%(sources)s " \
-                      "SYNC_EVOLUTION_EVO_CALENDAR_DELAY=1 " \
-                      "CLIENT_TEST_ALARM=%(alarm)d " \
-                      "%(env)s %(installenv)s " \
-                      "CLIENT_TEST_LOG=%(log)s " \
-                      "CLIENT_TEST_EVOLUTION_PREFIX=%(evoprefix)s " \
-                      "%(runner)s " \
-                      "env LD_LIBRARY_PATH=build-synthesis/src/.libs:.libs:syncevo/.libs:gdbus/.libs:gdbusxx/.libs:$LD_LIBRARY_PATH PATH=backends/webdav:.:$PATH %(testprefix)s " \
-                      "%(testbinary)s" % \
-                      { "server": self.serverName,
+            options = { "server": self.serverName,
                         "sources": ",".join(self.sources),
                         "alarm": self.alarmSeconds,
                         "env": self.testenv,
@@ -673,6 +871,28 @@ class SyncEvolutionTest(Action):
                         "runner": self.runner,
                         "testbinary": self.testBinary,
                         "testprefix": self.testPrefix }
+            basecmd = "http_proxy= " \
+                      "CLIENT_TEST_SERVER=%(server)s " \
+                      "CLIENT_TEST_SOURCES=%(sources)s " \
+                      "SYNC_EVOLUTION_EVO_CALENDAR_DELAY=1 " \
+                      "CLIENT_TEST_ALARM=%(alarm)d " \
+                      "%(env)s %(installenv)s " \
+                      "CLIENT_TEST_LOG=%(log)s " \
+                      "CLIENT_TEST_EVOLUTION_PREFIX=%(evoprefix)s " \
+                      "%(runner)s " \
+                      % options
+            additional = []
+            for var, value in (('LD_LIBRARY_PATH', 'build-synthesis/src/.libs:.libs:syncevo/.libs:gdbus/.libs:gdbusxx/.libs:'),
+                               ('PATH', 'backends/webdav:.:\\$PATH:')):
+                if ' ' + var + '=' in basecmd:
+                    # Prepend to existing assignment, instead of overwriting it
+                    # as we would when appending another "env" invocation.
+                    basecmd = basecmd.replace(' ' + var + '=', ' ' + var + '=' + value)
+                else:
+                    additional.append(var + '=' + value)
+            if additional:
+                basecmd = basecmd + 'env ' + ' '.join(additional)
+            basecmd = basecmd +  (" %(testprefix)s %(testbinary)s" % options)
             enabled = context.enabled.get(self.name)
             if not enabled:
                 enabled = self.tests
@@ -694,7 +914,7 @@ class SyncEvolutionTest(Action):
             tocopy = re.compile(r'.*\.log|.*\.client.[AB]|.*\.(cpp|h|c)\.html|.*\.log\.html')
             toconvert = re.compile(r'Client_.*\.log')
             htaccess = file(os.path.join(resdir, ".htaccess"), "a")
-            for f in os.listdir(self.srcdir):
+            for f in os.listdir(self.testdir):
                 if tocopy.match(f):
                     error = copyLog(f, resdir, htaccess, self.lineFilter)
                     if toconvert.match(f):
@@ -750,12 +970,18 @@ parser.add_option("", "--resulturi",
 parser.add_option("", "--shell",
                   type="string", dest="shell", default="",
                   help="a prefix which is put in front of a command to execute it (can be used for e.g. run_garnome)")
+parser.add_option("", "--schrootdir",
+                  type="string", dest="schrootdir", default="",
+                  help="the path to the root of the chroot when using schroot in --shell; --resultdir already includes the path")
 parser.add_option("", "--test-prefix",
                   type="string", dest="testprefix", default="",
                   help="a prefix which is put in front of client-test (e.g. valgrind)")
 parser.add_option("", "--sourcedir",
                   type="string", dest="sourcedir", default=None,
                   help="directory which contains 'syncevolution' and 'libsynthesis' code repositories; if given, those repositories will be used as starting point for testing instead of checking out directly")
+parser.add_option("", "--cppcheck",
+                  action="store_true", dest="cppcheck", default=False,
+                  help="enable running of cppcheck on all source checkouts; only active with --no-sourcedir-copy")
 parser.add_option("", "--no-sourcedir-copy",
                   action="store_true", dest="nosourcedircopy", default=False,
                   help="instead of copying the content of --sourcedir and integrating patches automatically, use the content directly")
@@ -815,7 +1041,7 @@ parser.add_option("", "--setup-command",
                   type="string", dest="setupcmd",
                   help="invoked with <test name> <args to start syncevolution>, should setup local account for the test")
 parser.add_option("", "--make-command",
-                  type="string", dest="makecmd", default="make",
+                  type="string", dest="makecmd", default="nice make",
                   help="command to use instead of plain make, for example 'make -j'")
 parser.add_option("", "--sanity-checks",
                   action="store_true", dest="sanitychecks", default=False,
@@ -823,7 +1049,7 @@ parser.add_option("", "--sanity-checks",
 
 (options, args) = parser.parse_args()
 if options.recipients and not options.sender:
-    print "sending email also requires sender argument"
+    log('sending email also requires sender argument')
     sys.exit(1)
 
 # accept --enable foo[=args]
@@ -924,15 +1150,95 @@ class NopAction(Action):
         Action.__init__(self, name)
         self.status = Action.DONE
         self.execute = self.nop
+        self.numjobs = 0
 
 class NopSource(GitCheckoutBase, NopAction):
     def __init__(self, name, sourcedir):
         NopAction.__init__(self, name)
         GitCheckoutBase.__init__(self, name, sourcedir)
 
+class CppcheckSource(GitCheckoutBase, Action):
+    def __init__(self, name, sourcedir, cppcheckflags):
+        Action.__init__(self, name)
+        GitCheckoutBase.__init__(self, name, sourcedir)
+        self.cppcheckflags = cppcheckflags
+        # During normal, parallel testing we want to parallelize
+        # by running other things besides cppcheck, because that
+        # makes better use of the CPUs. Allocating a large number
+        # of jobs for cppcheck blocks using them for a certain
+        # period until enough CPUs are free. This can be overriden
+        # with an env variable.
+        self.numjobs = int(os.environ.get("RUNTESTS_CPPCHECK_JOBS", "4"))
+        self.sources = self.basedir
+
+    def execute(self):
+        context.runCommand("%s %s --force -j%d %s %s" % (options.shell,
+                                                         os.path.join(sync.basedir,
+                                                                      "test",
+                                                                      "cppcheck-wrapper.sh"),
+                                                         self.numjobs,
+                                                         self.cppcheckflags,
+                                                         self.sources))
+
 if options.sourcedir:
     if options.nosourcedircopy:
-        libsynthesis = NopSource("libsynthesis", options.sourcedir)
+        if options.cppcheck:
+            # Checking libsynthesis must avoid define combinations
+            # which are invalid.  We cannot exclude invalid define
+            # combinations specifically, so we have to limit the set
+            # of combinations by setting or unsetting single defines.
+            # We focus on the Linux port here.
+            libsynthesis = CppcheckSource("libsynthesis", options.sourcedir,
+                                          " ".join([ "-i %s/%s" % (options.sourcedir, x) for x in
+                                                     [
+                                                       # No files need to be excluded at the moment.
+                                                       ]
+                                                     ] +
+                                                   [ "-USYSYNC_TOOL",
+                                                     "-U__EPOC_OS__",
+                                                     "-U__MC68K__",
+                                                     "-U__MWERKS__",
+                                                     "-U__PALM_OS__",
+                                                     "-D__GNUC__",
+                                                     "-D__cplusplus",
+                                                     "-UEXPIRES_AFTER_DAYS",
+                                                     "-USYSER_REGISTRATION",
+                                                     "-UEXPIRES_AFTER_DATE",
+                                                     "-UODBC_SUPPORT", # obsolete
+                                                     "-DSQLITE_SUPPORT", # enabled on Linux
+                                                     "-DLINUX",
+                                                     "-DNOWSM",
+                                                     "-DENGINEINTERFACE_SUPPORT",
+                                                     "-UDIRECT_APPBASE_GLOBALACCESS",
+                                                     "-DUSE_SML_EVALUATION",
+                                                     "-DDESKTOP_CLIENT",
+                                                     "-DCOPY_SEND",
+                                                     "-DCOPY_RECEIVE",
+                                                     "-DSYSYNC_CLIENT",
+                                                     "-DSYSYNC_SERVER",
+                                                     "-DENGINE_LIBRARY",
+                                                     "-DCHANGEDETECTION_AVAILABLE",
+                                                     "-UHARDCODED_TYPE_SUPPORT",
+                                                     "-UHARD_CODED_SERVER_URI",
+                                                     "-UAUTOSYNC_SUPPORT",
+                                                     "-UBINFILE_ALWAYS_ACTIVE",
+                                                     "-DOBJECT_FILTERING",
+                                                     "-DCLIENTFEATURES_2008",
+                                                     "-DENHANCED_PROFILES_2004", # binfileimplds.h:395: error: #error "non-enhanced profiles and profile version <6 no longer supported!"
+                                                     "-UMEMORY_PROFILING", # linux/profiling.cpp:26: error: #error "No memory  profiling for linux yet"
+                                                     "-UTIME_PROFILING", # linux/profiling.cpp:19: error: #error "No time profiling for linux yet"
+                                                     "-UNUMERIC_LOCALIDS",
+
+                                                     # http://sourceforge.net/apps/trac/cppcheck/ticket/5316:
+                                                     # Happens with cppcheck 1.61: Analysis failed. If the code is valid then please report this failure.
+                                                     "--suppress=cppcheckError:*/localengineds.cpp",
+                                                     ]))
+            # Be more specific about which sources we check. We are not interested in
+            # pcre and expat, for example.
+            libsynthesis.sources = " ".join("%s/src/%s" % (libsynthesis.sources, x) for x in
+                                            "sysync DB_interfaces sysync_SDK/Sources Transport_interfaces/engine platform_adapters".split())
+        else:
+            libsynthesis = NopSource("libsynthesis", options.sourcedir)
     else:
         libsynthesis = GitCopy("libsynthesis",
                                options.workdir,
@@ -945,7 +1251,16 @@ context.add(libsynthesis)
 
 if options.sourcedir:
     if options.nosourcedircopy:
-        activesyncd = NopSource("activesyncd", options.sourcedir)
+        if options.cppcheck:
+            activesyncd = CppcheckSource("activesyncd", options.sourcedir,
+                                         # Several (all?) of the GObject priv pointer accesses
+                                         # trigger a 'Possible null pointer dereference: priv'
+                                         # error. We could add inline suppressions, but that's
+                                         # a bit intrusive, so let's be more lenient for activesyncd
+                                         # and ignore the error altogether.
+                                         "--suppress=nullPointer")
+        else:
+            activesyncd = NopSource("activesyncd", options.sourcedir)
     else:
         activesyncd = GitCopy("activesyncd",
                               options.workdir,
@@ -958,7 +1273,11 @@ context.add(activesyncd)
 
 if options.sourcedir:
     if options.nosourcedircopy:
-        sync = NopSource("syncevolution", options.sourcedir)
+        if options.cppcheck:
+            sync = CppcheckSource("syncevolution", options.sourcedir,
+                                  "--enable=warning,performance,portability --inline-suppr")
+        else:
+            sync = NopSource("syncevolution", options.sourcedir)
     else:
         sync = GitCopy("syncevolution",
                        options.workdir,
@@ -974,18 +1293,63 @@ if options.synthesistag:
 if options.activesyncdtag:
     source.append("--with-activesyncd-src=%s" % activesyncd.basedir)
 
+class InstallPackage(Action):
+    def __init__(self, name, package, runner):
+        """Runs configure from the src directory with the given arguments.
+        runner is a prefix for the configure command and can be used to setup the
+        environment."""
+        Action.__init__(self, name)
+        self.package = package
+        self.runner = runner
+
+    def execute(self):
+        # Assume .deb file(s) here.
+        if self.package == '':
+            raise Exception('No prebuilt packages available. Compilation failed?')
+        context.runCommand("%s env PATH=/sbin:/usr/sbin:$PATH fakeroot dpkg -i %s" % (self.runner, self.package))
+
 # determine where binaries come from:
 # either compile anew or prebuilt
-if options.prebuilt:
-    compile = NopAction("compile")
-    compile.builddir = options.prebuilt
-    compile.installdir = os.path.join(options.prebuilt, "../install")
+if options.prebuilt != None:
+    if os.path.isdir(options.prebuilt):
+        # Use build directory. Relies on bind mounting in chroots such
+        # that all platforms see the same file system (paths and
+        # content).
+        compile = NopAction("compile")
+        # For running tests.
+        compile.testdir = os.path.join(options.prebuilt, "src")
+        # For "make testclean".
+        compile.builddir = options.prebuilt
+        # For runtime paths.
+        compile.installdir = os.path.join(options.prebuilt, "../install")
+        compile.installed = False
+    else:
+        # Use dist package(s). Copy them first into our own work directory,
+        # in case that runtest.py has access to it outside of a chroot but not
+        # the dpkg inside it.
+        pkgs = []
+        for pkg in options.prebuilt.split():
+            shutil.copy(pkg, context.workdir)
+            pkgs.append(os.path.join(context.workdir, os.path.basename(pkg)))
+        compile = InstallPackage("compile", ' '.join(pkgs), options.shell)
+        compile.testdir = os.path.join(options.schrootdir, "usr", "lib", "syncevolution", "test")
+        compile.builddir = compile.testdir
+        compile.installdir = options.schrootdir
+        compile.installed = True
 else:
-    compile = SyncEvolutionBuild("compile",
-                                 sync.basedir,
-                                 "%s %s" % (options.configure, " ".join(source)),
-                                 options.shell,
-                                 [ libsynthesis.name, sync.name ])
+    if enabled.get("compile", None) == "no-tests":
+        # Regular build.
+        build = AutotoolsBuild
+    else:
+        # Also build client-test.
+        build = SyncEvolutionBuild
+    compile = build("compile",
+                    sync.basedir,
+                    "%s %s" % (options.configure, " ".join(source)),
+                    options.shell,
+                    [ libsynthesis.name, sync.name ])
+    compile.installed = False
+
 context.add(compile)
 
 class SyncEvolutionCross(AutotoolsBuild):
@@ -1004,7 +1368,8 @@ class SyncEvolutionCross(AutotoolsBuild):
                                 ( oedir, host, oedir ),
                                 dependencies)
         self.builddir = os.path.join(context.tmpdir, host)
-        
+        self.testdir = os.path.join(self.builddir, "src")
+
     def execute(self):
         AutotoolsBuild.execute(self)
 
@@ -1032,9 +1397,6 @@ class SyncEvolutionDist(AutotoolsBuild):
 			break
         if self.binsuffix:
             context.runCommand("%s %s BINSUFFIX=%s distbin" % (self.runner, context.make, self.binsuffix))
-        context.runCommand("%s %s distcheck" % (self.runner, context.make))
-        context.runCommand("%s %s DISTCHECK_CONFIGURE_FLAGS=--enable-gui distcheck" % (self.runner, context.make))
-        context.runCommand("%s %s 'DISTCHECK_CONFIGURE_FLAGS=--disable-ecal --disable-ebook' distcheck" % (self.runner, context.make))
 
 dist = SyncEvolutionDist("dist",
                          options.binsuffix,
@@ -1042,6 +1404,25 @@ dist = SyncEvolutionDist("dist",
                          options.shell,
                          [ compile.name ])
 context.add(dist)
+
+class SyncEvolutionDistcheck(AutotoolsBuild):
+    def __init__(self, name, binrunner, dependencies):
+        """Does 'distcheck' in a directory where SyncEvolution was configured and compiled before."""
+        AutotoolsBuild.__init__(self, name, "", "", binrunner, dependencies)
+
+    def execute(self):
+        cd(self.builddir)
+        if enabled["distcheck"] == None:
+            context.runCommand("%s %s distcheck" % (self.runner, context.make))
+            context.runCommand("%s %s DISTCHECK_CONFIGURE_FLAGS=--enable-gui distcheck" % (self.runner, context.make))
+            context.runCommand("%s %s 'DISTCHECK_CONFIGURE_FLAGS=--disable-ecal --disable-ebook' distcheck" % (self.runner, context.make))
+        else:
+            context.runCommand("%s %s 'DISTCHECK_CONFIGURE_FLAGS=%s' distcheck" % (self.runner, context.make, enabled["dist"]))
+
+distcheck = SyncEvolutionDistcheck("distcheck",
+                                   options.shell,
+                                   [ compile.name ])
+context.add(distcheck)
 
 evolutiontest = SyncEvolutionTest("evolution", compile,
                                   "", options.shell,
@@ -1082,6 +1463,20 @@ dbustest = SyncEvolutionTest("dbus", compile,
                                                      "test",
                                                      "test-dbus.py -v"))
 context.add(dbustest)
+pimtest = SyncEvolutionTest("pim", compile,
+                            "", shell,
+                            "",
+                            [],
+                            # ... but syncevo-dbus-server started by test-dbus.py should use valgrind
+                            testenv="TEST_DBUS_PREFIX='%s'" % options.testprefix,
+                            testPrefix=testprefix,
+                            testBinary=os.path.join(sync.basedir,
+                                                    "src",
+                                                    "dbus",
+                                                    "server",
+                                                    "pim",
+                                                    "testpim.py -v"))
+context.add(pimtest)
 
 test = SyncEvolutionTest("googlecalendar", compile,
                          "", options.shell,
@@ -1090,7 +1485,7 @@ test = SyncEvolutionTest("googlecalendar", compile,
                          "CLIENT_TEST_WEBDAV='google caldav testcases=testcases/google_event.ics' "
                          "CLIENT_TEST_NUM_ITEMS=10 " # don't stress server
                          "CLIENT_TEST_SIMPLE_UID=1 " # server gets confused by UID with special characters
-                         "CLIENT_TEST_UNIQUE_UID=1 " # server keeps backups and restores old data unless UID is unieque
+                         "CLIENT_TEST_UNIQUE_UID=2 " # server keeps backups and complains with 409 about not increasing SEQUENCE number even after deleting old data
                          "CLIENT_TEST_MODE=server " # for Client::Sync
                          "CLIENT_TEST_FAILURES="
                          # http://code.google.com/p/google-caldav-issues/issues/detail?id=61 "cannot remove detached recurrence"
@@ -1098,6 +1493,29 @@ test = SyncEvolutionTest("googlecalendar", compile,
                          "Client::Source::google_caldav::LinkedItemsNoTZ::testLinkedItemsRemoveNormal,"
                          "Client::Source::google_caldav::LinkedItemsWithVALARM::testLinkedItemsRemoveNormal,"
                          "Client::Source::google_caldav::LinkedItemsAllDayGoogle::testLinkedItemsRemoveNormal,"
+                         ,
+                         testPrefix=options.testprefix)
+context.add(test)
+
+test = SyncEvolutionTest("googlecontacts", compile,
+                         "", options.shell,
+                         "Client::Sync::eds_contact::testItems Client::Source::google_carddav",
+                         [ "google_carddav", "eds_contact" ],
+                         "CLIENT_TEST_WEBDAV='google carddav testcases=testcases/eds_contact.vcf' "
+                         "CLIENT_TEST_NUM_ITEMS=10 " # don't stress server
+                         "CLIENT_TEST_MODE=server " # for Client::Sync
+                         "CLIENT_TEST_FAILURES="
+                         ,
+                         testPrefix=options.testprefix)
+context.add(test)
+
+test = SyncEvolutionTest("owndrive", compile,
+                         "", options.shell,
+                         "Client::Sync::eds_contact::testItems Client::Sync::eds_event::testItems Client::Source::owndrive_caldav Client::Source::owndrive_carddav",
+                         [ "owndrive_caldav", "owndrive_carddav", "eds_event", "eds_contact" ],
+                         "CLIENT_TEST_WEBDAV='owndrive caldav carddav' "
+                         "CLIENT_TEST_NUM_ITEMS=10 " # don't stress server
+                         "CLIENT_TEST_MODE=server " # for Client::Sync
                          ,
                          testPrefix=options.testprefix)
 context.add(test)
@@ -1153,7 +1571,8 @@ test = SyncEvolutionTest("apple", compile,
                          "Client::Sync::eds_event Client::Sync::eds_task Client::Sync::eds_contact Client::Source::apple_caldav Client::Source::apple_caldavtodo Client::Source::apple_carddav",
                          [ "apple_caldav", "apple_caldavtodo", "apple_carddav", "eds_event", "eds_task", "eds_contact" ],
                          "CLIENT_TEST_WEBDAV='apple caldav caldavtodo carddav' "
-                         "CLIENT_TEST_NUM_ITEMS=250 " # test is local, so we can afford a higher number
+                         "CLIENT_TEST_NUM_ITEMS=100 " # test is local, so we can afford a higher number;
+                         # used to be 250, but with valgrind that led to runtimes of over 40 minutes in testManyItems (too long!)
                          "CLIENT_TEST_MODE=server " # for Client::Sync
                          ,
                          testPrefix=options.testprefix)
@@ -1174,6 +1593,14 @@ class ActiveSyncTest(SyncEvolutionTest):
             tests.append("Client::Source::eas_event")
         if "eas_contact" in sources:
             tests.append("Client::Source::eas_contact")
+
+        # Find activesyncd. It doesn't exist anywhere yet, but will be
+        # created during compile. We have to predict the location here.
+        if compile.installed:
+            self.activesyncd = os.path.join(compile.installdir, "usr", "libexec", "activesyncd")
+        else:
+            self.activesyncd =  os.path.join(compile.builddir, "src", "backends", "activesync", "activesyncd", "install", "libexec", "activesyncd")
+
         SyncEvolutionTest.__init__(self, name,
                                    compile,
                                    "", options.shell,
@@ -1213,7 +1640,7 @@ class ActiveSyncTest(SyncEvolutionTest):
                                    testPrefix=" ".join(("env EAS_DEBUG_FILE=activesyncd.log",
                                                         os.path.join(sync.basedir, "test", "wrappercheck.sh"),
                                                         options.testprefix,
-                                                        os.path.join(compile.builddir, "src", "backends", "activesync", "activesyncd", "install", "libexec", "activesyncd"),
+                                                        self.activesyncd,
                                                         "--",
                                                         options.testprefix)))
 
@@ -1222,7 +1649,7 @@ class ActiveSyncTest(SyncEvolutionTest):
         args = []
         if options.testprefix:
             args.append(options.testprefix)
-        args.append(os.path.join(compile.builddir, "src", "backends", "activesync", "activesyncd", "install", "libexec", "activesyncd"))
+        args.append(self.activesyncd)
         env = copy.deepcopy(os.environ)
         env['EAS_SOUP_LOGGER'] = '1'
         env['EAS_DEBUG'] = '5'
@@ -1273,7 +1700,7 @@ syncevoPrefix=" ".join([os.path.join(sync.basedir, "test", "wrappercheck.sh")] +
                          "--daemon-log", "syncevohttp.log",
                          os.path.join(compile.installdir, "usr", "bin", "syncevo-http-server"),
                          "--quiet",
-                         "http://127.0.0.1:9999/syncevolution",
+                         "http://127.0.0.1:<httpport>/syncevolution",
                          "--",
                          options.testprefix])
 
@@ -1284,7 +1711,7 @@ test = SyncEvolutionTest("edsfile",
                          "", options.shell,
                          "Client::Sync::eds_event Client::Sync::eds_contact Client::Sync::eds_event_eds_contact",
                          [ "eds_event", "eds_contact" ],
-                         "CLIENT_TEST_NUM_ITEMS=10 "
+                         "CLIENT_TEST_NUM_ITEMS=100 "
                          "CLIENT_TEST_LOG=syncevohttp.log "
                          # Slow, and running many syncs still fails when using
                          # valgrind. Tested separately below in "edsxfile".
@@ -1300,7 +1727,30 @@ test = SyncEvolutionTest("edsfile",
                          "CLIENT_TEST_ADD_BOTH_SIDES_SERVER_IS_DUMB=1 "
                          "CLIENT_TEST_SKIP="
                          ,
-                         testPrefix=syncevoPrefix)
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9900'))
+context.add(test)
+
+# The test uses EDS on the client and server server side.
+test = SyncEvolutionTest("edseds",
+                         compile,
+                         "", options.shell,
+                         "Client::Sync::eds_event Client::Sync::eds_contact Client::Sync::eds_event_eds_contact",
+                         [ "eds_event", "eds_contact" ],
+                         "CLIENT_TEST_NUM_ITEMS=100 "
+                         "CLIENT_TEST_LOG=syncevohttp.log "
+                         # Slow, and running many syncs still fails when using
+                         # valgrind. Tested separately below in "edsxfile".
+                         # "CLIENT_TEST_RETRY=t "
+                         # "CLIENT_TEST_RESEND=t "
+                         # "CLIENT_TEST_SUSPEND=t "
+                         # server supports refresh-from-client, use it for
+                         # more efficient test setup
+                         "CLIENT_TEST_DELETE_REFRESH=1 "
+                         # server supports multiple cycles inside the same session
+                         "CLIENT_TEST_PEER_CAN_RESTART=1 "
+                         "CLIENT_TEST_SKIP="
+                         ,
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9901'))
 context.add(test)
 
 # The test uses EDS on the clients and a server config with file
@@ -1310,7 +1760,7 @@ test = SyncEvolutionTest("edsxfile",
                          "", options.shell,
                          "Client::Sync::eds_contact::Retry Client::Sync::eds_contact::Resend Client::Sync::eds_contact::Suspend",
                          [ "eds_contact" ],
-                         "CLIENT_TEST_NUM_ITEMS=10 "
+                         "CLIENT_TEST_NUM_ITEMS=100 "
                          "CLIENT_TEST_LOG=syncevohttp.log "
                          "CLIENT_TEST_RETRY=t "
                          "CLIENT_TEST_RESEND=t "
@@ -1324,7 +1774,7 @@ test = SyncEvolutionTest("edsxfile",
                          "CLIENT_TEST_ADD_BOTH_SIDES_SERVER_IS_DUMB=1 "
                          "CLIENT_TEST_SKIP="
                          ,
-                         testPrefix=syncevoPrefix)
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9902'))
 # a lot of syncs per test
 test.alarmSeconds = 6000
 context.add(test)
@@ -1353,7 +1803,7 @@ test = SyncEvolutionTest("davfile",
                          "CLIENT_TEST_ADD_BOTH_SIDES_SERVER_IS_DUMB=1 "
                          "CLIENT_TEST_SKIP="
                          ,
-                         testPrefix=syncevoPrefix)
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9903'))
 context.add(test)
 
 # EDS on client side, DAV on server.
@@ -1376,7 +1826,7 @@ test = SyncEvolutionTest("edsdav",
                          "CLIENT_TEST_PEER_CAN_RESTART=1 "
                          "CLIENT_TEST_SKIP="
                          ,
-                         testPrefix=syncevoPrefix)
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9904'))
 context.add(test)
 
 scheduleworldtest = SyncEvolutionTest("scheduleworld", compile,
@@ -1523,6 +1973,8 @@ class FunambolTest(SyncEvolutionTest):
                                    "Client::Sync::eds_event::testAddBothSidesRefresh,"
                                    "Client::Sync::eds_task::testAddBothSides,"
                                    "Client::Sync::eds_task::testAddBothSidesRefresh,"
+                                   # Avoid all tests which do a slow sync, to avoid 417 throttling.
+                                   "Client::Sync::.*::(testDeleteAllRefresh|testSlowRestart|testTwinning|testSlowSync|testManyItems|testManyDeletes|testSlowSyncSemantic),"
                                    # test cannot pass because we don't have CtCap info about
                                    # the Funambol server
                                    "Client::Sync::eds_contact::testExtensions,"
@@ -1759,4 +2211,5 @@ if options.list:
     for action in context.todo:
         print action.name
 else:
+    log('Ready to run. I have PID %d.', os.getpid())
     context.execute()

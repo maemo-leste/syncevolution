@@ -22,11 +22,13 @@
 # define INCL_SYNCEVOLUTION_UTIL
 
 #include <syncevo/SyncML.h>
+#include <syncevo/Logging.h>
 
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/function.hpp>
 #include <boost/utility/value_init.hpp>
+#include <boost/type_traits/is_class.hpp>
 
 #include <stdarg.h>
 
@@ -39,12 +41,9 @@
 
 #include <syncevo/Timespec.h>    // definitions used to be included in util.h,
                                  // include it to avoid changing code using the time things
-#include <syncevo/Logging.h>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
-
-class Logger;
 
 /** case-insensitive less than for assoziative containers */
 template <class T> class Nocase : public std::binary_function<T, T, bool> {
@@ -270,6 +269,8 @@ inline const char *NullPtrCheck(const char *ptr, const char *def = "(null)")
  * A C++ wrapper around readir() which provides the names of all
  * directory entries, excluding . and ..
  *
+ * In contrast to the underlying readdir(), this class sorts
+ * the result by name before granting access to it.
  */
 class ReadDir {
  public:
@@ -363,40 +364,71 @@ template<class T> class Init {
  * are not left uninitialized and tracks whether a value was every
  * assigned explicitly.
  */
-template<class T> class InitState {
- public:
-    typedef T value_type;
+template<class T, bool isClass> class InitStateBase {
+    T m_value;
 
-    InitState(const T &val, bool wasSet) : m_value(val), m_wasSet(wasSet) {}
-    InitState() : m_value(boost::value_initialized<T>()), m_wasSet(false) {}
-    InitState(const InitState &other) : m_value(other.m_value), m_wasSet(other.m_wasSet) {}
-    InitState & operator = (const T &val) { m_value = val; m_wasSet = true; return *this; }
+ protected:
+    InitStateBase() : m_value(boost::value_initialized<T>()) {}
+    InitStateBase(const InitStateBase &other) : m_value(other.m_value) {}
+    template<class V> InitStateBase(const V &val) : m_value(val) {}
+
+ public:
     operator const T & () const { return m_value; }
     operator T & () { return m_value; }
     const T & get() const { return m_value; }
     T & get() { return m_value; }
-    bool wasSet() const { return m_wasSet; }
- private:
-    T m_value;
-    bool m_wasSet;
 };
 
-/** version of InitState for classes */
-template<class T> class InitStateClass : public T {
+/** version of InitState for classes: can call methods directly */
+template<class T> class InitStateBase<T, true> : public T {
+ protected:
+    InitStateBase() {}
+    template<class V> InitStateBase(const V &val) : T(val) {}
+    InitStateBase(const InitStateBase &other) : T(other) {}
+
+ public:
+    const T & get() const { return *this; }
+    T & get() { return *this; }
+};
+
+template<class T> class InitState : public InitStateBase<T, boost::is_class<T>::value> {
+    typedef InitStateBase<T, boost::is_class<T>::value> parent_type;
+    bool m_wasSet;
+
  public:
     typedef T value_type;
 
-    InitStateClass(const T &val, bool wasSet) : T(val), m_wasSet(wasSet) {}
-    InitStateClass() : m_wasSet(false) {}
-    InitStateClass(const char *val) : T(val), m_wasSet(false) {}
-    InitStateClass(const InitStateClass &other) : T(other), m_wasSet(other.m_wasSet) {}
-    InitStateClass & operator = (const T &val) { T::operator = (val); m_wasSet = true; return *this; }
-    const T & get() const { return *this; }
-    T & get() { return *this; }
+    InitState() : m_wasSet(false) {}
+    InitState(const InitState &other) : parent_type(other.get()), m_wasSet(other.m_wasSet) {}
+    template<class V> InitState(const V &val, bool wasSet = false) : parent_type(val), m_wasSet(wasSet) {}
+    InitState & operator = (const InitState &val) { this->get() = val; m_wasSet = val.m_wasSet; return *this; }
+    template<class V> InitState & operator = (const V &val) { this->get() = val; m_wasSet = true; return *this; }
+
+    /**
+     * Only tracks modifications done through this class.
+     * Modifications of the contained value after obtaining
+     * direct access to it (for example, via get()) are not
+     * noticed.
+     */
     bool wasSet() const { return m_wasSet; }
- private:
-    bool m_wasSet;
 };
+
+/**
+ * Retrieve value if found in map, otherwise the
+ * default. wasSet() returns true only in the first case.
+ */
+template<class C> InitState<typename C::mapped_type>
+GetWithDef(const C &map,
+           const typename C::key_type &key,
+           const typename C::mapped_type &def = boost::value_initialized<typename C::mapped_type>())
+{
+    typename C::const_iterator it = map.find(key);
+    if (it != map.end()) {
+        return InitState<typename C::mapped_type>(it->second, true);
+    } else {
+        return InitState<typename C::mapped_type>(def, false);
+    }
+}
 
 /**
  * a nop destructor which doesn't do anything, for boost::shared_ptr
@@ -416,7 +448,7 @@ typedef InitState<bool> Bool;
  * Acts like a string, but in addition, can also tell whether the
  * value was explicitly set.
  */
-typedef InitStateClass<std::string> InitStateString;
+typedef InitState<std::string> InitStateString;
 
 /**
  * Version of InitState where the value can true, false, or a string.
@@ -487,12 +519,12 @@ class Exception : public std::runtime_error
      * status code if status still was STATUS_OK when called.
      * Returns updated status code.
      *
-     * @param logger    the class which does the logging
+     * @param logPrefix      passed to SE_LOG* messages
      * @retval explanation   set to explanation for problem, if non-NULL
      * @param level     level to be used for logging
      */
-    static SyncMLStatus handle(SyncMLStatus *status = NULL, Logger *logger = NULL, std::string *explanation = NULL, Logger::Level = Logger::ERROR, HandleExceptionFlags flags = HANDLE_EXCEPTION_FLAGS_NONE);
-    static SyncMLStatus handle(Logger *logger, HandleExceptionFlags flags = HANDLE_EXCEPTION_FLAGS_NONE) { return handle(NULL, logger, NULL, Logger::ERROR, flags); }
+    static SyncMLStatus handle(SyncMLStatus *status = NULL, const std::string *logPrefix = NULL, std::string *explanation = NULL, Logger::Level = Logger::ERROR, HandleExceptionFlags flags = HANDLE_EXCEPTION_FLAGS_NONE);
+    static SyncMLStatus handle(const std::string &logPrefix, HandleExceptionFlags flags = HANDLE_EXCEPTION_FLAGS_NONE) { return handle(NULL, &logPrefix, NULL, Logger::ERROR, flags); }
     static SyncMLStatus handle(std::string &explanation, HandleExceptionFlags flags = HANDLE_EXCEPTION_FLAGS_NONE) { return handle(NULL, NULL, &explanation, Logger::ERROR, flags); }
     static void handle(HandleExceptionFlags flags) { handle(NULL, NULL, NULL, Logger::ERROR, flags); }
     static void log() { handle(NULL, NULL, NULL, Logger::DEBUG); }
@@ -500,9 +532,12 @@ class Exception : public std::runtime_error
     /**
      * Tries to identify exception class based on explanation string created by
      * handle(). If successful, that exception is throw with the same
-     * attributes as in the original exception. Otherwise parse() returns.
+     * attributes as in the original exception.
+     *
+     * If not, tryRethrow() returns (mustThrow false) or throws a std::runtime_error
+     * with the explanation as text.
      */
-    static void tryRethrow(const std::string &explanation);
+    static void tryRethrow(const std::string &explanation, bool mustThrow = false);
 
     /**
      * Same as tryRethrow() for strings with a 'org.syncevolution.xxxx:' prefix,

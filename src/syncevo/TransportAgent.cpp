@@ -19,6 +19,7 @@
 
 #include <syncevo/TransportAgent.h>
 #include <syncevo/SyncConfig.h>
+#include <syncevo/IdentityProvider.h>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -32,8 +33,9 @@ void HTTPTransportAgent::setConfig(SyncConfig &config)
 {
     if (config.getUseProxy()) {
         setProxy(config.getProxyHost());
-        setProxyAuth(config.getProxyUsername(),
-                     config.getProxyPassword());
+        UserIdentity identity = config.getProxyUser();
+        Credentials cred = IdentityProviderCredentials(identity, config.getProxyPassword());
+        setProxyAuth(cred.m_username, cred.m_password);
     }
     setUserAgent(config.getUserAgent());
     setSSL(config.findSSLServerCertificate(),

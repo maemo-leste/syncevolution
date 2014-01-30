@@ -77,28 +77,10 @@ void SyncSourceBase::throwError(SyncMLStatus status, const string &failure)
 
 SyncMLStatus SyncSourceBase::handleException(HandleExceptionFlags flags)
 {
-    SyncMLStatus res = Exception::handle(this, flags);
+    SyncMLStatus res = Exception::handle(getDisplayName(), flags);
     return res == STATUS_FATAL ?
         STATUS_DATASTORE_FAILURE :
         res;
-}
-
-void SyncSourceBase::messagev(Level level,
-                              const char *prefix,
-                              const char *file,
-                              int line,
-                              const char *function,
-                              const char *format,
-                              va_list args)
-{
-    string newprefix = getDisplayName();
-    if (prefix) {
-        newprefix += ": ";
-        newprefix += prefix;
-    }
-    LoggerBase::instance().messagev(level, newprefix.c_str(),
-                                    file, line, function,
-                                    format, args);
 }
 
 void SyncSourceBase::getDatastoreXML(string &xml, XMLConfigFragments &fragments)
@@ -213,7 +195,9 @@ SyncSource::SyncSource(const SyncSourceParams &params) :
     SyncSourceConfig(params.m_name, params.m_nodes),
     m_numDeleted(0),
     m_forceSlowSync(false),
-    m_name(params.getDisplayName())
+    m_database("", ""),
+    m_name(params.getDisplayName()),
+    m_needChanges(true)
 {
 }
 
@@ -311,11 +295,13 @@ public:
         }
         boost::shared_ptr<ReadDir> dir (new ReadDir (backend_dir, false));
         string dirpath (backend_dir);
+        // Base name (= no dir, no .so suffix) mapping to full file
+        // name (including .so).
+        std::map<std::string, std::string> candidates;
         // scan directories for matching module names
         do {
             debug<<"Scanning backend libraries in " <<dirpath <<endl;
             BOOST_FOREACH (const string &entry, *dir) {
-                void *dlhandle;
                 if (isDir (dirpath + '/' + entry)) {
                     /* This is a 2-level dir, this corresponds to loading
                      * backends from current building directory. The library
@@ -327,25 +313,10 @@ public:
                     }
                     continue;
                 }
-                if (entry.rfind(".so") == entry.length()-3){
-
-                    // Open the shared object so that backend can register
-                    // itself. We keep that pointer, so never close the
-                    // module!
+                if (boost::ends_with(entry, ".so")) {
                     string fullpath = dirpath + '/' + entry;
                     fullpath = normalizePath(fullpath);
-                    // RTLD_LAZY is needed for the WebDAV backend, which
-                    // needs to do an explicit dlopen() of libneon in compatibility
-                    // mode before any of the neon functions can be resolved.
-                    dlhandle = dlopen(fullpath.c_str(), RTLD_LAZY|RTLD_GLOBAL);
-                    // remember which modules were found and which were not
-                    if (dlhandle) {
-                        debug<<"Loading backend library "<<entry<<endl;
-                        info<<"Loading backend library "<<fullpath<<endl;
-                        m_available.push_back(entry);
-                    } else {
-                        debug<<"Loading backend library "<<entry<<"failed "<< dlerror()<<endl;
-                    }
+                    candidates[entry.substr(0, entry.size() - 3)] = fullpath;
                 }
             }
             if (!dirs.empty()){
@@ -356,6 +327,53 @@ public:
                 break;
             }
         } while (true);
+
+        // Look at foo-<version> before foo. If there is more than
+        // one version and the version sorts lexically, the "highest"
+        // one will be checked first, too.
+        //
+        // The intention is to try loading syncebook-2 (with explicit
+        // library dependencies) first, then skip syncebook if loading
+        // of syncebook-2 succeeded. If loading of syncebook-2 fails
+        // due to missing libraries, we proceed to use syncebook.
+        BOOST_REVERSE_FOREACH (const StringPair &entry, candidates) {
+            const std::string &basename = entry.first;
+            const std::string &fullpath = entry.second;
+            std::string replacement;
+            std::string modname;
+            size_t offset = basename.rfind('-');
+            if (offset != basename.npos) {
+                modname = basename.substr(offset);
+            } else {
+                modname = basename;
+            }
+            BOOST_FOREACH (const std::string &l, m_available) {
+                if (boost::starts_with(l, modname)) {
+                    replacement = l;
+                    break;
+                }
+            }
+            if (!replacement.empty()) {
+                debug << "Skipping " << basename << " = " << fullpath << " because a more recent version of it was already loaded: " << replacement;
+                continue;
+            }
+
+            // Open the shared object so that backend can register
+            // itself. We keep that pointer, so never close the
+            // module!
+            // RTLD_LAZY is needed for the WebDAV backend, which
+            // needs to do an explicit dlopen() of libneon in compatibility
+            // mode before any of the neon functions can be resolved.
+            void *dlhandle = dlopen(fullpath.c_str(), RTLD_LAZY|RTLD_GLOBAL);
+            // remember which modules were found and which were not
+            if (dlhandle) {
+                debug<<"Loading backend library "<<basename<<endl;
+                info<<"Loading backend library "<<fullpath<<endl;
+                m_available.push_back(basename);
+            } else {
+                debug<<"Loading backend library "<<basename<<"failed "<< dlerror()<<endl;
+            }
+        }
 #endif
     }
     list<string> m_available;
@@ -375,7 +393,7 @@ void SyncSource::requestAnotherSync()
     // stored; instead only a per-session request is set. That's okay
     // for now because restarting is limited to sessions with only
     // one source active (intentional simplification).
-    SE_LOG_DEBUG(this, NULL, "requesting another sync");
+    SE_LOG_DEBUG(getDisplayName(), "requesting another sync");
     SyncContext::requestAnotherSync();
 }
 
@@ -411,7 +429,7 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
 
     if (error) {
         string backends;
-        if (scannedModules.m_available.size()) {
+        if (!scannedModules.m_available.empty()) {
             backends += "by any of the backend modules (";
             backends += boost::join(scannedModules.m_available, ", ");
             backends += ") ";
@@ -528,8 +546,19 @@ void SyncSourceSession::init(SyncSource::Operations &ops)
 
 sysync::TSyError SyncSourceSession::startDataRead(const char *lastToken, const char *resumeToken)
 {
-    beginSync(lastToken ? lastToken : "",
-              resumeToken ? resumeToken : "");
+    try {
+        beginSync(lastToken ? lastToken : "",
+                  resumeToken ? resumeToken : "");
+    } catch (const StatusException &ex) {
+        SyncMLStatus status = ex.syncMLStatus();
+        if (status == STATUS_SLOW_SYNC_508) {
+            // Not an error. Return it normally, without ERROR logging
+            // in our caller.
+            return status;
+        } else {
+            throw;
+        }
+    }
     return sysync::LOCERR_OK;
 }
 
@@ -748,17 +777,19 @@ sysync::TSyError SyncSourceSerialize::readItemAsKey(sysync::cItemID aID, sysync:
     return res;
 }
 
-sysync::TSyError SyncSourceSerialize::insertItemAsKey(sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID newID)
+SyncSource::Operations::InsertItemAsKeyResult_t SyncSourceSerialize::insertItemAsKey(sysync::KeyH aItemKey, sysync::ItemID newID)
 {
     SharedBuffer data;
     TSyError res = getSynthesisAPI()->getValue(aItemKey, "data", data);
 
     if (!res) {
-        InsertItemResult inserted =
-            insertItem(!aID ? "" : aID->item, data.get());
-        newID->item = StrAlloc(inserted.m_luid.c_str());
+        InsertItemResult inserted = insertItem("", data.get());
         switch (inserted.m_state) {
         case ITEM_OKAY:
+            break;
+        case ITEM_AGAIN:
+            // Skip setting the newID.
+            return Operations::InsertItemAsKeyContinue_t(boost::bind(&SyncSourceSerialize::insertContinue, this, _2, inserted.m_continue));
             break;
         case ITEM_REPLACED:
             res = sysync::DB_DataReplaced;
@@ -770,18 +801,103 @@ sysync::TSyError SyncSourceSerialize::insertItemAsKey(sysync::KeyH aItemKey, sys
             res = sysync::DB_Conflict;
             break;
         }
+        newID->item = StrAlloc(inserted.m_luid.c_str());
     }
 
     return res;
 }
+
+SyncSource::Operations::UpdateItemAsKeyResult_t SyncSourceSerialize::updateItemAsKey(sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID newID)
+{
+    SharedBuffer data;
+    TSyError res = getSynthesisAPI()->getValue(aItemKey, "data", data);
+
+    if (!res) {
+        InsertItemResult inserted = insertItem(aID->item, data.get());
+        switch (inserted.m_state) {
+        case ITEM_OKAY:
+            break;
+        case ITEM_AGAIN:
+            // Skip setting the newID.
+            return Operations::UpdateItemAsKeyContinue_t(boost::bind(&SyncSourceSerialize::insertContinue, this, _3, inserted.m_continue));
+            break;
+        case ITEM_REPLACED:
+            res = sysync::DB_DataReplaced;
+            break;
+        case ITEM_MERGED:
+            res = sysync::DB_DataMerged;
+            break;
+        case ITEM_NEEDS_MERGE:
+            res = sysync::DB_Conflict;
+            break;
+        }
+        newID->item = StrAlloc(inserted.m_luid.c_str());
+    }
+
+    return res;
+}
+
+sysync::TSyError SyncSourceSerialize::insertContinue(sysync::ItemID newID, const InsertItemResult::Continue_t &cont)
+{
+    // The engine cannot tell us when it needs results (for example,
+    // in the "final message received from peer" case in
+    // TSyncSession::EndMessage(), so assume that it does whenever it
+    // calls us again => flush and wait.
+    flushItemChanges();
+    finishItemChanges();
+
+    InsertItemResult inserted = cont();
+    TSyError res = sysync::LOCERR_OK;
+    switch (inserted.m_state) {
+    case ITEM_OKAY:
+        break;
+    case ITEM_AGAIN:
+        // Skip setting the newID.
+        return sysync::LOCERR_AGAIN;
+        break;
+    case ITEM_REPLACED:
+        res = sysync::DB_DataReplaced;
+        break;
+    case ITEM_MERGED:
+        res = sysync::DB_DataMerged;
+        break;
+    case ITEM_NEEDS_MERGE:
+        res = sysync::DB_Conflict;
+        break;
+    }
+    newID->item = StrAlloc(inserted.m_luid.c_str());
+    return res;
+}
+
+SyncSourceSerialize::InsertItemResult SyncSourceSerialize::insertItemRaw(const std::string &luid, const std::string &item)
+{
+    InsertItemResult result = insertItem(luid, item);
+
+    while (result.m_state == ITEM_AGAIN) {
+        // Flush and wait, because caller (command line, restore) is
+        // not prepared to deal with asynchronous execution.
+        flushItemChanges();
+        finishItemChanges();
+        result = result.m_continue();
+    }
+
+    return result;
+}
+
+void SyncSourceSerialize::readItemRaw(const std::string &luid, std::string &item)
+{
+    return readItem(luid, item);
+}
+
+
 
 void SyncSourceSerialize::init(SyncSource::Operations &ops)
 {
     ops.m_readItemAsKey = boost::bind(&SyncSourceSerialize::readItemAsKey,
                                       this, _1, _2);
     ops.m_insertItemAsKey = boost::bind(&SyncSourceSerialize::insertItemAsKey,
-                                        this, _1, (sysync::cItemID)NULL, _2);
-    ops.m_updateItemAsKey = boost::bind(&SyncSourceSerialize::insertItemAsKey,
+                                        this, _1, _2);
+    ops.m_updateItemAsKey = boost::bind(&SyncSourceSerialize::updateItemAsKey,
                                         this, _1, _2, _3);
 }
 
@@ -856,7 +972,7 @@ void ItemCache::backupItem(const std::string &item,
         if (link(oldfilename.c_str(), filename.str().c_str())) {
             // Hard linking failed. Record this, then continue
             // by ignoring the old file.
-            SE_LOG_DEBUG(NULL, NULL, "hard linking old %s new %s: %s",
+            SE_LOG_DEBUG(NULL, "hard linking old %s new %s: %s",
                          oldfilename.c_str(),
                          filename.str().c_str(),
                          strerror(errno));
@@ -936,6 +1052,23 @@ void SyncSourceRevisions::backupData(const SyncSource::Operations::ConstBackupIn
         revisions = &buffer;
     }
 
+    // Ensure that source knows what we are going to read.
+    std::vector<std::string> uids;
+    uids.reserve(revisions->size());
+    BOOST_FOREACH(const StringPair &mapping, *revisions) {
+        uids.push_back(mapping.first);
+    }
+
+    // We may dump after a hint was already set when starting the
+    // sync. Remember that and restore it when done. If we fail, we
+    // don't need to restore, because then syncing will abort or skip
+    // the source.
+    ReadAheadOrder oldOrder;
+    ReadAheadItems oldLUIDs;
+    getReadAheadOrder(oldOrder, oldLUIDs);
+
+    setReadAheadOrder(READ_SELECTED_ITEMS, uids);
+
     string item;
     errno = 0;
     BOOST_FOREACH(const StringPair &mapping, *revisions) {
@@ -945,6 +1078,7 @@ void SyncSourceRevisions::backupData(const SyncSource::Operations::ConstBackupIn
         cache.backupItem(item, uid, rev);
     }
 
+    setReadAheadOrder(oldOrder, oldLUIDs);
     cache.finalize(report);
 }
 
@@ -1043,8 +1177,10 @@ void SyncSourceRevisions::restoreData(const SyncSource::Operations::ConstBackupI
     }
 }
 
-void SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mode)
+bool SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mode)
 {
+    bool forceSlowSync = false;
+
     // erase content which might have been set in a previous call
     reset();
     if (!m_firstCycle) {
@@ -1069,7 +1205,7 @@ void SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mod
             revisions[uid] = revision;
         }
         setAllItems(revisions);
-        return;
+        return false;
     }
 
     if (!m_revisionsSet &&
@@ -1101,12 +1237,35 @@ void SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mod
     // traditional, slow fallback follows...
     initRevisions();
 
+    // Check whether we have valid revision information.  If not, then
+    // we need to do a slow sync. The assumption here is that an empty
+    // revision string marks missing information. When we don't need
+    // change information, not having a revision string is okay.
+    if (needChanges() &&
+        !m_revisions.empty() &&
+        m_revisions.begin()->second.empty()) {
+        forceSlowSync = true;
+        mode = CHANGES_SLOW;
+    }
+
+    // If we don't need changes, then override the mode so that
+    // we don't compute them below.
+    if (!needChanges()) {
+        mode = CHANGES_SLOW;
+    }
+
     // Delay setProperty calls until after checking all uids.
     // Necessary for MapSyncSource, which shares the revision among
     // several uids. Another advantage is that we can do the "find
     // deleted items" check with less entries (new items not added
     // yet).
     StringMap revUpdates;
+
+    if (mode == CHANGES_SLOW) {
+        // Make tracking node identical to current set of items
+        // by re-adding them below.
+        trackingNode.clear();
+    }
 
     BOOST_FOREACH(const StringPair &mapping, m_revisions) {
         const string &uid = mapping.first;
@@ -1115,36 +1274,44 @@ void SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mod
         // always remember the item, need full list
         addItem(uid);
 
-        // TODO: avoid unnecessary work in CHANGES_SLOW mode
-        // Not done yet to avoid introducing bugs.
-        string serverRevision(trackingNode.readProperty(uid));
-        if (!serverRevision.size()) {
-            addItem(uid, NEW);
-            revUpdates[uid] = revision;
+        // avoid unnecessary work in CHANGES_SLOW mode
+        if (mode == CHANGES_SLOW) {
+            trackingNode.setProperty(uid, revision);
         } else {
-            if (revision != serverRevision) {
-                addItem(uid, UPDATED);
+            // detect changes
+            string serverRevision(trackingNode.readProperty(uid));
+            if (!serverRevision.size()) {
+                addItem(uid, NEW);
                 revUpdates[uid] = revision;
+            } else {
+                if (revision != serverRevision) {
+                    addItem(uid, UPDATED);
+                    revUpdates[uid] = revision;
+                }
             }
         }
     }
 
-    // clear information about all items that we recognized as deleted
-    ConfigProps props;
-    trackingNode.readProperties(props);
+    if (mode != CHANGES_SLOW) {
+        // clear information about all items that we recognized as deleted
+        ConfigProps props;
+        trackingNode.readProperties(props);
 
-    BOOST_FOREACH(const StringPair &mapping, props) {
-        const string &uid(mapping.first);
-        if (getAllItems().find(uid) == getAllItems().end()) {
-            addItem(uid, DELETED);
-            trackingNode.removeProperty(uid);
+        BOOST_FOREACH(const StringPair &mapping, props) {
+            const string &uid(mapping.first);
+            if (getAllItems().find(uid) == getAllItems().end()) {
+                addItem(uid, DELETED);
+                trackingNode.removeProperty(uid);
+            }
+        }
+
+        // now update tracking node
+        BOOST_FOREACH(const StringPair &update, revUpdates) {
+            trackingNode.setProperty(update.first, update.second);
         }
     }
 
-    // now update tracking node
-    BOOST_FOREACH(const StringPair &update, revUpdates) {
-        trackingNode.setProperty(update.first, update.second);
-    }
+    return forceSlowSync;
 }
 
 void SyncSourceRevisions::updateRevision(ConfigNode &trackingNode,
@@ -1152,6 +1319,10 @@ void SyncSourceRevisions::updateRevision(ConfigNode &trackingNode,
                                          const std::string &new_luid,
                                          const std::string &revision)
 {
+    if (!needChanges()) {
+        return;
+    }
+
     databaseModified();
     if (old_luid != new_luid) {
         trackingNode.removeProperty(old_luid);
@@ -1165,6 +1336,9 @@ void SyncSourceRevisions::updateRevision(ConfigNode &trackingNode,
 void SyncSourceRevisions::deleteRevision(ConfigNode &trackingNode,
                                          const std::string &luid)
 {
+    if (!needChanges()) {
+        return;
+    }
     databaseModified();
     trackingNode.removeProperty(luid);
 }
@@ -1240,7 +1414,7 @@ std::string SyncSourceLogging::getDescription(const string &luid)
 void SyncSourceLogging::insertItemAsKey(sysync::KeyH aItemKey, sysync::ItemID newID)
 {
     std::string description = getDescription(aItemKey);
-    SE_LOG_INFO(this, NULL,
+    SE_LOG_INFO(getDisplayName(),
                 description.empty() ? "%s <%s>" : "%s \"%s\"",
                 "adding",
                 !description.empty() ? description.c_str() : "???");
@@ -1249,7 +1423,7 @@ void SyncSourceLogging::insertItemAsKey(sysync::KeyH aItemKey, sysync::ItemID ne
 void SyncSourceLogging::updateItemAsKey(sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID newID)
 {
     std::string description = getDescription(aItemKey);
-    SE_LOG_INFO(this, NULL,
+    SE_LOG_INFO(getDisplayName(),
                 description.empty() ? "%s <%s>" : "%s \"%s\"",
                 "updating",
                 !description.empty() ? description.c_str() : aID ? aID->item : "???");
@@ -1258,7 +1432,7 @@ void SyncSourceLogging::updateItemAsKey(sysync::KeyH aItemKey, sysync::cItemID a
 void SyncSourceLogging::deleteItem(sysync::cItemID aID)
 {
     std::string description = getDescription(aID->item);
-    SE_LOG_INFO(this, NULL,
+    SE_LOG_INFO(getDisplayName(),
                 description.empty() ? "%s <%s>" : "%s \"%s\"",
                 "deleting",
                 !description.empty() ? description.c_str() : aID->item);
@@ -1442,14 +1616,26 @@ void SyncSourceAdmin::init(SyncSource::Operations &ops,
                                       this, _1, _2, _3);
     ops.m_saveAdminData = boost::bind(&SyncSourceAdmin::saveAdminData,
                                       this, _1);
-    ops.m_readNextMapItem = boost::bind(&SyncSourceAdmin::readNextMapItem,
-                                        this, _1, _2);
-    ops.m_insertMapItem = boost::bind(&SyncSourceAdmin::insertMapItem,
-                                      this, _1);
-    ops.m_updateMapItem = boost::bind(&SyncSourceAdmin::updateMapItem,
-                                      this, _1);
-    ops.m_deleteMapItem = boost::bind(&SyncSourceAdmin::deleteMapItem,
-                                      this, _1);
+    if (mapping->isVolatile()) {
+        // Don't provide map item operations. SynthesisDBPlugin will
+        // tell the Synthesis engine not to call these (normally needed
+        // for suspend/resume, which we don't support in volatile mode
+        // because we don't store any meta data persistently).
+        //
+        // ops.m_readNextMapItem = boost::lambda::constant(false);
+        // ops.m_insertMapItem = boost::lambda::constant(sysync::LOCERR_OK);
+        // ops.m_updateMapItem = boost::lambda::constant(sysync::LOCERR_OK);
+        // ops.m_deleteMapItem = boost::lambda::constant(sysync::LOCERR_OK);
+    } else {
+        ops.m_readNextMapItem = boost::bind(&SyncSourceAdmin::readNextMapItem,
+                                            this, _1, _2);
+        ops.m_insertMapItem = boost::bind(&SyncSourceAdmin::insertMapItem,
+                                          this, _1);
+        ops.m_updateMapItem = boost::bind(&SyncSourceAdmin::updateMapItem,
+                                          this, _1);
+        ops.m_deleteMapItem = boost::bind(&SyncSourceAdmin::deleteMapItem,
+                                          this, _1);
+    }
     ops.m_endDataWrite.getPostSignal().connect(boost::bind(&SyncSourceAdmin::flush, this));
 }
 

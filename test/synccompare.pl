@@ -86,6 +86,7 @@ my $egroupware = $server =~ /egroupware/;
 my $funambol = $server =~ /funambol/;
 my $googlesyncml = $server eq "google";
 my $googlecaldav = $server eq "googlecalendar";
+my $googlecarddav = $server eq "googlecontacts";
 my $googleeas = $server eq "googleeas";
 my $google_valarm = $ENV{CLIENT_TEST_GOOGLE_VALARM};
 my $yahoo = $server =~ /yahoo/;
@@ -93,6 +94,7 @@ my $davical = $server =~ /davical/;
 my $apple = $server =~ /apple/;
 my $oracle = $server =~ /oracle/;
 my $radicale = $server =~ /radicale/;
+my $zimbra = $server =~ /zimbra/;
 my $evolution = $client =~ /evolution/;
 my $addressbook = $client =~ /addressbook/;
 
@@ -164,6 +166,12 @@ sub NormalizeItem {
     my $width = shift;
     $_ = shift;
 
+    # Reduce \N to \n (both are allowed in vCard 3.0).
+    # Using a regular expression is a bit too broad
+    # because it also matches \\N, which must not be
+    # changed.
+    s/\\N/\\n/g;
+
     # undo line continuation
     s/\n\s//gs;
     # ignore charset specifications, assume UTF-8
@@ -201,8 +209,8 @@ sub NormalizeItem {
     # replace parameters with a sorted parameter list
     s!^([^;:\n]*);(.*?):!$1 . ";" . join(';',sort(split(/;/, $2))) . ":"!meg;
 
-    # EXDATE;VALUE=DATE is the default, no need to show it
-    s/^EXDATE;VALUE=DATE:/EXDATE:/mg;
+    # VALUE=DATE is the default, no need to show it
+    s/^(EXDATE|BDAY);VALUE=DATE:/\1:/mg;
 
     # default opacity is OPAQUE
     s/^TRANSP:OPAQUE\r?\n?//gm;
@@ -365,7 +373,7 @@ sub NormalizeItem {
     #                                      >    LY                                 
     s/^(\w+)([^:\n]*);X-EVOLUTION-ENDDATE=[0-9TZ]*/$1$2/mg;
 
-    if ($scheduleworld || $egroupware || $synthesis || $addressbook || $funambol ||$googlesyncml || $googleeas || $mobical || $memotoo) {
+    if ($scheduleworld || $egroupware || $synthesis || $addressbook || $funambol ||$googlesyncml || $googleeas || $googlecarddav || $mobical || $memotoo || $zimbra) {
       # does not preserve X-EVOLUTION-UI-SLOT=
       s/^(\w+)([^:\n]*);X-EVOLUTION-UI-SLOT=\d+/$1$2/mg;
     }
@@ -391,23 +399,35 @@ sub NormalizeItem {
       s/^(TEL.*);TYPE=PREF/$1/mg;
     }
 
-   if($googlesyncml || $googleeas) {
+   if($googlesyncml || $googleeas || $googlecarddav) {
       # ignore the PHOTO encoding data
       s/^PHOTO(.*?): .*\n/PHOTO$1: [...]\n/mg;
    }
 
-   if($googlesyncml) {
-      # FN propertiey is not correct 
+   if($googlesyncml || $googlecarddav) {
+      # FN property gets synthesized by Google.
       s/^FN:.*\n/FN$1: [...]\n/mg;
+   }
+
+   if ($googlecarddav) {
+       # Adds .X-ABLabel to URL, TEL, etc. to represent custom
+       # labels. TODO: support that in SyncEvolution
+       s/^.*\.X-ABLabel(;[^:;\n]*)*:.*\r?\n?//mg;
+
+       # Ignore groups. TODO: support that in SyncEvolution.
+       s/^[a-zA-Z0-9]+\.//mg;
+   }
+
+   if ($googlesyncml) {
       # Not support car type in telephone
       s!^TEL\;TYPE=CAR(.*)\n!TEL$1\n!mg;
       # some properties are lost
-      s/^(X-EVOLUTION-FILE-AS|NICKNAME|BDAY|CATEGORIES|CALURI|FBURL|ROLE|URL|X-AIM|X-EVOLUTION-UI-SLOT|X-ANNIVERSARY|X-ASSISTANT|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GROUPWISE|X-ICQ|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-MANAGER|X-SPOUSE|X-MOZILLA-HTML|X-YAHOO)(;[^:;\n]*)*:.*\r?\n?//gm;
+      s/^(X-EVOLUTION-FILE-AS|NICKNAME|BDAY|CATEGORIES|CALURI|FBURL|GEO|ROLE|URL|X-AIM|X-EVOLUTION-UI-SLOT|X-ANNIVERSARY|X-ASSISTANT|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GROUPWISE|X-ICQ|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-MANAGER|X-SPOUSE|X-MOZILLA-HTML|X-YAHOO)(;[^:;\n]*)*:.*\r?\n?//gm;
    }
 
    if ($googlecaldav) {
       #several properties are not preserved by Google in icalendar2.0 format
-      s/^(SEQUENCE|X-EVOLUTION-ALARM-UID)(;[^:;\n]*)*:.*\r?\n?//gm;
+      s/^(SEQUENCE|X-EVOLUTION-ALARM-UID|TRANSP)(;[^:;\n]*)*:.*\r?\n?//gm;
 
       # Google adds calendar owner as attendee of meetings, regardless
       # whether it was on the original attendee list. Ignore this
@@ -464,7 +484,7 @@ sub NormalizeItem {
 
     if ($synthesis) {
       # does not preserve certain properties
-      s/^(FN|BDAY|X-MOZILLA-HTML|X-EVOLUTION-FILE-AS|X-AIM|NICKNAME|UID|PHOTO|CALURI|SEQUENCE|TRANSP|ORGANIZER|ROLE|FBURL|X-ANNIVERSARY|X-ASSISTANT|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GADUGADU|X-GROUPWISE|X-ICQ|X-JABBER|X-MANAGER|X-MSN|X-SIP|X-SKYPE|X-SPOUSE|X-YAHOO)(;[^:;\n]*)*:.*\r?\n?//gm;
+      s/^(FN|GEO|BDAY|X-MOZILLA-HTML|X-EVOLUTION-FILE-AS|X-AIM|NICKNAME|UID|PHOTO|CALURI|SEQUENCE|TRANSP|ORGANIZER|ROLE|FBURL|X-ANNIVERSARY|X-ASSISTANT|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GADUGADU|X-GROUPWISE|X-ICQ|X-JABBER|X-MANAGER|X-MSN|X-SIP|X-SKYPE|X-SPOUSE|X-YAHOO)(;[^:;\n]*)*:.*\r?\n?//gm;
       # default ADR is HOME
       s/^ADR;TYPE=HOME/ADR/gm;
       # only some parts of N are preserved
@@ -490,7 +510,7 @@ sub NormalizeItem {
 
     if ($funambol) {
       # several properties are not preserved
-      s/^(CALURI|FBURL|X-MOZILLA-HTML|X-EVOLUTION-FILE-AS|X-AIM|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GROUPWISE|X-ICQ|X-YAHOO|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-ASSISTANT)(;[^:;\n]*)*:.*\r?\n?//gm;
+      s/^(CALURI|FBURL|GEO|X-MOZILLA-HTML|X-EVOLUTION-FILE-AS|X-AIM|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GROUPWISE|X-ICQ|X-YAHOO|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-ASSISTANT)(;[^:;\n]*)*:.*\r?\n?//gm;
 
       # quoted-printable line breaks are =0D=0A, not just single =0A
       s/(?<!=0D)=0A/=0D=0A/g;
@@ -600,7 +620,7 @@ sub NormalizeItem {
     }
     if ($memotoo) {
       if (/^BEGIN:VCARD/m ) {
-        s/^(FN|FBURL|CALURI|ROLE|X-MOZILLA-HTML|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-GROUPWISE)(;[^:;\n]*)*:.*\r?\n?//gm;
+        s/^(FN|FBURL|GEO|CALURI|ROLE|X-MOZILLA-HTML|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-GROUPWISE)(;[^:;\n]*)*:.*\r?\n?//gm;
         # s/^(FN|FBURL|CALURI|CATEGORIES|ROLE|X-MOZILLA-HTML|X-EVOLUTION-FILE-AS|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-GROUPWISE)(;[^:;\n]*)*:.*\r?\n?//gm;
         # strip 'TYPE=HOME' 
         s/^URL([^\n:]*);TYPE=HOME/URL$1/mg;
@@ -625,7 +645,7 @@ sub NormalizeItem {
       }
     }
     if ($mobical) {
-      s/^(CALURI|CATEGORIES|FBURL|NICKNAME|X-MOZILLA-HTML|X-EVOLUTION-FILE-AS|X-ANNIVERSARY|X-ASSISTANT|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GROUPWISE|X-ICQ|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-MANAGER|X-SPOUSE|X-YAHOO|X-AIM)(;[^:;\n]*)*:.*\r?\n?//gm;
+      s/^(CALURI|CATEGORIES|FBURL|GEO|NICKNAME|X-MOZILLA-HTML|X-EVOLUTION-FILE-AS|X-ANNIVERSARY|X-ASSISTANT|X-EVOLUTION-BLOG-URL|X-EVOLUTION-VIDEO-URL|X-GROUPWISE|X-ICQ|X-GADUGADU|X-JABBER|X-MSN|X-SIP|X-SKYPE|X-MANAGER|X-SPOUSE|X-YAHOO|X-AIM)(;[^:;\n]*)*:.*\r?\n?//gm;
 
       # some workrounds here for mobical's bug 
       s/^(FN|BDAY)(;[^:;\n]*)*:.*\r?\n?//gm;
@@ -665,6 +685,11 @@ sub NormalizeItem {
     if ($googleeas || $exchange) {
         # properties not supported by ActiveSync
         s/^(FN)(;[^:;\n]*)*:.*\r?\n?//gm;
+    }
+
+    if ($googleeas || $exchange) {
+        # properties not supported by ActiveSync and/or activesyncd
+        s/^(GEO)(;[^:;\n]*)*:.*\r?\n?//gm;
     }
 
     if ($googleeas || $exchange) {

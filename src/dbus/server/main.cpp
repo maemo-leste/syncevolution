@@ -33,6 +33,12 @@
 #include <syncevo/SuspendFlags.h>
 #include <syncevo/LogRedirect.h>
 #include <syncevo/LogSyslog.h>
+#include <syncevo/LogDLT.h>
+#include <syncevo/GLibSupport.h>
+
+#ifdef USE_DLT
+# include <dlt.h>
+#endif
 
 using namespace SyncEvo;
 using namespace GDBusCXX;
@@ -66,6 +72,19 @@ bool parseDuration(int &duration, const char* value)
 
 } // anonymous namespace
 
+static Logger::Level checkLogLevel(const char *option, int logLevel)
+{
+    switch (logLevel) {
+    case 0: return Logger::NONE;
+    case 1: return Logger::ERROR;
+    case 2: return Logger::INFO;
+    case 3: return Logger::DEBUG;
+    default:
+        SE_THROW(StringPrintf("invalid parameter value %d for %s: must be one of 0, 1, 2 or 3", logLevel, option));
+        return Logger::NONE;
+    }
+}
+
 int main(int argc, char **argv, char **envp)
 {
     // remember environment for restart
@@ -79,26 +98,55 @@ int main(int argc, char **argv, char **envp)
     bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
     textdomain(GETTEXT_PACKAGE);
 
-    int duration = 600;
-    int opt = 1;
-    while(opt < argc) {
-        if(argv[opt][0] != '-') {
-            break;
-        }
-        if (boost::iequals(argv[opt], "--duration") ||
-            boost::iequals(argv[opt], "-d")) {
-            opt++;
-            if(!parseDuration(duration, opt== argc ? NULL : argv[opt])) {
-                std::cout << argv[opt-1] << ": unknown parameter value or not set" << std::endl;
-                return false;
-            }
-        } else {
-            std::cout << argv[opt] << ": unknown parameter" << std::endl;
-            return false;
-        }
-        opt++;
-    }
     try {
+        gchar *durationString = NULL;
+        int duration = 600;
+        int logLevel = 1;
+        int logLevelDBus = 2;
+        gboolean stdoutEnabled = false;
+        gboolean syslogEnabled = true;
+#ifdef USE_DLT
+        gboolean dltEnabled = false;
+#endif
+#ifdef ENABLE_DBUS_PIM
+        gboolean startPIM = false;
+#endif
+        GOptionEntry entries[] = {
+            { "duration", 'd', 0, G_OPTION_ARG_STRING, &durationString, "Shut down automatically when idle for this duration", "seconds/'unlimited'" },
+            { "verbosity", 'v', 0, G_OPTION_ARG_INT, &logLevel,
+              "Choose amount of output, 0 = no output, 1 = errors, 2 = info, 3 = debug; default is 1.",
+              "level" },
+            { "dbus-verbosity", 'v', 0, G_OPTION_ARG_INT, &logLevelDBus,
+              "Choose amount of output via D-Bus signals, 0 = no output, 1 = errors, 2 = info, 3 = debug; default is 2.",
+              "level" },
+            { "stdout", 'o', 0, G_OPTION_ARG_NONE, &stdoutEnabled,
+              "Enable printing to stdout (result of operations) and stderr (errors/info/debug).",
+              NULL },
+            { "no-syslog", 's', G_OPTION_FLAG_REVERSE, G_OPTION_ARG_NONE, &syslogEnabled, "Disable printing to syslog.", NULL },
+#ifdef USE_DLT
+            { "dlt", 0, 0, G_OPTION_ARG_NONE, &dltEnabled, "Enable logging via GENIVI Diagnostic Log and Trace.", NULL },
+#endif
+#ifdef ENABLE_DBUS_PIM
+            { "start-pim", 'p', 0, G_OPTION_ARG_NONE, &startPIM,
+              "Activate the PIM Manager (= unified address book) immediately.",
+              NULL },
+#endif
+            { NULL }
+        };
+        GErrorCXX gerror;
+        static GOptionContext *context = g_option_context_new("- SyncEvolution D-Bus Server");
+        g_option_context_add_main_entries(context, entries, GETTEXT_PACKAGE);
+        bool success = g_option_context_parse(context, &argc, &argv, gerror);
+        PlainGStr durationOwner(durationString);
+        if (!success) {
+            gerror.throwError("parsing command line options");
+        }
+        if (durationString && !parseDuration(duration, durationString)) {
+            SE_THROW(StringPrintf("invalid parameter value '%s' for --duration/-d: must be positive number of seconds or 'unlimited'", durationString));
+        }
+        Logger::Level level = checkLogLevel("--debug", logLevel);
+        Logger::Level levelDBus = checkLogLevel("--dbus-debug", logLevelDBus);
+
         // Temporarily set G_DBUS_DEBUG. Hopefully GIO will read and
         // remember it, because we don't want to keep it set
         // permanently, lest it gets passed on to other processes.
@@ -114,21 +162,28 @@ int main(int argc, char **argv, char **envp)
         setvbuf(stderr, NULL, _IONBF, 0);
         setvbuf(stdout, NULL, _IONBF, 0);
 
-        const char *debugVar(getenv(debugEnv));
-        const bool debugEnabled(debugVar && *debugVar);
-
-        // TODO: redirect output *and* log it via syslog?!
-        boost::shared_ptr<LoggerBase> logger;
-        if (!gdbus) {
-            logger.reset((true ||  debugEnabled) ?
-                         static_cast<LoggerBase *>(new LogRedirect(true)) :
-                         static_cast<LoggerBase *>(new LoggerSyslog(execName)));
+        // Redirect output and optionally log to syslog.
+        PushLogger<LogRedirect> redirect(new LogRedirect(LogRedirect::STDERR_AND_STDOUT));
+        redirect->setLevel(stdoutEnabled ? level : Logger::NONE);
+#ifdef USE_DLT
+        PushLogger<LoggerDLT> loggerdlt;
+        if (dltEnabled) {
+            // DLT logging with default log level DLT_LOG_WARN.  This
+            // default was chosen because DLT's own default,
+            // DLT_LOG_INFO, leads to too much output given that a lot
+            // of the standard messages in SyncEvolution and
+            // libsynthesis are labelled informational.
+            setenv("SYNCEVOLUTION_USE_DLT", StringPrintf("%d", DLT_LOG_WARN).c_str(), true);
+            loggerdlt.reset(new LoggerDLT(DLT_SYNCEVO_DBUS_SERVER_ID, "SyncEvolution D-Bus server"));
+        } else {
+            unsetenv("SYNCEVOLUTION_USE_DLT");
         }
-
-        // make daemon less chatty - long term this should be a command line option
-        LoggerBase::instance().setLevel(debugEnabled ?
-                                        LoggerBase::DEBUG :
-                                        LoggerBase::INFO);
+#endif
+        PushLogger<LoggerSyslog> syslogger;
+        if (syslogEnabled && level > Logger::NONE) {
+            syslogger.reset(new LoggerSyslog(execName));
+            syslogger->setLevel(level);
+        }
 
         // syncevo-dbus-server should hardly ever produce output that
         // is relevant for end users, so include the somewhat cryptic
@@ -136,7 +191,7 @@ int main(int argc, char **argv, char **envp)
         // syncevo-dbus-helper.
         Logger::setProcessName("syncevo-dbus-server");
 
-        SE_LOG_DEBUG(NULL, NULL, "syncevo-dbus-server: catch SIGINT/SIGTERM in our own shutdown function");
+        SE_LOG_DEBUG(NULL, "syncevo-dbus-server: catch SIGINT/SIGTERM in our own shutdown function");
         signal(SIGTERM, niam);
         signal(SIGINT, niam);
         boost::shared_ptr<SuspendFlags::Guard> guard = SuspendFlags::getSuspendFlags().activate();
@@ -152,8 +207,13 @@ int main(int argc, char **argv, char **envp)
         // make this object the main owner of the connection
         boost::scoped_ptr<DBusObject> obj(new DBusObject(conn, "foo", "bar", true));
 
-        boost::scoped_ptr<SyncEvo::Server> server(new SyncEvo::Server(loop, shutdownRequested, restart, conn, duration));
+        boost::shared_ptr<SyncEvo::Server> server(new SyncEvo::Server(loop, shutdownRequested, restart, conn, duration));
+        server->setDBusLogLevel(levelDBus);
         server->activate();
+
+#ifdef ENABLE_DBUS_PIM
+        boost::shared_ptr<GDBusCXX::DBusObjectHelper> manager(SyncEvo::CreateContactManager(server, startPIM));
+#endif
 
         if (gdbus) {
             unsetenv("G_DBUS_DEBUG");
@@ -161,19 +221,25 @@ int main(int argc, char **argv, char **envp)
 
         dbus_bus_connection_undelay(conn);
         server->run();
-        SE_LOG_DEBUG(NULL, NULL, "cleaning up");
+        SE_LOG_DEBUG(NULL, "cleaning up");
+#ifdef ENABLE_DBUS_PIM
+        manager.reset();
+#endif
         server.reset();
         obj.reset();
         guard.reset();
-        SE_LOG_DEBUG(NULL, NULL, "flushing D-Bus connection");
+        SE_LOG_DEBUG(NULL, "flushing D-Bus connection");
         conn.flush();
         conn.reset();
-        SE_LOG_INFO(NULL, NULL, "terminating");
+        SE_LOG_INFO(NULL, "terminating, closing logging");
+        syslogger.reset();
+        redirect.reset();
+        SE_LOG_INFO(NULL, "terminating");
         return 0;
     } catch ( const std::exception &ex ) {
-        SE_LOG_ERROR(NULL, NULL, "%s", ex.what());
+        SE_LOG_ERROR(NULL, "%s", ex.what());
     } catch (...) {
-        SE_LOG_ERROR(NULL, NULL, "unknown error");
+        SE_LOG_ERROR(NULL, "unknown error");
     }
 
     return 1;

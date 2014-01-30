@@ -19,6 +19,7 @@
 
 #include "connman-client.h"
 #include "server.h"
+#include "presence-status.h"
 
 SE_BEGIN_CXX
 
@@ -40,7 +41,7 @@ ConnmanClient::ConnmanClient(Server &server):
         getProp.start(boost::bind(&ConnmanClient::getPropCb, this, _1, _2));
         m_propertyChanged.activate(boost::bind(&ConnmanClient::propertyChanged, this, _1, _2));
     }else{
-        SE_LOG_DEBUG (NULL, NULL, "DBus connection setup for connman failed");
+        SE_LOG_DEBUG(NULL, "DBus connection setup for connman failed");
     }
 }
 
@@ -52,10 +53,10 @@ void ConnmanClient::getPropCb (const std::map <std::string,
             // ensure there is still first set of singal set in case of no
             // connman available
             m_server.getPresenceStatus().updatePresenceStatus (true, PresenceStatus::HTTP_TRANSPORT);
-            SE_LOG_DEBUG (NULL, NULL, "No connman service available %s", error.c_str());
+            SE_LOG_DEBUG(NULL, "No connman service available %s", error.c_str());
             return;
         }
-        SE_LOG_DEBUG (NULL, NULL, "error in connmanCallback %s", error.c_str());
+        SE_LOG_DEBUG(NULL, "error in connmanCallback %s", error.c_str());
         return;
     }
 

@@ -1,3 +1,1248 @@
+SyncEvolution 1.3.99.7, 22.01.2014
+==================================
+
+Final release candidate for 1.4. No further changes planned unless
+new problems are found.
+
+Details:
+
+* SSO: support Ubuntu Online Accounts
+
+  When compiling from source on recent Ubuntu it becomes possible to
+  use Ubuntu Online Accounts for authenticating against Google's
+  CalDAV and CardDAV servers.
+
+* D-Bus server: fix abort when mixing auto-sync and manual operations (FDO #73562)
+
+  When enabling auto-sync for a config and then accessing or syncing the
+  config manually via the command line tool, the server would abort at
+  the time when the auto-sync was originally scheduled.
+
+* D-Bus server: accept WBXML with charset in incoming connections
+
+  A user reported via email that the Nokia 515 sends
+  'application/vnd.syncml+wbxml; charset=UTF-8' as type of its messages
+  this tripped up the syncevo-http-server, leading to:
+
+    [ERROR] syncevo-dbus-server: /org/syncevolution/Server: message type 'application/vnd.syncml+wbxml; charset=UT
+
+  We need to strip the '; charset=UTF-8' suffix also when checking for
+  WBXML.
+
+* packaging: compatible with EDS up to and including 3.10
+
+  The packages now contain three versions of syncecal.so:
+    - one for EDS < 3.6
+    - one for EDS >= 3.6 < 3.10
+    - one for EDS >= 3.10 with the libecal-1.2 soname patched
+
+  The third flavor became necessary because EDS 3.10 accidentally
+  changed the soname. The API and ABI actually is the same.
+
+  Package meta-data was fixed to reflect the extended range of
+  compatible EDS libraries, so syncevolution-evolution can be installed
+  again with recent EDS.
+
+* packaging: update syncevolution-kde dependencies
+
+  kdebase-runtime became kde-runtime in Debian Wheezy. Accept both
+  as prerequisite of syncevolution-kde to allow installation on
+  newer distros without pulling in the transitional kdebase-runtime
+  package.
+
+* packaging: fix rpm (FDO #73347)
+
+  After installing the syncevolution.org rpm on OpenSUSE,
+  SyncEvolution was not starting because its shared libraries were not
+  found unless "ldconfig" was called manually. Now the package does
+  that automatically.
+
+* packaging: fix description
+
+  The syncevolution-bundle description of both rpm and deb
+  packagesaccidentally used the same description as
+  syncevolution-evolution.
+
+
+* test improvements, integration of cppcheck and clang's scan-build
+
+
+SyncEvolution 1.3.99.6, 04.12.2013
+==================================
+
+This update focuses on SyncEvolution in IVI again. It adds support for
+GENIVI Diagnostic Log and Trace (DLT) and enhances searching in the
+unified address book.
+
+The biggest change for normal Linux desktop users is enhanced support
+for recent distros. Binaries on syncevolution.org now work with EDS >=
+3.6 *and* < 3.6. Distros with libical1 like Ubuntu Saucy are also
+supported. Automated testing was updated to cover these newer
+platforms more thoroughly.
+
+
+Details:
+
+* GNOME Online Accounts: fix D-Bus problem in syncevolution.org binaries
+
+  Support was included in syncevolution.org binaries, but was not
+  tested and did not actually work due to some issue accessing
+  the D-Bus session.
+
+* libsynthesis: partial fix batching of items
+
+  The batching of contact writes introduced with SyncEvolution
+  1.3.99.4 caused problems with non-SyncEvolution SyncML peers when
+  syncing contacts stored in EDS >= 3.6. EDS < 3.6 was not affected.
+
+  That part is fixed. However, even in SyncEvolution<->SyncEvolution
+  syncs another crash was found. This will require more investigation.
+  Clearly the feature is not ready yet for general sync, so for now
+  it is disabled by default and only enabled in the simpler PBAP
+  sync.
+
+* libsynthesis: avoid redundant (and sometimes slow) getaddrbyname() (FDO #70771)
+
+  The network lookup of the hostname can be slow (10 second delay when
+  not connected) and shouldn't be necessary anyway, so disable it.
+
+* PIM Manager: case-insensitive and transliterated search (FDO #56524)
+
+* PIM: accent-insensitive and transliterated search (FDO #56524)
+
+  Accent-insensitive search ignores accents, using the same code as in
+  EDS.  Transliterated search ignores foreign scripts by transliterating
+  search term and contact properties to Latin first. That one is using
+  ICU directly in the same way as EDS, but doesn't use the EDS
+  ETransliterator class to avoid extra string copying.
+
+  This commit changes the default behavior such that searching is by
+  default most permissive (case- and accent-insensitive, does
+  transliteration). Flags exist to restore more restrictive matching.
+
+* PIM: relax phone number matching
+
+  Previously, the current default country was used to turn phone numbers
+  without an explicit country code into full E164 numbers, which then
+  had to match the search term when doing a caller ID lookup.
+
+  This was inconsistent with EDS, where a weaker
+  EQUALS_NATIONAL_PHONE_NUMBER was done. The difference is that a
+  comparison between a number with country code matches one without if
+  the national number of the same, regardless of the current default
+  country. This is better because it reduces the influence of the hard
+  to guess default country on matching.
+
+  Another advantage of this change is the lower memory consumption and
+  faster comparison, because strings are now stored in 4 + 8 byte
+  numbers instead of strings of varying length.
+
+* PIM: fix incorrect write into pim-manager.ini (FDO #70772)
+
+  Removing a peer accidentally wrote the updated list of active
+  address books into the "sort" property of pim-manager.ini, which
+  then prevented starting the PIM Manager.
+
+* PIM: ignore broken sort order in config (FDO #70772)
+
+  Failure to set the sort order from pim-manager.ini should not
+  prevent the startup of the PIM Manager because the client cannot
+  really diagnose and fix the problem. It is better to try again with
+  the default sort order.
+
+* PIM: adapt to locale changes at runtime (FDO #66618)
+
+  Listen to signals from localed D-Bus system service and update all
+  internal state which depends on the current locale. This state includes:
+  - pre-computed data in all loaded contacts
+  - filtering (for example, case sensitivity is locale dependent)
+  - the sort order
+
+  This feature can be controlled by setting the SYNCEVOLUTION_LOCALED
+  env variable:
+  - "session" - use a localed instance on the D-Bus session bus instead
+    of the system instance. This was originally meant for
+    testing, but might also be useful for per-user setting changes.
+  - "none" - disables the feature
+
+* PIM: fix sync.py + multiple peers
+
+  Due to overwriting a variable, configuring multiple different
+  peers did not work.
+
+* D-Bus server: support DLT (FDO #66769)
+
+  Diagnostic Log and Trace (DLT) manages a sequence of log messages,
+  with remote controllable level of detail. SyncEvolution optionally
+  (can be chosen at compile time and again at runtime) uses DLT
+  instead of its own syncevolution-log.html files. See README-DLT.rst
+  for more information.
+
+  To use the feature, configure SyncEvolution with
+  "--enable-dbus-server=--dlt --no-syslog"
+
+* EDS: enhanced compatibility mode
+
+  SyncEvolution compiled for EDS < 3.6 can now also load EDS backends
+  compiled for EDS >= 3.6. The packaging for syncevolution.org uses
+  that to bundle EDS backends compiled on different distros in the
+  same package.
+
+* EDS: SYNCEVOLUTION_EBOOK_QUERY env variable
+
+  Setting the SYNCEVOLUTION_EBOOK_QUERY env variable to a valid EBook
+  query string limits the results to contacts matching that
+  query. Useful only in combination with --print-items or
+  --export. Only implemented for EDS >= 3.6.
+
+* EDS: fix compile problem with boost and EDS > 3.36
+
+  This fixes the following problem, seen with Boost 1.53.0 on altlinux
+  when compiling for EDS >= 3.6:
+
+    /usr/include/boost/smart_ptr/shared_ptr.hpp: In instantiation of 'typename boost::detail::sp_array_access<T>::type boost::shared_ptr<T>::operator[](std::ptrdiff_t) const [with T = char*; typename boost::detail::sp_array_access<T>::type = void; std::ptrdiff_t = long int]':
+    src/backends/evolution/EvolutionSyncSource.cpp:163:38: required from here
+    /usr/include/boost/smart_ptr/shared_ptr.hpp:663:22: error: return-statement with a value, in function returning 'void' [-fpermissive]
+    make[2]: *** [src/backends/evolution/src_backends_evolution_syncecal_la-EvolutionSyncSource.lo]
+
+* PBAP: add support for obexd 0.48
+
+  obexd 0.48 is almost the same as obexd 0.47, except that it dropped
+  the SetFilter and SetFormat methods in favor of passing a Bluex 5-style
+  filter parameter to PullAll.
+
+  SyncEvolution now supports 4, in words, four different obexd
+  APIs. Sigh.
+
+  This feature was originally announced for SyncEvolution 1.3.99.5,
+  but not actually included in the code yet.
+
+
+SyncEvolution 1.3.99.5, 01.10.2013
+==================================
+
+SyncEvolution now supports Google CalDAV/CardDAV with OAuth2
+authentication. These are the open protocol that Google currently
+supports and thus the recommended way of syncing with Google,
+replacing ActiveSync and SyncML (both no longer available to all
+Google customers).
+
+Support for Google CardDAV is new. Because of a vCard encoding issue
+on the server side, spaces in long notes may get removed. Like
+Evolution, SyncEvolution does not yet support some of the advanced
+features of the server, in particular custom labels for phone numbers,
+emails and addresses. Likewise, some client properties are not
+supported by the server: CALURI, CATEGORIES, FBURL, GEO and ROLE are
+not supported. Of ORG, only the first two components are supported.
+Currently, properties not supported by one side get lost in a full
+roundtrip sync.
+
+SyncEvolution depends on external components for OAuth2. It can be
+compiled to use gSSO [1] or GNOME Online Accounts. GNOME Online
+Accounts >= 3.10 works out of the box for CalDAV and CardDAV, 3.8 only
+for CardDAV (but the GNOME Online Accounts binary can be patched to
+also support CalDAV, see [2]), anything older than 3.8 does not
+work. Support for Ubuntu Online Accounts should not be hard to add,
+but is not available yet [3].
+
+[1] https://01.org/gsso and
+    http://cgit.freedesktop.org/SyncEvolution/syncevolution/plain/src/backends/signon/README
+[2] http://cgit.freedesktop.org/SyncEvolution/syncevolution/plain/src/backends/goa/README
+[3] http://thread.gmane.org/gmane.comp.mobile.syncevolution/4353/focus=4490
+
+
+Details:
+
+* GTK UI: fixed two crashes - running a sync with no service selected
+  and a 64 bit pointer problem recently discovered by Tino Keitel when
+  compiling the Debian package with -fPIE.
+
+* password handling: fix usage of GNOME Keyring and KWallet (FDO #66110)
+
+  When clients like the GTK sync-ui stored a password, it was always
+  stored as plain text in the config.ini file by the
+  syncevo-dbus-server. The necessary code for redirecting the password
+  storage in a keyring (GNOME or KWallet) simply wasn't called in that
+  case.
+
+  The command line tool, even when using the D-Bus server to run the
+  operation, had the necessary code active and thus was not affected.
+  Now all SyncEvolution components use the same default: use safe
+  password storage if either GNOME Keyring or KWallet were enabled
+  during compilation, don't use it if not.
+
+  Fixing this revealed other problems, like not being able to store
+  certain passwords that lacked the necessary lookup criteria (like
+  syncURL and/or username). To address this, the lookup criteria where
+  extended and a new check was added to avoid accidentally removing
+  other passwords. As a result, it may be possible that SyncEvolution
+  no longer finds passwords that were stored with older versions of
+  SyncEvolution. In such a case the passwords must be set again.
+
+* GNOME: clean up keyring access and require libgnome-keyring >= 2.20
+
+  The updated error messages now always include information about the
+  password and libgnome-keyring error texts.
+
+  A workaround is used for the "Error communicating with
+  gnome-keyring-daemon" problem that started to appear fairly
+  frequently in the automated testing once the keyring was actually
+  used. The problem shows up with some additional debug messages:
+
+    Gkr: received an invalid, unencryptable, or non-utf8 secret
+    Gkr: call to daemon returned an invalid response: (null).(null)()
+
+  It seems that sometimes setting up a session with GNOME keyring
+  fails such that all further communication leads to decoding problem.
+
+  There is an internal method to reset the session, but it cannot be
+  called directly. As a workaround, fake the death of the GNOME
+  keyring daemon and thus trigger a reconnect when retrying the GNOME
+  keyring access. This is done by sending a D-Bus message, which will
+  also affect other clients of GNOME keyring, but hopefully without
+  user-visible effects.
+
+* config: enhanced password handling
+
+  It is possible to configure a plain username/password combination
+  once in SyncEvolution and then use references to it in other
+  configurations, instead of having to set (and update) the
+  credentials in different places. This is useful in particular with
+  WebDAV, where credentials had to be repeated several times (target
+  config, in each database when used as part of SyncML) or when using
+  a service which requires several configs (Google via SyncML and
+  CalDAV).
+
+  To use this, create a sync config for a normal peer or a dedicated
+  config just for the credentials, with "username/password/syncURL"
+  set. The "syncURL" must be set to something identifying the peer if
+  GNOME Keyring is used for the password storage.
+
+  Then set "username", "databaseUser" and "proxyUser" properties to
+  "id:<name of config with credentials>" and all read and write access
+  to those properties will be redirected by SyncEvolution into that
+  other configuration. This even works in the GTK UI.
+
+  For user names which contain colons, the new "user:<user name>" format
+  must be used. Strings without colons are assumed to be normal user
+  names, so most old configurations should continue to work.
+
+* signon: new backend using libgsignond-glib + libaccounts-glib
+
+  The code works with gSSO (https://01.org/gsso). With some tweaks to
+  the configure check and some ifdefs it probably could be made to work
+  with Ubuntu Online Accounts.
+
+  The code depends on an account accessible via libaccounts-glib which
+  has a provider and and (optionally) services enabled for that
+  provider. It is not necessary that the account already has a signon
+  identity ID, the backend will create that for the provider (and thus
+  shared between all services) if necessary.
+
+  Therefore it is possible to use the ag-tool to create and enable the
+  account and services. Provider and service templates are in the next
+  commit.
+
+* WebDAV: support OAuth2
+
+  If given an authentication configuration which can handle OAuth2,
+  then OAuth2 is used instead of plain username/password
+  authentication.
+
+* WebDAV: support Google CardDAV, break Yahoo
+
+  Google CardDAV has one peculiarity: it renames new contacts during PUT without
+  returning the new path to the client. See also
+  http://lists.calconnect.org/pipermail/caldeveloper-l/2013-July/000524.html
+
+  SyncEvolution already had a workaround for that (PROPGET on old path, extract
+  new path from response) which happened to work. This workaround was originally
+  added for Yahoo, which sometimes merges contacts into existing ones. In
+  contrast to Yahoo, Google really seems to create new items.
+
+  Without some server specific hacks, the client cannot tell what happened.
+  Because Google is currently supported and Yahoo is not, let's change the
+  hard-coded behavior to "renamed items are new".
+
+* WebDAV: started testing with owndrive.com = OwnCloud
+
+* GOA: get OAuth2 tokens out of GNOME Online Accounts
+
+  "username = goa:..." selects an account in GOA and retrieves the
+  OAuth2 token from that.
+
+  The implementation uses the GOA D-Bus API directly, because our C++
+  D-Bus bindings are easier to use and this avoids an additional library
+  dependency.
+
+* PIM: fix UID usage in sync.py example
+
+  Using the underscore in the UID has been wrong all along, it only
+  happened to work because UID sanity checking was missing. After adding
+  it, the example broke.
+
+  Now simply remove the colon. It makes the UID less readable, but it
+  doesn't have to be, and ensures that file names and database names
+  contain the UID as-is.
+
+* PIM: if busy, don't shut down
+
+  While there are sessions pending or active, the server should not shut down.
+  It did that while executing a long-running PIM Manager SyncPeer() operations,
+  by default after 10 minutes.
+
+  This was not a problem elsewhere because other operations are associated with
+  a client, whose presence also prevents shutdowns. Perhaps PIM Manager should
+  also track the caller and treat it like a client.
+
+* PBAP: do not end Bluez5 transfer prematurely
+
+  A transfer was marked as finished prematurely when encountering the
+  "active" Status value, which can happen for longer transfers.
+
+* updated tests
+
+
+Upgrading from releases <= 1.3.99.4:
+
+If the value of "username/databaseUser/proxyUser" contains a colon,
+the "user:" prefix must be added to the value, to continue treating it
+like a plain user name and not some reference to an unknown identity
+provider (like "id:", "goa:", "signon:", etc.).
+
+The lookup of passwords in GNOME Keyring was updated slightly in
+1.3.99.5. It may be necessary to set passwords anew if the old one is
+no longer found.
+
+Upgrading from release 1.2.x:
+
+The sync format of existing configurations for Mobical (aka Everdroid)
+must be updated manually, because the server has encoding problems when
+using vCard 3.0 (now the default for Evolution contacts):
+   syncevolution --configure \
+                 syncFormat=text/x-vcard \
+                 mobical addressbook
+
+The Funambol template explicitly enables usage of the
+"refresh-from-server" sync mode to avoid getting throttled with 417
+'retry later' errors. The same must be added to existing configs
+manually:
+   syncevolution --configure \
+                 enableRefreshSync=TRUE \
+                 funambol
+
+Upgrading from releases before 1.2:
+
+Old configurations can still be read. But writing, as it happens
+during a sync, must migrate the configuration first. Releases >= 1.2
+automatically migrates configurations. The old configurations
+will still be available (see "syncevolution --print-configs") but must
+be renamed manually to use them again under their original names with
+older SyncEvolution releases.
+
+
+SyncEvolution 1.3.99.4, 12.07.2013
+==================================
+
+The focus of this development snapshot is enhanced performance of
+syncing. With EDS, contacts get added, updated or loaded with batch
+operations, which led to 4x runtime improvements when importing PBAP
+address book for the first time. Removing unnecessary work from any
+following PBAP sync led to more than a 6x improvement.
+
+These improvements also benefit non-PBAP syncing and could in theory
+work with any SyncML peer. In practice, batching of items is currently
+limited to SyncEvolution as peer.
+
+The PBAP backend itself was rewritten such that data gets transferred
+from a phone in parallel to processing the already transferred
+data. The effect is that on a sufficiently fast system, a sync takes
+about the same time as downloading all contacts. To get the text-only
+part of the contacts even faster, PBAP syncing can be done such that
+it first syncs the text-only parts (without removing existing photos),
+then in a second round adds or modifies photos. The PIM Manager uses
+this incremental mode by default, in the command line it can be chose
+with the SYNCEVOLUTION_PBAP_SYNC env variable.
+
+The HTTP server became better at handling message resends when the
+server is slow with processing a message. The server is able to keep a
+sync session alive while loading the initial data set by sending
+acknowledgement replies before the client times out.
+
+Guido Günther provided some patches addressing problems when compiling
+SyncEvolution for Maemo.
+
+
+Details:
+
+* sync: less verbose output, shorter runtime
+
+  For each incoming change, one INFO line with "received x[/out of y]"
+  was printed, immediately followed by another line with total counts
+  "added x, updated y, removed z". For each outgoing change, a "sent
+  x[/out of y]" was printed.
+
+  In addition, these changes were forwarded to the D-Bus server where a
+  "percent complete" was calculated and broadcasted to clients. All of
+  that caused a very high overhead for every single change, even if the
+  actual logging was off. The syncevo-dbus-server was constantly
+  consuming CPU time during a sync when it should have been mostly idle.
+
+  To avoid this overhead, the updated received/sent numbers that come
+  from the Synthesis engine are now cached and only processed when done
+  with a SyncML message or some other event happens (whatever happens
+  first).
+
+  To keep the implementation simple, the "added x, updated y, removed z"
+  information is ignored completely and no longer appears in the output.
+
+* HTTP server: handle message resends
+
+  If a client gave up waiting for the server's response and resent its message
+  while the server was still processing the message, syncing failed with
+  "protocol error: already processing a message" raised by the
+  syncevo-dbus-server because it wasn't prepared to handle that situation.
+
+  The right place to handle this is inside the syncevo-http-server, because it
+  depends on the protocol (HTTP in this case) whether resending is valid or
+  not. It handles that now by tracking the message that is currently in
+  processing and matching it against each new message. If it matches, the new
+  request replaces the obsolete one without sending the message again to
+  syncevo-dbus-server. When syncevo-dbus-server replies to the old message, the
+  reply is used to finish the newer request.
+
+* PBAP: incremental sync (FDO #59551)
+
+  Depending on the SYNCEVOLUTION_PBAP_SYNC env variable, syncing reads
+  all properties as configured ("all"), excludes photos ("text") or
+  first text, then all ("incremental").
+
+  When excluding photos, only known properties get requested. This
+  avoids issues with phones which reject the request when enabling
+  properties via the bit flags. This also helps with
+  "databaseFormat=^PHOTO".
+
+* PIM: use incremental sync for PBAP by default (FDO #59551)
+
+  When doing a PBAP sync, PIM manager asks the D-Bus sync helper to set
+  its SYNCEVOLUTION_PBAP_SYNC to "incremental". If the env variable
+  is already set, it does not get overwritten, which allows overriding
+  this default.
+
+* PIM: set debug level in peer configs via env variable
+
+  Typically the peer configs get created from scratch, in particular
+  when testing with testpim.py. In that case the log level cannot be set
+  in advance and doing it via the D-Bus API is also not supported.
+  Therefore, for debugging, use SYNCEVOLUTION_LOGLEVEL=<level> to create
+  peers with a specific log level.
+
+* PIM: include pim-manager-api.txt in source distro (FDO #62516)
+
+  The text file must be listed explicitly to be included by "make dist".
+
+* PIM: "full name" -> "fullname" fix in documentation (FDO #62515)
+
+  Make the documentation match the code. A single word without
+  space makes more sense, so let's go with what the code already
+  used.
+
+* PIM: enhanced searching (search part of FDO #64177)
+
+  Search terms now also include 'is/contains/begins-with/ends-with'
+  and they can be combined with 'and' and 'or', also recursively.
+
+* PIM: Pinyin sorting for zh languages (part of FDO #64173)
+
+  Full interleaving of Pinyin transliterations of Chinese names with
+  Western names can be done by doing an explicit Pinyin transliteration
+  as part of computing the sort keys.
+
+  This is done using ICU's Transliteration("Han-Latin"), which we have
+  to call directly because boost::locale does not expose that API.
+
+  We hard-code this behavior for all "zh" languages (as identified by
+  boost::locale), because by default, ICU would sort Pinyin separately
+  from Western names when using the "pinyin" collation.
+
+* PIM: new return value for SyncPeer(), new SyncProgress signal (FDO #63417)
+
+  The SyncPeer() result is derived from the sync statistics. To have
+  them available, the "sync done" signal must include the SyncReport.
+
+  Start and end of a sync could already be detected; "modified" signals
+  while a sync runs depends on a new signal inside the SyncContext when
+  switching from one cycle to the next and at the end of the last one.
+
+* PIM: allow removal of data together with database removal (part of FDO #64835)
+
+  There is a difference in EDS between removing the database definition
+  from the ESourceRegistry (which makes the data unaccessible via EDS)
+  and removing the actual database. EDS itself only removes the definition
+  and leaves the data around to be garbage-collected eventually. This is
+  not what we want for the PIM Manager API; the API makes a stronger
+  guarantee that data is really gone.
+
+  Fixed by introducing a new mode flag for the deleteDatabase() method
+  and deleting the directory of the source directly in the EDS backend,
+  if requested by the caller.
+
+  The syncevolution command line tool will use the default mode and thus
+  keep the data around, while the PIM Manager forces the removal of
+  data.
+
+* EDS: create new databases by cloning the builtin ones (FDO #64176)
+
+  Instead of hard-coding a specific "Backend Summary Setup" in
+  SyncEvolution, copy the config of the system database. That way
+  special flags (like the desired "Backend Summary Setup" for local
+  address books) can be set on a system-wide basis and without having to
+  modify or configure SyncEvolution.
+
+  Because EDS has no APIs to clone an ESource or turn a .source file
+  into a new ESource, SyncEvolution has to resort to manipulating and
+  creating the keyfile directly.
+
+* EDS contacts: update PHOTO+GEO during slow sync, avoid rewriting PHOTO file
+
+  If PHOTO and/or GEO were the only modified properties during a slow
+  sync, the updated item was not written into local storage because
+  they were marked as compare="never" = "not relevant".
+
+  For PHOTO this was intentional in the sample config, with the
+  rationale that local storages often don't store the data exactly as
+  requested. When that happens, comparing the data would lead to
+  unnecessary writes. But EDS and probably all other local SyncEvolution
+  storages (KDE, file) store the photo exactly as requested, so not
+  considering changes had the undesirable effect of not always writing
+  new photo data.
+
+  For GEO, ignoring it was accidental.
+
+* EDS contacts: avoid unnecessary DB writes during slow sync
+
+  Traditionally, contacts were modified shortly before writing into EDS
+  to match with Evolution expectations (must have N, only one CELL TEL,
+  VOICE flag must be set). During a slow sync, the engine compare the
+  modified contacts with the unmodified, incoming one. This led to
+  mismatches and/or merge operations which end up not changing anything
+  in the DB because the only difference would be removed again before
+  writing.
+
+* EDS contacts: read-ahead cache
+
+  Performance is improved by requesting multiple contacts at once and
+  overlapping reading with processing. On a fast system (SSD, CPU fast
+  enough to not be the limiting factor), testpim.py's testSync takes 8
+  seconds for a "match" sync where 1000 contacts get loaded and compared
+  against the same set of contacts. Read-ahead with only 1 contact per
+  query speeds that up to 6.7s due to overlapping IO and
+  processing. Read-ahead with the default 50 contacts per query takes
+  5.5s. It does not get much faster with larger queries.
+
+* command line: execute --export and --print-items while the source is still reading
+
+  Instead of reading all item IDs, then iterating over them, process
+  each new ID as soon as it is available. With sources that support
+  incremental reading (only the PBAP source at the moment) that provides
+  output sooner and is a bit more memory efficient.
+
+* WebDAV: avoid segfault during collection lookup
+
+  Avoid referencing pathProps->second when the set of paths that
+  PROPFINDs returns is empty. Apparently this can happen in combination
+  with Calypso.
+
+* engine: prevent timeouts in HTTP server mode
+
+  HTTP SyncML clients give up after a certain timeout (SyncEvolution
+  after RetryDuration = 5 minutes by default, Nokia e51 after 15
+  minutes) when the server fails to respond.
+
+  This can happen with SyncEvolution as server when it uses a slow
+  storage with many items, for example via WebDAV. In the case of slow
+  session startup, multithreading is now used to run the storage
+  initializing in parallel to sending regular "keep-alive" SyncML
+  replies to the client.
+
+  By default, these replies are sent every 2 minutes. This can be
+  configured with another extensions of the SyncMLVersion property:
+    SyncMLVersion = REQUESTMAXTIME=5m
+
+  Other modes do not use multithreading by default, but it can be
+  enabled by setting REQUESTMAXTIME explicitly. It can be disabled
+  by setting the time to zero.
+
+  The new feature depends on a libsynthesis with multithreading enabled
+  and glib >= 2.32.0, which is necessary to make SyncEvolution itself
+  thread-safe. With an older glib, multithreading is disabled, but can
+  be enabled as a stop-gap measure by setting REQUESTMAXTIME explicitly.
+
+* Various testing and stability enhancements. SyncEvolution had to
+  be made thread-safe for the HTTP timeout prevention.
+
+
+SyncEvolution 1.3.99.3, 06.03.2013
+==================================
+
+Another development snapshot, with a particular focus on enhancing
+(and in some cases, fixing) searching in the PIM Manager. The PIM
+Manager in this snapshot depends on folks 0.9.x and thus gee
+0.8. Support for Bluez 5 was added. The PIM Manager API was extended
+by addding CreatePeer and ReplaceSearch. The previous methods,
+SetPeer and RefineSearch, are still supported.
+
+Some issues in CalDAV, WebDAV and SyncML were fixed.
+
+Graham R. Cobb contributed several patches for enhancing ActiveSync
+support and making it work with Exchange 2010.
+
+Details:
+
+* PIM Manager: add ReplaceSearch, always allow it
+
+  The new ReplaceSearch is more flexible than RefineSearch. It can
+  handle both tightening the search and relaxing it. The downside of it
+  is the more expensive implementation (must check all contacts again,
+  then find minimal set of change signals to update view).
+
+  Previously, a search which had no filter set at all at the begining
+  could not be refined. This limitation of the implementation gets
+  removed by always using a FilteredView, even if the initial filter is
+  empty.
+
+* PIM Manager: introduce CreateConfig()
+
+  That SetPeer() allows modifying and creating a config leads to race
+  conditions when multiple clients want to create a config. The new
+  CreateConfig() avoids that by atomically checking that a config does
+  not exist yet and creating it.
+
+  SetPeer() is still available for backwards compatibility. It continues
+  to be used for modifying an existing config in TestContacts.testSync
+  to check the effect of the logging settings.
+
+* PIM Manager: fix double entries in filtered search with limit
+
+  Stressing the FilteredView by using it in tests originally written
+  for the FullView showed that the filling up a view may have
+  used data while it was inconsistent internally, leading to
+  contacts being present multiple times.
+
+* PIM Manager and sync: support location = GEO property (FDO #60373)
+
+  Exposed as "location" -> (lat, long) in the D-Bus bindings.
+  Reading, writing and updating are supported.
+
+* PIM Manager: support groups = CATEGORIES (FDO #60380)
+
+  Allow reading and writing of groups (folks terminology), aka
+  CATEGORIES in vCard.
+
+* PIM Manager: intelligent phone search in EDS (part of FDO #59571)
+
+  If phone number search is enabled in EDS, then the direct search in
+  EDS now uses the more accurate
+  E_BOOK_QUERY_EQUALS_NATIONAL_PHONE_NUMBER comparison, with the E164
+  formatted caller ID as value to compare against. This gives
+  semantically correct results. The previous solution (now the
+  fallback) had to use substring searches, which did not match if the
+  contact's phone number was not formatted according to E164 and
+  which may have matched the wrong contacts if the trailing numbers
+  are the same.
+
+* PIM Manager : use pre-computed normalized phone numbers from EDS (part of FDO #59571)
+
+  When available, the pre-computed E164 number from EDS will be used
+  instead of doing one libphonebook parser run for each telephone
+  number while reading. Benchmarking showed that this parsing was the
+  number one hotspot, so this is a considerable improvement.
+
+* PIM Manager: fix error messages
+
+  Ensure and check that no unnecessary ERROR messages are printed.
+  libfolks was used slightly incorrectly, leading to several
+  harmless error messages (glib asserts). libphonenumber printed
+  its error messages to stdout.
+
+* PIM Manager: fix memory leaks during writing of contacts
+
+  Constructing the GValues created additional references instead
+  of taking over ownership as intended.
+
+* D-Bus server: fix read-after-free bug when using syslog
+
+  openlog() expects the string to remain valid. Must ensure that in
+  LoggerSyslog by making a copy. Found with valgrind.
+
+* PIM Manager: make implementation of some of the D-Bus methods thread-safe
+
+  The goal is to make it easier to extend syncevo-dbus-server
+  with other IPC mechanisms, which then can call the native C++
+  code directly.
+
+  That code was not prepared to handle calls in threads other than the
+  main one. Now this is checked when entering the methods and work is
+  shifted to the main thread if necessary. In the meantime the calling
+  thread waits for completion.
+
+* PIM Manager: check responsiveness (part of FDO #60851)
+
+  Enhanced the testActive test so that it can detect when the D-Bus
+  server stops responding for too long. One major reason for that was
+  event processing in folks, which got improved as part of
+  https://bugzilla.gnome.org/show_bug.cgi?id=694385
+
+* PIM Manager: adapt to gee 0.8
+
+  Changed the code to compile with gee 0.8, as used by folks 0.9.x.
+  Older versions of folks are no longer supported.
+
+* PBAP: support Bluez 5
+
+  The new Bluez 5 API is the third supported API for doing PBAP
+  transfers. It gets checked first, then the PBAB backend falls back to
+  new-style obexd (file based, similar to Bluez 5, but not quite the
+  same) and finally old-style obexd (data transfer via D-Bus).
+
+  In contrast to previous APIs, Bluez 5 does not report the reason for a
+  failed PBAP transfer. SyncEvolution then throws a generic "transfer
+  failed" error with "reason unknown" as message.
+
+* command line: recover from slow sync with new sync modes
+
+  The error message for an unexpected slow sync still mentioned
+  the old and obsolete "refresh-from-client/server" sync modes.
+  Better mention "refresh-from-local/remote".
+
+* CalDAV: more workarounds for Google CalDAV + unique IDs
+
+  Google became even more strict about checking REV. Tests which
+  reused a UID after deleting the original item started to fail sometime
+  since middle of December 2012.
+
+* CalDAV: work around Google server regression (undeclared namespace prefix in XML)
+
+  Google CalDAV for a while (December 2012 till January 2013) sent
+  invalid XML back when asked to include CardDAV properties in a
+  PROPFIND. This got rejected in the XML parser, which prevents
+  syncing calendar data:
+
+     Neon error code 1: XML parse error at line 55: undeclared namespace prefix
+
+  In the meantime Google fixed the issue in response to a bug report
+  via email. But the workaround, only asking for the properties which
+  are really needed, still makes sense and thus is kept.
+
+* WebDAV: don't send Basic Auth via http proactively (FDO #57248)
+
+  Sending basic authentication headers via http is insecure. Only do
+  it proactively when the connection is encrypted and thus protects
+  the information or when the server explicitly asks for it.
+
+* Nokia: always add TYPE=INTERNET to EMAIL (FDO #61784)
+
+  Without the explicit TYPE=INTERNET, email addresses sent to a Nokia
+  e51 were not shown by the phone and even got lost eventually (when
+  syncing back).
+
+  This commit ensures that the type is set for all emails sent to any
+  Nokia phone, because there may be other phones which need it and
+  phones which don't, shouldn't mind. This was spot-checked with a N97
+  mini, which works fine with and without the INTERNET type.
+
+  This behavior can be disabled again for specific Nokia phones by
+  adding a remote rule which sets the addInternetEmail session variable
+  to FALSE again.
+
+  Non-Nokia phones can enable the feature in a similar way, by setting
+  the variable to TRUE.
+
+* SyncML: config option for broken peers
+
+  Some peers have problems with meta data (CtCap, old Nokia phones)
+  and the sync mode extensions required for advertising the restart
+  capability (Oracle Beehive). The default in SyncEvolution is to
+  advertise the capability, so manual configuration is necessary when
+  working with a peer that fails in that mode.
+
+  Because the problem occurs when SyncEvolution contacts the peers
+  before it gets the device information from the peer, dynamic rules
+  based on the peer identifiers cannot be used. Instead the local config
+  must already disable these extra features in advance.
+
+  The "SyncMLVersion" property gets extended for this. Instead of just
+  "SyncMLVersion = 1.0" (as before) it now becomes possible to say
+  "SyncMLVersion = 1.0, noctcap, norestart".
+
+  "noctcap" disables sending CtCap. "norestart" disables the sync mode
+  extensions and thus doing multiple sync cycles in the same session
+  (used between SyncEvolution instances in some cases to get client and
+  server into sync in one session).
+
+  Both keywords are case-insensitive. There's no error checking for
+  typos, so beware!
+
+  The "SyncMLVersion" property was chosen because it was already in use
+  for configuring SyncML compatibility aspects and adding a new property
+  would have been harder.
+
+* ActiveSync: added support for specifying folder names
+
+  Previously, the database field was interpreted as a Collection ID.  This adds
+  logic to allow the database to be interpreted as a folder path.  The logic is:
+
+  1) If the database is an empty string, pass it through (this is the most
+  common case as it is interpreted as "use the default folder for the
+  source type").
+  2) If the database matches a Collection ID, use the ID (this is the same as
+  the previous behaviour).
+  3) If the database matches a folder path name, with an optional leading "/",
+  use the Collection ID for the matching folder.
+  4) Otherwise, force a FolderSync to get the latest folder changes from the
+  server and repeat steps 2 and 3
+  5) If still no match, throw an error.
+
+* ActiveSync: support for listing databases
+
+  Now --print-databases scans folders on the ActiveSync server and
+  shows suitable folders for the ActiveSync backends instead of the
+  previous, hard-coded help text.
+
+  Invoking --print-databases can be used as a workaround for
+  "SyncFolder error: Invalid synchronization key" errors. A better
+  solution would be to do that automatically, but there was no time
+  to implement that. See FDO #61869 and "[SyncEvolution] Activesync server losing state"
+  http://thread.gmane.org/gmane.comp.mobile.syncevolution/4295
+
+* command line: show backend error when listing databases fails
+
+  The command line swallowed errors thrown by the backend while listing
+  databases. Instead it just showed "<backend name>: backend failed". The goal
+  was to not distract users who accidentally access a non-functional backend.
+  But the result is that operations like --configure or --print-databases could
+  fail without giving the user any hint about the root cause of the issue.
+
+  Now the error explanation in all its gory details is included.
+
+  For example, not having activesyncd running leads to:
+  INFO] eas_contact: backend failed: fetching folder list:
+  GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name
+  org.meego.activesyncd was not provided by any .service files
+
+  And running activesyncd without the necessary gconf keys shows up as:
+  [INFO] eas_contact: backend failed: fetching folder list:
+  GDBus.Error:org.meego.activesyncd.Error.AccountNotFound: Failed to find
+  account [syncevolution@lists.intel.com]
+
+* Minor memory leak fix when using GDBus GIO: GDBusMethodInfo
+
+  Also depends on a glib fix, see https://bugzilla.gnome.org/show_bug.cgi?id=695376
+
+* build fixes
+
+  Avoid -lrt in make dependencies. Add missing pcre libs to
+  syncevo-dbus-server. sqlite backend needs "#include <stdio.h>"
+  (patch from Mario Kicherer).
+
+
+SyncEvolution 1.3.99.2, 13.12.2012
+==================================
+
+Another development snapshot. Includes all fixes that went into 1.3.2
+and several improvements to the PIM Manager. Documentation was updated
+and extended considerably. The pim-manager-api.txt now describes the
+abstract API while src/dbus/server/pim/README explains how
+SyncEvolution implements it.
+
+
+Details:
+
+* PIM Manager searches for a caller ID ('phone' search) in EDS
+  directly while folks still starts up. No unification is done of
+  these results. Intermediate results are replaced by the final ones
+  from folks once those are ready.
+
+* PIM Manager: allow configuration of session directories (part of FDO #55921)
+
+  Useful for moving the session directories to a temporary file system.
+  They are essentially just useful for debugging when used as part of
+  PIM Manager.
+
+  - "logdir" - a directory in which directories are created with
+               debug information about sync session
+  - "maxsessions" - number of sessions that are allowed to exist
+                    after a sync (>= 0): 0 is special and means unlimited,
+                    1 for just the latest, etc.;
+                    old sessions are pruned heuristically (for example,
+                    keep sessions where something changed instead of
+                    some where nothing changed), so there is no hard
+                    guarantee that the last n sessions are present.
+
+* PIM Manager: write less data to disk (part of FDO #55921)
+
+  Avoid writing config file changes to disk by enabling a new
+  "ephemeral" mode for syncing via the PIM Manager. In this mode,
+  config file changes are not flushed resp. discarded directly.
+  This prevents writing to .ini files in ~/.config.
+
+  The "synthesis" binfile client files are still written, but they get
+  redirected into the session directory, which can (and should) be set
+  to a temp file system and get deleted again quickly.
+
+  Data dumps are turned off now in the configs created by the PIM
+  Manager.
+
+* syncevo-dbus-server: use syslog instead of standard output by default
+
+* syncevo-dbus-server: command line options for controlling
+  output and startup
+
+  -d, --duration=seconds/'unlimited'    Shut down automatically
+                                        when idle for this duration (default 300 seconds)
+  -v, --verbosity=level                 Choose amount of output, 0 = no output,
+                                        1 = errors, 2 = info, 3 = debug; default is 1.
+  -o, --stdout                          Enable printing to stdout (result of operations)
+                                        and stderr (errors/info/debug).
+  -s, --no-syslog                       Disable printing to syslog.
+  -p, --start-pim                       Activate the PIM Manager (= unified address book)
+                                        immediately.
+
+* PIM Manager: store set of active address books persistently (FDO #56334)
+
+  Together with storing the sort order persistently, this allows
+  restarting the daemon and have it create the same unified address book
+  again.
+
+* PIM Manager: remove colon from valid peer UID character set (FDO #56436)
+
+  Using the UID as part of file names gets more problematic when
+  allowing colons. Remove that character from the API and enforce
+  the format in the source code.
+
+* PIM Manager API: introduce contact ID and use it for reading
+
+  This makes it easier for a client to fully polulate its view with
+  contact data. Previously it could happen that due to concurrent
+  changes in the server, a client was returned data for the same
+  contact multiple times. A client had to detect that and re-issue
+  read requests.
+
+* PIM Manager API: optional ViewAgent.Quiescent() (FDO #56428)
+
+  The callback is guaranteed to be invoked once when a search has
+  finished sending its initial results, and not sooner. This makes it
+  possible to check whether the current data contains some contact or
+  not.
+
+* PIM Manager: limit number of search results (FDO #56142)
+
+  A 'limit' search term with a number as parameter (formatted as string)
+  can be added to a 'phone' or 'any-contains' search term to truncate the
+  search results after a certain number of contacts. Example:
+    Search([['any-contains', 'Joe'], ['limit', '10']])
+    => return the first 10 Joes.
+
+  As with any other search, the resulting view will be updated if
+  contact data changes.
+
+  The limit must not be changed in a RefineSearch(). A 'limit' term may
+  (but doesn't have to) be given. If it is given, its value must match
+  the value set when creating the search. This limitation simplifies the
+  implementation and its testing. The limitation could be removed if
+  there is sufficient demand.
+
+* PIM Manager: fix refining a search
+
+  Due to not mapping the local index in the view to the parent's index,
+  refining only worked in views where parent and child had the same
+  index for the contacts in the search view.
+
+* PIM Manager: fix starting when done via search
+
+  When the unified address book (= FullView) was not running yet at the
+  time when a client wanted to search it, the unified address book was
+  not started and thus the search never returned results.
+
+* PIM Manager: fix writing contact, support photo and notes
+
+  folks and EDS do not support writing properties in parallel
+  (https://bugzilla.gnome.org/show_bug.cgi?id=652659). Must serialize
+  setting of modified properties.
+
+* PIM Manager: fix incorrect contact removal signals in filtered view
+
+  The filtered view did not check whether a parent's removed contact was
+  really part of the view before sending a removal signal for it.
+
+* D-Bus: missing out parameters in D-Bus introspection XML (FDO #57292)
+
+  The problem was in the C++ D-Bus binding. If the method that gets bound
+  to D-Bus returns a value, that value was ignored in the signature:
+    int foo() => no out parameter
+
+  It works when the method was declared as having a retval:
+    void foo (int &result) => integer out parameter
+
+  This problem existed for both the libdbus and the GIO D-Bus
+  bindings. In SyncEvolution it affected methods like GetVersions().
+
+* PIM Manager performance: pre-compute normalized telephone numbers
+
+  Looking up by phone number spends most of its cycles in normalizing of
+  the phone numbers in the unified address book. Instead of doing that
+  work over and over again during the search, do it once while loading.
+
+  Looking up a phone number only once does not gain from this change, it
+  even gets slower (more memory intensive, less cache locality). Only
+  searching multiple times becomes faster.
+
+  Ultimately it would be best to store the normalized strings together
+  with the telephone number inside EDS when the contact gets
+  created. Work on that is in progress.
+
+* PIM Manager: improve performance of FullView sorting
+
+  This fixes the hotspot during populating the FullView content: moving
+  contacts around required copying IndividualData and thus copying
+  complex C++ structs and strings. Storing pointers and moving those
+  avoids that, with no lack of convenience thanks to boost::ptr_vector.
+
+  Reordering also becomes faster, because the intermediate copy only
+  needs to be of the pointers instead of the full content.
+
+* PIM Manager example: add benchmarking
+
+  The new "checkpoints" split up the whole script run into pieces which
+  are timed separately, with duration printed to stdout. In addition,
+  tools like "perf" can be started for the duration of one phase.
+
+* SyncML: workarounds for broken peers
+
+  Some peers have problems with meta data (CtCap, old Nokia phones) and
+  the sync mode extensions required for advertising the restart
+  capability (Oracle Beehive).
+
+  Because the problem occurs when SyncEvolution contacts the peers
+  before it gets the device information from the peer, dynamic rules
+  based on the peer identifiers cannot be used. Instead the local config
+  must already disable these extra features in advance.
+
+  The "SyncMLVersion" property gets extended for this. Instead of just
+  "SyncMLVersion = 1.0" (as before) it now becomes possible to say
+  "SyncMLVersion = 1.0, noctcap, norestart".
+
+  "noctcap" disables sending CtCap. "norestart" disables the sync mode
+  extensions and thus doing multiple sync cycles in the same session
+  (used between SyncEvolution instances in some cases to get client and
+  server into sync in one session).
+
+  Both keywords are case-insensitive. There's no error checking for
+  typos, so beware!
+
+  The "SyncMLVersion" property was chosen because it was already in use
+  for configuring SyncML compatibility aspects and adding a new property
+  would have been harder.
+
+* EDS: fix creating databases
+
+  --create-database was broken in combination with the final code in EDS
+  3.6 because it passed NULL for the UID to e_source_new_with_uid(),
+  which is considered an error by the implementation of that
+  method. Must use e_source_new() if we don't have a UID.
+
+* fixed some memory leaks, extended tests to cover new features and bugs
+
+
+SyncEvolution 1.3.99.1, 25.10.2012
+==================================
+
+Development snapshot. The PIM Manager API implementation is fully
+implemented, see src/dbus/server/pim/README for an introduction.  The
+PBAP backend together with a new one-way caching sync mode provides an
+efficient way of keeping a local database in sync via Bluetooth with a
+phone which does not implement SyncML.
+
+Other changes:
+
+* workarounds for warnings from g++ 4.5
+
+* engine: : local cache sync mode
+
+  This patch  introduces support for true one-way syncing ("caching"):
+  the local datastore is meant to be an exact copy of the data on the
+  remote side. The assumption is that no modifications are ever made
+  locally outside of syncing. This is different from one-way sync modes,
+  which allows local changes and only temporarily disables sending them
+  to the remote side.
+
+  Another goal of the new mode is to avoid data writes as much as
+  possible.
+
+  This new mode only works on the server side of a sync, where the
+  engine has enough control over the data flow. Setting "sync" to:
+  - "local-cache-incremental" will do an incremental sync (if possible)
+    or a slow sync (otherwise). This is usually the right mode to use,
+    and thus has "local-cache" as alias.
+  - "local-cache-slow" will always do a slow sync. Useful for
+    debugging or after (accidentally) making changes on the local side.
+    An incremental sync will ignore such changes because they are not
+    meant to happen, aren't checked for to improve performance and
+    thus will leave client and server out-of-sync!
+
+  Both modes are recorded in the sync report of the local side. The
+  target side is the client and records the normal "two-way" or "slow"
+  sync modes.
+
+  With the current SyncEvolution contact field list, first, middle and
+  last name are used to find matches for contacts. For events, tasks
+  and memos, time, summary and description are used.
+
+* HTTP proxy: useProxy=0 overrides http_* env variables
+
+  Previously, if http_proxy was set, a proxy was used even if
+  explicitly disabled. This prevented disabling the use of a proxy
+  which only made sense in some cases, like accessing something
+  that runs locally. Explicitly telling SyncEvolution to ignore
+  http_proxy is necessary because it doesn't support no_proxy.
+
+* WebDAV: auto-discovery fix
+
+  With Google Contact + CardDAV the auto-discovery failed after
+  finding the default address book, without reporting that result.
+
+* command line: implement --create/remove-database
+
+  Creating a database is only possible with a chosen name. The UID is
+  chosen automatically by the storage. Only implemented in the EDS
+  backend.
+
+* file backend: sub-second mod time stamps
+
+  Change tracking in the file backend used to be based on the
+  modification time in seconds. When running many syncs quickly (as in
+  testing), that can lead to changes not being detected when they happen
+  within a second. Now the file backend also includes the sub-second part of the
+  modification time stamp, if available.
+
+  This change is relevant when upgrading SyncEvolution: most of the
+  items will be considered "updated" once during the first sync after
+  the upgrade (or a downgrade) because the revision strings get
+  calculated differently.
+
+* D-Bus server: avoid progress outside of 0-100% range
+
+  For example in the new TestLocalCache.testItemDelete100, the
+  percentage value in the ProgressChanged signal become larger
+  than 100 and then revert to 100 at the end of the sync.
+
+  Seems the underlying calculation is faulty or simply inaccurate.
+  This is not fixed. Instead the result is just clipped to the valid
+  range.
+
+* code cleanup + improvements in testing
+
+
 SyncEvolution 1.3.1 -> 1.3.2, 05.11.2012
 ========================================
 

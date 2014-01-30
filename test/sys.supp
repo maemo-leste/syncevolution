@@ -746,6 +746,40 @@
    fun:gnutls_certificate_set_x509_trust_file
 }
 
+# ==24318== Syscall param sendmsg(mmsg[0].msg_hdr) points to uninitialised byte(s)
+# ==24318==    at 0xA352FFB: sendmmsg (sendmmsg.c:36)
+# ==24318==    by 0x113B12DE: __libc_res_nsend (res_send.c:1140)
+# ==24318==    by 0x113AEB8B: __libc_res_nquery (res_query.c:226)
+# ==24318==    by 0x113AF147: __libc_res_nquerydomain (res_query.c:582)
+# ==24318==    by 0x113AF74E: __libc_res_nsearch (res_query.c:378)
+# ==24318==    by 0x1C5F6A55: _nss_dns_gethostbyname4_r (dns-host.c:314)
+# ==24318==    by 0xA32CEF1: gaih_inet (getaddrinfo.c:849)
+# ==24318==    by 0xA3302D3: getaddrinfo (getaddrinfo.c:2473)
+# ==24318==    by 0x7E61812: do_lookup_by_name (gthreadedresolver.c:81)
+# ==24318==    by 0x7E5F044: g_task_thread_pool_thread (gtask.c:1242)
+# ==24318==    by 0x8600B95: g_thread_pool_thread_proxy (gthreadpool.c:309)
+# ==24318==    by 0x86001D4: g_thread_proxy (gthread.c:798)
+# ==24318==    by 0x983DE0D: start_thread (pthread_create.c:311)
+# ==24318==    by 0xA3519EC: clone (clone.S:113)
+# ==24318==  Address 0x1c3e3ef0 is on thread 3's stack
+# ==24318== 
+{
+   getaddrinfo + dns
+   Memcheck:Param
+   sendmsg(mmsg[0].msg_hdr)
+   fun:sendmmsg
+   ...
+   fun:getaddrinfo
+}
+{
+   getaddrinfo + dns (with stack unwinding stopping in libc)
+   Memcheck:Param
+   sendmsg(mmsg[0].msg_hdr)
+   fun:sendmmsg
+   ...
+   fun:__libc_res_nquerydomain
+}
+
 # ==25419== 21 bytes in 1 blocks are definitely lost in loss record 157 of 649
 # ==25419==    at 0x4C27673: malloc (vg_replace_malloc.c:263)
 # ==25419==    by 0xA182881: strdup (strdup.c:43)
@@ -823,6 +857,15 @@
    ...
    fun:*GNOME*Password*
 }
+{
+   gcrypt + GNOME keyring + function names
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:gcry_mpi_snew
+   ...
+   fun:gnome_keyring_*_network_password*
+}
 
 # ==5221== 280 (24 direct, 256 indirect) bytes in 1 blocks are definitely lost in loss record 2,234 of 2,429
 # ==5221==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
@@ -851,32 +894,41 @@
    obj:*libgnome-keyring.so*
 }
 
-
-# ==10804== 60 (16 direct, 44 indirect) bytes in 1 blocks are definitely lost in loss record 1,121 of 2,014
-# ==10804==    at 0x4C27673: malloc (vg_replace_malloc.c:263)
-# ==10804==    by 0x7FABC02: g_malloc (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
-# ==10804==    by 0x7FC0976: g_slice_alloc (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
-# ==10804==    by 0x7F9045F: g_error_copy (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
-# ==10804==    by 0x76700B1: ??? (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
-# ==10804==    by 0x761465E: g_initable_new_valist (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
-# ==10804==    by 0x7614748: g_initable_new (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
-# ==10804==    by 0x766EB1E: g_dbus_connection_new_for_address_sync (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
-# ==10804==    by 0x597E08: GDBusCXX::dbus_get_bus_connection(char const*, char const*, bool, GDBusCXX::DBusErrorCXX*) (gdbus-cxx-bridge.cpp:58)
-# ==10804==    by 0x583CB8: SyncEvo::ConnmanClient::ConnmanClient(SyncEvo::Server&) (connman-client.cpp:30)
-# ==10804==    by 0x541730: SyncEvo::Server::Server(_GMainLoop*, bool&, boost::shared_ptr<SyncEvo::Restart>&, GDBusCXX::DBusConnectionPtr const&, int) (server.cpp:239)
-# ==10804==    by 0x52141B: main (main.cpp:113)
-# ==10804== 
+# ==28350== 727 (184 direct, 543 indirect) bytes in 1 blocks are definitely lost in loss record 2,542 of 2,693
+# ==28350==    at 0x4C272B8: calloc (vg_replace_malloc.c:566)
+# ==28350==    by 0xE6293A5: ??? (in /lib/x86_64-linux-gnu/libdbus-1.so.3.7.2)
+# ==28350==    by 0xE62CE0B: dbus_message_new_error (in /lib/x86_64-linux-gnu/libdbus-1.so.3.7.2)
+# ==28350==    by 0xE62F8C5: ??? (in /lib/x86_64-linux-gnu/libdbus-1.so.3.7.2)
+# ==28350==    by 0xE620DF1: dbus_connection_send_with_reply (in /lib/x86_64-linux-gnu/libdbus-1.so.3.7.2)
+# ==28350==    by 0xE621090: dbus_connection_send_with_reply_and_block (in /lib/x86_64-linux-gnu/libdbus-1.so.3.7.2)
+# ==28350==    by 0xE61C78B: dbus_bus_register (in /lib/x86_64-linux-gnu/libdbus-1.so.3.7.2)
+# ==28350==    by 0xE61CA4E: ??? (in /lib/x86_64-linux-gnu/libdbus-1.so.3.7.2)
+# ==28350==    by 0x5974EE6: ??? (in /usr/lib/x86_64-linux-gnu/libgnome-keyring.so.0.2.0)
+# ==28350==    by 0x5976614: ??? (in /usr/lib/x86_64-linux-gnu/libgnome-keyring.so.0.2.0)
+# ==28350==    by 0x913B82: SyncEvo::GNOMELoadPasswordSlot(SyncEvo::InitStateTri const&, std::string const&, std::string const&, SyncEvo::ConfigPasswordKey const&, SyncEvo::InitState<std::string>&) (GNOMEPlatform.cpp:85)
+# ==28350==    by 0x8EF789: boost::signals2::detail::signal5_impl<bool, SyncEvo::InitStateTri const&, std::string const&, std::string const&, SyncEvo::ConfigPasswordKey const&, SyncEvo::InitState<std::string>&, SyncEvo::TrySlots, int, std::less<int>, boost::function<bool ()(SyncEvo::InitStateTri const&, std::string const&, std::string const&, SyncEvo::ConfigPasswordKey const&, SyncEvo::InitState<std::string>&)>, boost::function<bool ()(boost::signals2::connection const&, SyncEvo::InitStateTri const&, std::string const&, std::string const&, SyncEvo::ConfigPasswordKey const&, SyncEvo::InitState<std::string>&)>, boost::signals2::mutex>::operator()(SyncEvo::InitStateTri const&, std::string const&, std::string const&, SyncEvo::ConfigPasswordKey const&, SyncEvo::InitState<std::string>&) (function_template.hpp:760)
+# ==28350==    by 0x8EF9DB: SyncEvo::SimpleUserInterface::askPassword(std::string const&, std::string const&, SyncEvo::ConfigPasswordKey const&) (signal_template.hpp:695)
+# ==28350==    by 0xA93370: SyncEvo::PasswordConfigProperty::checkPassword(SyncEvo::UserInterface&, SyncEvo::SyncConfig&, int, SyncEvo::ConfigProperty const&, std::string const&) const (SyncConfig.cpp:2053)
+# ==28350==    by 0xA7EBD8: SyncEvo::PasswordConfigProperty::checkPasswords(SyncEvo::UserInterface&, SyncEvo::SyncConfig&, int, std::list<std::string, std::allocator<std::string> > const&) (SyncConfig.cpp:2106)
+# ==28350==    by 0x8E768A: SyncEvo::(anonymous namespace)::WebDAVTest::createSource(std::string const&, bool) const (WebDAVSourceRegister.cpp:308)
+# ==28350==    by 0x8E8AA3: SyncEvo::(anonymous namespace)::WebDAVTestSingleton::WebDAVList::push_back(boost::shared_ptr<SyncEvo::(anonymous namespace)::WebDAVTest> const&) (WebDAVSourceRegister.cpp:382)
+# ==28350==    by 0x8E9CB5: SyncEvo::(anonymous namespace)::WebDAVTestSingleton::init() const (WebDAVSourceRegister.cpp:451)
+# ==28350==    by 0x6F5364: SyncEvo::TestEvolution::init() (client-test-app.cpp:147)
+# ==28350==    by 0x6F8618: SyncEvo::TestEvolution::getNumLocalSources() (client-test-app.cpp:277)
+# ==28350==    by 0x8B3DC5: SyncEvo::ClientTestFactory::makeTest() (ClientTest.cpp:6019)
+# ==28350==    by 0x75470E1: CppUnit::TestFactoryRegistry::addTestToSuite(CppUnit::TestSuite*) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==28350==    by 0x7547158: CppUnit::TestFactoryRegistry::makeTest() (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==28350==    by 0x6E6DB1: main (client-test-main.cpp:303)
+# ==28350== 
 {
-   failed g_dbus_connection_new_for_address_sync
+   keyring + D-Bus error
    Memcheck:Leak
-   fun:malloc
-   fun:g_malloc
-   fun:g_slice_alloc
-   fun:g_error_copy
-   obj:*libgio*
-   fun:g_initable_new_valist
-   fun:g_initable_new
-   fun:g_dbus_connection_new_for_address_sync
+   fun:calloc
+   obj:*/libdbus*
+   fun:dbus_message_new_error
+   ...
+   obj:*/libgnome-keyring.so*
+   fun:*GNOME*PasswordSlot*
 }
 
 # ==10804== 363 (120 direct, 243 indirect) bytes in 3 blocks are definitely lost in loss record 1,844 of 2,014
@@ -907,7 +959,29 @@
    ...
    obj:*libgio*
    obj:*libglib*
+   ...
    fun:start_thread
+}
+{
+   GIO thread leak, variant 2
+   Memcheck:Leak
+   fun:malloc
+   fun:standard_malloc
+   ...
+   fun:g_simple_async_result_complete
+   ...
+   fun:g_main_loop_run
+   fun:clone
+}
+# This occurred with self-compiled glib on Debian Testing after Debian Wheezy:
+# stack backtrace stops above parse_value_from_blob(). This is unfortunately
+# very broad :-(
+{
+   GIO thread leak, variant 2
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:parse_value_from_blob
 }
 
 # ==12501== 168 (64 direct, 104 indirect) bytes in 1 blocks are definitely lost in loss record 1,124 of 1,317
@@ -1075,6 +1149,124 @@
    fun:g_slice_alloc0
    fun:g_main_context_push_thread_default
    fun:gdbus_shared_thread_func
+}
+
+# ==19386== 88 (32 direct, 56 indirect) bytes in 1 blocks are definitely lost in loss record 3,956 of 4,373
+# ==19386==    at 0x402B9B5: calloc (in /usr/lib/valgrind/vgpreload_memcheck-x86-linux.so)
+# ==19386==    by 0x5C3299A: g_malloc0 (gmem.c:189)
+# ==19386==    by 0x5AFFAF5: _g_socket_read_with_control_messages (gdbusprivate.c:183)
+# ==19386==    by 0x5AFFCAC: _g_dbus_worker_do_read_unlocked (gdbusprivate.c:861)
+# ==19386==    by 0x5B0219B: _g_dbus_worker_do_read_cb (gdbusprivate.c:745)
+# ==19386==    by 0x5A98BB4: g_simple_async_result_complete (gsimpleasyncresult.c:777)
+# ==19386==    by 0x5A98C1A: complete_in_idle_cb (gsimpleasyncresult.c:789)
+# ==19386==    by 0x5C299EF: g_idle_dispatch (gmain.c:5205)
+# ==19386==    by 0x5C2CCDD: g_main_context_dispatch (gmain.c:3054)
+# ==19386==    by 0x5C2D087: g_main_context_iterate.isra.21 (gmain.c:3701)
+# ==19386==    by 0x5C2D4EA: g_main_loop_run (gmain.c:3895)
+# ==19386==    by 0x5E4408D: clone (clone.S:131)
+# ==19386== 
+{
+   _g_socket_read_with_control_messages
+   Memcheck:Leak
+   fun:calloc
+   fun:g_malloc0
+   fun:_g_socket_read_with_control_messages
+   fun:_g_dbus_worker_do_read_unlocked
+}
+
+# ==10677== 40 (16 direct, 24 indirect) bytes in 1 blocks are definitely lost in loss record 1,236 of 2,449
+# ==10677==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
+# ==10677==    by 0x9736F30: g_malloc (gmem.c:159)
+# ==10677==    by 0x974B322: g_slice_alloc (gslice.c:1003)
+# ==10677==    by 0x971E1FC: g_error_new_literal (gerror.c:456)
+# ==10677==    by 0x971E464: g_set_error_literal (gerror.c:595)
+# ==10677==    by 0x917B791: g_cancellable_set_error_if_cancelled (gcancellable.c:315)
+# ==10677==    by 0x91BA816: g_socket_client_enumerator_callback (gsocketclient.c:1533)
+# ==10677==    by 0x91B4536: g_simple_async_result_complete (gsimpleasyncresult.c:767)
+# ==10677==    by 0x827D374: ??? (in /usr/lib/x86_64-linux-gnu/libsoup-2.4.so.1.5.0)
+# ==10677==    by 0x827DA55: ??? (in /usr/lib/x86_64-linux-gnu/libsoup-2.4.so.1.5.0)
+# ==10677==    by 0x827DB6C: ??? (in /usr/lib/x86_64-linux-gnu/libsoup-2.4.so.1.5.0)
+# ==10677==    by 0x91B4536: g_simple_async_result_complete (gsimpleasyncresult.c:767)
+# ==10677==    by 0x91B4638: complete_in_idle_cb (gsimpleasyncresult.c:779)
+# ==10677==    by 0x9731354: g_main_context_dispatch (gmain.c:2539)
+# ==10677==    by 0x9731687: g_main_context_iterate.isra.23 (gmain.c:3146)
+# ==10677==    by 0x9731743: g_main_context_iteration (gmain.c:3207)
+# ==10677==    by 0x69F646: main (sync-helper.cpp:177)
+# ==10677== 
+{
+   soup + cancel
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:g_cancellable_set_error_if_cancelled
+   ...
+   fun:g_simple_async_result_complete
+   obj:*libsoup-2.4.so*
+}
+
+# ==1308== 38 (12 direct, 26 indirect) bytes in 1 blocks are definitely lost in loss record 1,695 of 3,005
+# ==1308==    at 0x4029A28: malloc (in /usr/lib/valgrind/vgpreload_memcheck-x86-linux.so)
+# ==1308==    by 0x5447932: g_malloc (gmem.c:159)
+# ==1308==    by 0x545DEC1: g_slice_alloc (gslice.c:1003)
+# ==1308==    by 0x542DD03: g_error_new_literal (gerror.c:456)
+# ==1308==    by 0x542DFC3: g_set_error_literal (gerror.c:595)
+# ==1308==    by 0x52714D2: g_cancellable_set_error_if_cancelled (gcancellable.c:315)
+# ==1308==    by 0x52B043B: g_socket_condition_timed_wait (gsocket.c:3474)
+# ==1308==    by 0x52B06F7: g_socket_condition_wait (gsocket.c:3427)
+# ==1308==    by 0x52B07A4: g_socket_accept (gsocket.c:2151)
+# ==1308==    by 0x52B867D: accept_ready (gsocketlistener.c:694)
+# ==1308==    by 0x52AEAC0: socket_source_dispatch (gsocket.c:3165)
+# ==1308==    by 0x5441CDD: g_main_context_dispatch (gmain.c:3054)
+# ==1308==    by 0x5442087: g_main_context_iterate.isra.21 (gmain.c:3701)
+# ==1308==    by 0x5442147: g_main_context_iteration (gmain.c:3762)
+# ==1308==    by 0x55838C4: (below main) (libc-start.c:260)
+# ==1308== 
+{
+   g_socket_accept + cancel
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:g_cancellable_set_error_if_cancelled
+   ...
+   fun:g_socket_accept
+   fun:accept_ready
+   fun:socket_source_dispatch
+   fun:g_main_context_dispatch
+}
+
+# ==25864== 42 (16 direct, 26 indirect) bytes in 1 blocks are definitely lost in loss record 667 of 1,425
+# ==25864==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
+# ==25864==    by 0x999F180: g_malloc (gmem.c:159)
+# ==25864==    by 0x99B41E2: g_slice_alloc (gslice.c:1003)
+# ==25864==    by 0x9985A6C: g_error_new_literal (gerror.c:456)
+# ==25864==    by 0x9985CD4: g_set_error_literal (gerror.c:595)
+# ==25864==    by 0x93DEF31: g_cancellable_set_error_if_cancelled (gcancellable.c:315)
+# ==25864==    by 0x941BEB2: g_socket_condition_timed_wait (gsocket.c:3474)
+# ==25864==    by 0x941C442: g_socket_accept (gsocket.c:2151)
+# ==25864==    by 0x94233B9: accept_ready (gsocketlistener.c:694)
+# ==25864==    by 0x941A285: socket_source_dispatch (gsocket.c:3165)
+# ==25864==    by 0x99993D4: g_main_context_dispatch (gmain.c:3054)
+# ==25864==    by 0x9999717: g_main_context_iterate.isra.22 (gmain.c:3701)
+# ==25864==    by 0x99997D3: g_main_context_iteration (gmain.c:3762)
+# ==25864==    by 0x6CCAAE: main (sync-helper.cpp:202)
+# ==25864== 
+#
+# First appeared in GNOME 3.8. Seems to be timing dependent. The code
+# path is not reached when not running under valgrind.
+{
+   GIO socket error leak
+   Memcheck:Leak
+   fun:malloc
+   fun:g_malloc
+   fun:g_slice_alloc
+   fun:g_error_new_literal
+   fun:g_set_error_literal
+   fun:g_cancellable_set_error_if_cancelled
+   fun:g_socket_condition_timed_wait
+   fun:g_socket_accept
+   fun:accept_ready
+   fun:socket_source_dispatch
+   fun:g_main_context_dispatch
 }
 
 ### KDE ###
@@ -1266,6 +1458,47 @@
    obj:*libfontconfig*
 }
 
+# ==2302== Syscall param write(buf) points to uninitialised byte(s)
+# ==2302==    at 0x7E273A0: __write_nocancel (syscall-template.S:81)
+# ==2302==    by 0x1276A697: ??? (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x127711F3: ??? (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x1276D4FA: ??? (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x1276D5AA: FcConfigBuildFonts (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x12775D4A: FcInitLoadConfigAndFonts (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x12775F08: FcInit (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0xBD08876: ??? (in /usr/lib/x86_64-linux-gnu/libQtGui.so.4.8.6)
+# ==2302==    by 0xBC9A3A9: QApplicationPrivate::construct(_XDisplay*, unsigned long, unsigned long) (in /usr/lib/x86_64-linux-gnu/libQtGui.so.4.8.6)
+# ==2302==    by 0xBC9A748: QApplication::QApplication(int&, char**, bool, int) (in /usr/lib/x86_64-linux-gnu/libQtGui.so.4.8.6)
+# ==2302==    by 0x5DDD6A7: KApplication::KApplication(bool) (in /usr/lib/libkdeui.so.5.10.5)
+# ==2302==    by 0x72709E: SyncEvo::KDEInitMainSlot(char const*) (KDEPlatform.cpp:107)
+# ==2302==    by 0x7FC653: boost::signals2::detail::signal1_impl<void, char const*, boost::signals2::optional_last_value<void>, int, std::less<int>, boost::function<void (char const*)>, boost::function<void (boost::signals2::connection const&, char const*)>, boost::signals2::mutex>::operator()(char const*) (function_template.hpp:767)
+# ==2302==    by 0x7E7013: SyncEvo::SyncContext::initMain(char const*) (signal_template.hpp:695)
+# ==2302==    by 0x63950A: main (main.cpp:158)
+# ==2302==  Address 0x17674e5c is 716 bytes inside a block of size 94,448 alloc'd
+# ==2302==    at 0x4C2935B: malloc (vg_replace_malloc.c:270)
+# ==2302==    by 0x12769E5C: ??? (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x127711E0: ??? (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x1276D4FA: ??? (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x1276D5AA: FcConfigBuildFonts (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x12775D4A: FcInitLoadConfigAndFonts (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0x12775F08: FcInit (in /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.6.2)
+# ==2302==    by 0xBD08876: ??? (in /usr/lib/x86_64-linux-gnu/libQtGui.so.4.8.6)
+# ==2302==    by 0xBC9A3A9: QApplicationPrivate::construct(_XDisplay*, unsigned long, unsigned long) (in /usr/lib/x86_64-linux-gnu/libQtGui.so.4.8.6)
+# ==2302==    by 0xBC9A748: QApplication::QApplication(int&, char**, bool, int) (in /usr/lib/x86_64-linux-gnu/libQtGui.so.4.8.6)
+# ==2302==    by 0x5DDD6A7: KApplication::KApplication(bool) (in /usr/lib/libkdeui.so.5.10.5)
+# ==2302==    by 0x72709E: SyncEvo::KDEInitMainSlot(char const*) (KDEPlatform.cpp:107)
+# ==2302==    by 0x7FC653: boost::signals2::detail::signal1_impl<void, char const*, boost::signals2::optional_last_value<void>, int, std::less<int>, boost::function<void (char const*)>, boost::function<void (boost::signals2::connection const&, char const*)>, boost::signals2::mutex>::operator()(char const*) (function_template.hpp:767)
+# ==2302==    by 0x7E7013: SyncEvo::SyncContext::initMain(char const*) (signal_template.hpp:695)
+# ==2302==    by 0x63950A: main (main.cpp:158)
+# ==2302== 
+{
+   fontconfig write
+   Memcheck:Param
+   write(buf)
+   ...
+   obj:*/libfontconfig.so*
+}
+
 # ==10153== Conditional jump or move depends on uninitialised value(s)
 # ==10153==    at 0x9758290: inflateReset2 (in /usr/lib/libz.so.1.2.3.4)
 # ==10153==    by 0x975837F: inflateInit2_ (in /usr/lib/libz.so.1.2.3.4)
@@ -1445,4 +1678,200 @@
    obj:*libstreams.so*
    fun:call_init
    fun:_dl_init
+}
+
+# ==25464== 24 bytes in 1 blocks are definitely lost in loss record 1,967 of 5,019
+# ==25464==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
+# ==25464==    by 0xA91BD50: g_malloc (gmem.c:159)
+# ==25464==    by 0xA930C92: g_slice_alloc (gslice.c:1003)
+# ==25464==    by 0xA9311E5: g_slice_alloc0 (gslice.c:1029)
+# ==25464==    by 0xA925622: g_queue_copy (gqueue.c:222)
+# ==25464==    by 0x1A8851D3: tp_proxy_poll_features (proxy.c:2202)
+# ==25464==    by 0x1A885974: tp_proxy_emit_invalidated (proxy.c:618)
+# ==25464==    by 0x1A78D92A: _tp_account_manager_got_all_cb (account-manager.c:482)
+# ==25464==    by 0x1A880F32: _tp_cli_dbus_properties_invoke_callback_get_all (tp-cli-generic-body.h:1204)
+# ==25464==    by 0x1A88714F: tp_proxy_pending_call_idle_invoke (proxy-methods.c:155)
+# ==25464==    by 0xA916114: g_main_context_dispatch (gmain.c:2715)
+# ==25464==    by 0xA916447: g_main_context_iterate.isra.24 (gmain.c:3290)
+# ==25464==    by 0xA916841: g_main_loop_run (gmain.c:3484)
+# ==25464==    by 0x781A01: SyncEvo::Server::run() (server.cpp:439)
+# ==25464==    by 0x74B15A: main (main.cpp:158)
+# ==25464== 
+{
+   tp_proxy_pending_call_idle_invoke
+   Memcheck:Leak
+   fun:malloc
+   fun:g_malloc
+   fun:g_slice_alloc
+   fun:g_slice_alloc0
+   fun:g_queue_copy
+   fun:tp_proxy_poll_features
+   fun:tp_proxy_emit_invalidated
+   fun:_tp_account_manager_got_all_cb
+   fun:_tp_cli_dbus_properties_invoke_callback_get_all
+   fun:tp_proxy_pending_call_idle_invoke
+   fun:g_main_context_dispatch
+   ...
+   fun:g_main_loop_run
+   fun:_ZN7SyncEvo6Server3runEv
+   fun:main
+}
+
+# ==4782== 2,048 bytes in 1 blocks are definitely lost in loss record 2,395 of 2,503
+# ==4782==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
+# ==4782==    by 0x4C28D6F: realloc (vg_replace_malloc.c:632)
+# ==4782==    by 0x10955415: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.26.22.4)
+# ==4782==    by 0x109480DD: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.26.22.4)
+# ==4782==    by 0x10944048: gnutls_session_get_data2 (in /usr/lib/x86_64-linux-gnu/libgnutls.so.26.22.4)
+# ==4782==    by 0x6E4D666: ne_sock_connect_ssl (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E572DE: ??? (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E454F9: ??? (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E45D1B: ne_begin_request (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E453AC: ne_request_dispatch (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E52BCC: ??? (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x8ECB01: SyncEvo::Neon::Session::propfindURI(std::string const&, int, ne_propname const*, boost::function<void ()(SyncEvo::Neon::URI const&, ne_prop_result_set_s const*)> const&, SyncEvo::Timespec const&) (NeonCXX.cpp:426)
+# ==4782==    by 0x8ECE4E: SyncEvo::Neon::Session::propfindProp(std::string const&, int, ne_propname const*, boost::function<void ()(SyncEvo::Neon::URI const&, ne_propname const*, char const*, ne_status const*)> const&, SyncEvo::Timespec const&) (NeonCXX.cpp:461)
+# ==4782==    by 0x8E1539: SyncEvo::WebDAVSource::databaseRevision() (WebDAVSource.cpp:1332)
+# ==4782==    by 0x8CF30C: SyncEvo::CalDAVSource::subDatabaseRevision() (CalDAVSource.h:37)
+# ==4782==    by 0xA56FCC: SyncEvo::MapSyncSource::endSync(bool) (MapSyncSource.cpp:252)
+# ==4782==    by 0x86FCEB: SyncEvo::TestingSyncSourcePtr::stopAccess() (ClientTest.cpp:349)
+# ==4782==    by 0x870424: SyncEvo::TestingSyncSourcePtr::reset(SyncEvo::TestingSyncSource*, SyncEvo::TestingSyncSourcePtr::Flags) (ClientTest.cpp:294)
+# ==4782==    by 0x7A3188: SyncEvo::LocalTests::testImport() (ClientTest.cpp:1473)
+# ==4782==    by 0x7546B50: CppUnit::TestCaseMethodFunctor::operator()() const (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x753CBB4: CppUnit::DefaultProtector::protect(CppUnit::Functor const&, CppUnit::ProtectorContext const&) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x7543B71: CppUnit::ProtectorChain::protect(CppUnit::Functor const&, CppUnit::ProtectorContext const&) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x754C6F4: CppUnit::TestResult::protect(CppUnit::Functor const&, CppUnit::Test*, std::string const&) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x754676E: CppUnit::TestCase::run(CppUnit::TestResult*) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x754C679: CppUnit::TestResult::runTest(CppUnit::Test*) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x754EB38: CppUnit::TestRunner::run(CppUnit::TestResult&, std::string const&) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x7550DA5: CppUnit::TextTestRunner::run(std::string, bool, bool, bool) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x6B921A: main (client-test-main.cpp:349)
+# ==4782== 
+#
+# Started to appear on testing-amd64 after switching Apple CalDAV testing to https.
+# FDO #61851
+# 
+{
+   neon + gnutls
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:gnutls_session_get_data2
+   fun:ne_sock_connect_ssl
+}
+
+# ==15770== 38 (12 direct, 26 indirect) bytes in 1 blocks are definitely lost in loss record 1,210 of 2,105
+# ==15770==    at 0x4029A28: malloc (in /usr/lib/valgrind/vgpreload_memcheck-x86-linux.so)
+# ==15770==    by 0x5447932: g_malloc (gmem.c:159)
+# ==15770==    by 0x545DEC1: g_slice_alloc (gslice.c:1003)
+# ==15770==    by 0x542DD03: g_error_new_literal (gerror.c:456)
+# ==15770==    by 0x542DFC3: g_set_error_literal (gerror.c:595)
+# ==15770==    by 0x52714D2: g_cancellable_set_error_if_cancelled (gcancellable.c:315)
+# ==15770==    by 0x52BBCA2: g_task_propagate_error (gtask.c:1433)
+# ==15770==    by 0x52BC5EE: g_task_propagate_pointer (gtask.c:1508)
+# ==15770==    by 0x5279DA7: g_dummy_proxy_resolver_lookup_finish (gdummyproxyresolver.c:116)
+# ==15770==    by 0x52A9399: g_proxy_resolver_lookup_finish (gproxyresolver.c:196)
+# ==15770==    by 0x52A8972: proxy_lookup_cb (gproxyaddressenumerator.c:494)
+# ==15770==    by 0x52BBA90: g_task_return_now (gtask.c:1105)
+# ==15770==    by 0x52BBACA: complete_in_idle_cb (gtask.c:1114)
+# ==15770==    by 0x543E9EF: g_idle_dispatch (gmain.c:5205)
+# ==15770==    by 0x5441CDD: g_main_context_dispatch (gmain.c:3054)
+# ==15770==    by 0x5442087: g_main_context_iterate.isra.21 (gmain.c:3701)
+# ==15770==    by 0x54424EA: g_main_loop_run (gmain.c:3895)
+# ==15770==    by 0x83BC85B: SyncEvo::SyncContext::doSync() (SyncContext.cpp:4157)
+# ==15770==    by 0x83C645A: SyncEvo::SyncContext::sync(SyncEvo::SyncReport*) (SyncContext.cpp:3414)
+# ==15770==    by 0x8246973: SyncEvo::SessionHelper::doSync(SyncEvo::SessionCommon::SyncParams const&, boost::shared_ptr<GDBusCXX::Result2<bool, SyncEvo::SyncReport> > const&) (session-helper.cpp:221)
+# ==15770==    by 0xA7455AB: ???
+# ==15770== 
+#
+# Seen with GNOME 3.8 on Debian Testing post Wheezy.
+{
+   dummy proxy error
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:g_error_new_literal
+   ...
+   fun:g_cancellable_set_error_if_cancelled
+   ...
+   fun:g_dummy_proxy_resolver_lookup_finish
+}
+
+# ==17128== 38 (12 direct, 26 indirect) bytes in 1 blocks are definitely lost in loss record 1,206 of 2,123
+# ==17128==    at 0x4029A28: malloc (in /usr/lib/valgrind/vgpreload_memcheck-x86-linux.so)
+# ==17128==    by 0x5447932: g_malloc (gmem.c:159)
+# ==17128==    by 0x545DEC1: g_slice_alloc (gslice.c:1003)
+# ==17128==    by 0x542DE05: g_error_copy (gerror.c:499)
+# ==17128==    by 0x5161125: got_addresses (soup-address.c:1126)
+# ==17128==    by 0x5160D1C: complete_resolve_async (soup-address.c:657)
+# ==17128==    by 0x5160E3A: lookup_resolved (soup-address.c:699)
+# ==17128==    by 0x52BBA90: g_task_return_now (gtask.c:1105)
+# ==17128==    by 0x52BC1B5: g_task_return (gtask.c:1158)
+# ==17128==    by 0x53BCCF8: g_cclosure_marshal_VOID__VOIDv (gmarshal.c:115)
+# ==17128==    by 0x53BB2ED: _g_closure_invoke_va (gclosure.c:840)
+# ==17128==    by 0x53D3AFC: g_signal_emit_valist (gsignal.c:3234)
+# ==17128==    by 0x53D4672: g_signal_emit (gsignal.c:3384)
+# ==17128==    by 0x527176C: g_cancellable_cancel (gcancellable.c:507)
+# ==17128==    by 0x51936CD: soup_session_real_cancel_message (soup-session.c:2203)
+# ==17128==    by 0x5197D62: soup_session_async_cancel_message (soup-session-async.c:111)
+# ==17128==    by 0x5193CA7: soup_session_cancel_message (soup-session.c:2259)
+# ==17128==    by 0x5193D46: soup_session_real_flush_queue (soup-session.c:2284)
+# ==17128==    by 0x5193F4E: soup_session_abort (soup-session.c:2340)
+# ==17128==    by 0x1101: ???
+# ==17128== 
+#
+# GNOME 3.8
+{
+   soup session cancel error
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:g_error_copy
+   fun:got_addresses
+   ...
+   fun:soup_session_real_cancel_message
+}
+
+# ==17128== 38 (12 direct, 26 indirect) bytes in 1 blocks are definitely lost in loss record 1,207 of 2,123
+# ==17128==    at 0x4029A28: malloc (in /usr/lib/valgrind/vgpreload_memcheck-x86-linux.so)
+# ==17128==    by 0x5447932: g_malloc (gmem.c:159)
+# ==17128==    by 0x545DEC1: g_slice_alloc (gslice.c:1003)
+# ==17128==    by 0x542DD03: g_error_new_literal (gerror.c:456)
+# ==17128==    by 0x542DFC3: g_set_error_literal (gerror.c:595)
+# ==17128==    by 0x52714D2: g_cancellable_set_error_if_cancelled (gcancellable.c:315)
+# ==17128==    by 0x52BBCA2: g_task_propagate_error (gtask.c:1433)
+# ==17128==    by 0x52BC5EE: g_task_propagate_pointer (gtask.c:1508)
+# ==17128==    by 0x5160563: soup_address_address_enumerator_next_finish (soup-address.c:1162)
+# ==17128==    by 0x52B44FD: g_socket_address_enumerator_next_finish (gsocketaddressenumerator.c:176)
+# ==17128==    by 0x52A8809: address_enumerate_cb (gproxyaddressenumerator.c:461)
+# ==17128==    by 0x52BBA90: g_task_return_now (gtask.c:1105)
+# ==17128==    by 0x52BC1B5: g_task_return (gtask.c:1158)
+# ==17128==    by 0x5161131: got_addresses (soup-address.c:1126)
+# ==17128==    by 0x5160D1C: complete_resolve_async (soup-address.c:657)
+# ==17128==    by 0x5160E3A: lookup_resolved (soup-address.c:699)
+# ==17128==    by 0x52BBA90: g_task_return_now (gtask.c:1105)
+# ==17128==    by 0x52BC1B5: g_task_return (gtask.c:1158)
+# ==17128==    by 0x53BCCF8: g_cclosure_marshal_VOID__VOIDv (gmarshal.c:115)
+# ==17128==    by 0x53BB2ED: _g_closure_invoke_va (gclosure.c:840)
+# ==17128==    by 0x53D3AFC: g_signal_emit_valist (gsignal.c:3234)
+# ==17128==    by 0x53D4672: g_signal_emit (gsignal.c:3384)
+# ==17128==    by 0x527176C: g_cancellable_cancel (gcancellable.c:507)
+# ==17128==    by 0x51936CD: soup_session_real_cancel_message (soup-session.c:2203)
+# ==17128==    by 0x5197D62: soup_session_async_cancel_message (soup-session-async.c:111)
+# ==17128==    by 0x5193CA7: soup_session_cancel_message (soup-session.c:2259)
+# ==17128==    by 0x5193D46: soup_session_real_flush_queue (soup-session.c:2284)
+# ==17128==    by 0x5193F4E: soup_session_abort (soup-session.c:2340)
+# ==17128==    by 0x1101: ???
+# ==17128== 
+# GNOME 3.8
+{
+   soup session cancel error II
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:g_error_new_literal
+   ...
+   fun:soup_address_address_enumerator_next_finish
+   ...
+   fun:soup_session_real_cancel_message
 }

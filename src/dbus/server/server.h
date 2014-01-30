@@ -26,13 +26,13 @@
 #include <boost/weak_ptr.hpp>
 #include <boost/signals2.hpp>
 
+#include <syncevo/SyncConfig.h>
+
 #include "exceptions.h"
 #include "auto-term.h"
-#include "connman-client.h"
-#include "network-manager-client.h"
-#include "presence-status.h"
 #include "timeout.h"
 #include "dbus-callbacks.h"
+#include "read-operations.h"
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -46,6 +46,14 @@ class Restart;
 class Client;
 class GLibNotify;
 class AutoSyncManager;
+class PresenceStatus;
+class ConnmanClient;
+class NetworkManagerClient;
+
+// TODO: avoid polluting namespace
+using namespace std;
+
+class ServerLogger;
 
 /**
  * Implements the main org.syncevolution.Server interface.
@@ -53,8 +61,7 @@ class AutoSyncManager;
  * The Server class is responsible for listening to clients and
  * spinning of sync sessions as requested by clients.
  */
-class Server : public GDBusCXX::DBusObjectHelper,
-               public LoggerBase
+class Server : public GDBusCXX::DBusObjectHelper
 {
     GMainLoop *m_loop;
     bool &m_shutdownRequested;
@@ -241,6 +248,24 @@ class Server : public GDBusCXX::DBusObjectHelper,
                                const std::vector<std::string> &flags,
                                GDBusCXX::DBusObject_t &object);
 
+    /** internal representation of D-Bus API Server.StartSessionWithFlags() */
+    enum SessionFlags {
+        SESSION_FLAG_NONE = 0,
+        SESSION_FLAG_NO_SYNC = 1<<0,
+        SESSION_FLAG_ALL_CONFIGS = 1<<1
+    };
+
+    /**
+     * Creates a session, queues it, then invokes the callback
+     * once the session is active. The caller is responsible
+     * for holding a reference to the session. If it drops
+     * that reference, the session gets deleted and the callback
+     * will not be called.
+     */
+    boost::shared_ptr<Session> startInternalSession(const std::string &server,
+                                                    SessionFlags flags,
+                                                    const boost::function<void (const boost::weak_ptr<Session> &session)> &callback);
+
     /** Server.GetConfig() */
     void getConfig(const std::string &config_name,
                    bool getTemplate,
@@ -327,13 +352,22 @@ class Server : public GDBusCXX::DBusObjectHelper,
                           const std::string &,
                           const std::map<string, string> &> infoRequest;
 
+    /** wrapper around Server.LogOutput, filters  by DBusLogLevel */
+    void logOutput(const GDBusCXX::DBusObject_t &path,
+                   Logger::Level level,
+                   const std::string &explanation,
+                   const std::string &procname);
+
+    void setDBusLogLevel(Logger::Level level) { m_dbusLogLevel = level; }
+    Logger::Level getDBusLogLevel() const { return m_dbusLogLevel; }
+
+ private:
     /** Server.LogOutput */
     GDBusCXX::EmitSignal4<const GDBusCXX::DBusObject_t &,
                           const std::string &,
                           const std::string &,
-                          const std::string &> logOutput;
+                          const std::string &> m_logOutputSignal;
 
- private:
     friend class InfoReq;
 
     /** emit InfoRequest */
@@ -345,9 +379,9 @@ class Server : public GDBusCXX::DBusObjectHelper,
     /** remove InfoReq from hash map */
     void removeInfoReq(const std::string &infoReqId);
 
-    PresenceStatus m_presence;
-    ConnmanClient m_connman;
-    NetworkManagerClient m_networkManager;
+    boost::scoped_ptr<PresenceStatus> m_presence;
+    boost::scoped_ptr<ConnmanClient> m_connman;
+    boost::scoped_ptr<NetworkManagerClient> m_networkManager;
 
     /** Manager to automatic sync */
     boost::shared_ptr<AutoSyncManager> m_autoSync;
@@ -355,9 +389,13 @@ class Server : public GDBusCXX::DBusObjectHelper,
     //automatic termination
     AutoTerm m_autoTerm;
 
-    //records the parent logger, dbus server acts as logger to
-    //send signals to clients and put logs in the parent logger.
-    LoggerBase &m_parentLogger;
+    // The level of detail for D-Bus logging signals.
+    Logger::Level m_dbusLogLevel;
+
+    // Created in constructor and captures parent logger there,
+    // then pushed as default logger in activate().
+    boost::shared_ptr<ServerLogger> m_logger;
+    PushLogger<ServerLogger> m_pushLogger;
 
     /**
      * All active timeouts created by addTimeout().
@@ -375,12 +413,16 @@ class Server : public GDBusCXX::DBusObjectHelper,
     /** called 1 minute after last client detached from a session */
     static void sessionExpired(const boost::shared_ptr<Session> &session);
 
+    /** hooked into m_idleSignal, controls auto-termination */
+    void onIdleChange(bool idle);
+
 public:
     Server(GMainLoop *loop,
            bool &shutdownRequested,
            boost::shared_ptr<Restart> &restart,
            const GDBusCXX::DBusConnectionPtr &conn,
            int duration);
+    void activate();
     ~Server();
 
     /** access to the GMainLoop reference used by this Server instance */
@@ -389,10 +431,13 @@ public:
     /** process D-Bus calls until the server is ready to quit */
     void run();
 
+    /** currently running operation */
+    boost::shared_ptr<Session> getSyncSession() const { return m_syncSession; }
+
     /** true iff no work is pending */
     bool isIdle() const { return !m_activeSession && m_workQueue.empty(); }
 
-    /** isIdle() might have changed its value, current value included */
+    /** isIdle() has changed its value, current value included */
     typedef boost::signals2::signal<void (bool isIdle)> IdleSignal_t;
     IdleSignal_t m_idleSignal;
 
@@ -558,7 +603,7 @@ public:
     /** poll_nm callback for connman, used for presence detection*/
     void connmanCallback(const std::map <std::string, boost::variant <std::vector <std::string> > >& props, const string &error);
 
-    PresenceStatus& getPresenceStatus() {return m_presence;}
+    PresenceStatus& getPresenceStatus();
 
     void clearPeerTempls() { m_matchedTempls.clear(); }
     void addPeerTempl(const string &templName, const boost::shared_ptr<SyncConfig::TemplateDescription> peerTempl);
@@ -613,35 +658,17 @@ public:
      */
     bool notificationsEnabled();
 
-    /**
-     * implement virtual method from LogStdout.
-     * Not only print the message in the console
-     * but also send them as signals to clients
-     */
-    virtual void messagev(Level level,
-                          const char *prefix,
-                          const char *file,
-                          int line,
-                          const char *function,
-                          const char *format,
-                          va_list args) {
-        messagev(level, prefix, file, line,
-                 function, format, args,
-                 getPath(),
-                 getProcessName());
-    }
-    void messagev(Level level,
-                  const char *prefix,
-                  const char *file,
-                  int line,
-                  const char *function,
-                  const char *format,
-                  va_list args,
-                  const std::string &dbusPath,
-                  const std::string &procname);
-
-    virtual bool isProcessSafe() const { return false; }
+    void message2DBus(const Logger::MessageOptions &options,
+                      const char *format,
+                      va_list args,
+                      const std::string &dbusPath,
+                      const std::string &procname);
 };
+
+// extensions to the D-Bus server, created dynamically by main()
+#ifdef ENABLE_DBUS_PIM
+boost::shared_ptr<GDBusCXX::DBusObjectHelper> CreateContactManager(const boost::shared_ptr<Server> &server, bool start);
+#endif
 
 SE_END_CXX
 

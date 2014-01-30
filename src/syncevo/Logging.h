@@ -33,8 +33,11 @@
 #endif
 
 #include <syncevo/Timespec.h>
+#include <syncevo/ThreadSupport.h>
 
 #include <boost/function.hpp>
+#include <boost/shared_ptr.hpp>
+#include <boost/noncopyable.hpp>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -44,6 +47,14 @@ SE_BEGIN_CXX
  * implemented by other classes to add information (like a certain
  * prefix) before passing the message on to a global instance for the
  * actual processing.
+ *
+ * The static methods provide some common utility code and manage a
+ * global stack of loggers. The one pushed latest is called first to
+ * handle a new message. It can find its parent logger (= the one
+ * added just before it) and optionally pass the message up the chain
+ * before or after processing it itself.
+ *
+ * All methods must be thread-safe.
  */
 class Logger
 {
@@ -78,6 +89,11 @@ class Logger
      * - everything else: DEBUG
      */
     typedef enum {
+        /**
+         * no error messages printed
+         */
+        NONE = -1,
+
         /**
          * only error messages printed
          */
@@ -117,8 +133,17 @@ class Logger
      *
      * Included by LoggerStdout in the [INFO/DEBUG/...] tag.
      */
-    static void setProcessName(const std::string &name) { m_processName = name; }
-    static std::string getProcessName() { return m_processName; }
+    static void setProcessName(const std::string &name);
+    static std::string getProcessName();
+
+    /**
+     * Obtains the recursive logging mutex.
+     *
+     * All calls offered by the Logger class already lock that mutex
+     * internally, but sometimes it may be necessary to protect a larger
+     * region of logging related activity.
+     */
+    static RecMutex::Guard lock();
 
 #ifdef HAVE_GLIB
     /**
@@ -144,89 +169,136 @@ class Logger
                             const char *format,
                             ...);
 
-    virtual ~Logger() {}
+    Logger();
+    virtual ~Logger();
+
+    /**
+     * Prepare logger for removal from logging stack. May be called
+     * multiple times.
+     *
+     * The logger should stop doing anything right away and just pass
+     * on messages until it gets deleted eventually.
+     */
+    virtual void remove() throw () {}
+
+    /**
+     * Collects all the parameters which may get passed to
+     * messagev.
+     */
+    class MessageOptions {
+    public:
+        /** level for current message */
+        Level m_level;
+        /** inserted at beginning of each line, if non-NULL */
+        const std::string *m_prefix;
+        /** source file where message comes from, if non-NULL */
+        const char *m_file;
+        /** source line number, if file is non-NULL */
+        int m_line;
+        /** surrounding function name, if non-NULL */
+        const char *m_function;
+        /** name of the process which originally created the message, if different from current one */
+        const std::string *m_processName;
+        /** additional flags */
+        int m_flags;
+
+        enum {
+            /**
+             * The message was written into a global log (syslog, dlt, ...)
+             * already. Such a message must not be logged again.
+             */
+            ALREADY_LOGGED = 1<<0,
+            /**
+             * The message must be written into a global log,
+             * but not to stdout.
+             */
+            ONLY_GLOBAL_LOG = 1<<1
+        };
+
+        MessageOptions(Level level);
+        MessageOptions(Level level,
+                       const std::string *prefix,
+                       const char *file,
+                       int line,
+                       const char *function,
+                       int flags = 0);
+    };
 
     /**
      * output a single message
      *
-     * @param level     level for current message
-     * @param prefix    inserted at beginning of each line, if non-NULL
-     * @param file      source file where message comes from, if non-NULL
-     * @param line      source line number, if file is non-NULL
-     * @param function  surrounding function name, if non-NULL
+     * @param options   carries additional information about the message
      * @param format    sprintf format
      * @param args      parameters for sprintf: consumed by this function, 
      *                  make copy with va_copy() if necessary!
      */
-    virtual void messagev(Level level,
-                          const char *prefix,
-                          const char *file,
-                          int line,
-                          const char *function,
+    virtual void messagev(const MessageOptions &options,
                           const char *format,
                           va_list args) = 0;
 
-    /** default: redirect into messagev() */
-    virtual void message(Level level,
-                         const char *prefix,
-                         const char *file,
-                         int line,
-                         const char *function,
-                         const char *format,
-                         ...)
-#ifdef __GNUC__
-        __attribute__((format(printf, 7, 8)))
-#endif
-        ;
-
     /**
-     * this logger instance can be used by multiple processes:
-     * true for those which write single lines, false
-     * for more complicated output like HTML (Synthesis log)
+     * A convenience and backwards-compatibility class which allows
+     * calling some methods of the underlying pointer directly similar
+     * to the Logger reference returned in previous SyncEvolution
+     * releases.
      */
-    virtual bool isProcessSafe() const = 0;        
-
- protected:
-    static std::string m_processName;
-};
-
-/**
- * Changes the process name temporarily.
- */
-class ProcNameGuard {
-    std::string m_oldProcName;
-    bool m_modified;
-
- public:
-    ProcNameGuard(const std::string &procname) :
-        m_oldProcName(Logger::getProcessName())
+    class Handle
     {
-        if (m_oldProcName != procname) {
-            Logger::setProcessName(procname);
-            m_modified = true;
-        } else {
-            m_modified = false;
-        }
-    }
+        boost::shared_ptr<Logger> m_logger;
 
-    ~ProcNameGuard()
-    {
-        if (m_modified) {
-            Logger::setProcessName(m_oldProcName);
-        }
-    }
-};
+    public:
+        Handle() throw ();
+        Handle(Logger *logger) throw ();
+        template<class L> Handle(const boost::shared_ptr<L> &logger) throw () : m_logger(logger) {}
+        template<class L> Handle(const boost::weak_ptr<L> &logger) throw () : m_logger(logger.lock()) {}
+        Handle(const Handle &other) throw ();
+        Handle &operator = (const Handle &other) throw ();
+        ~Handle() throw ();
 
-/**
- * Global logging, implemented as a singleton with one instance per
- * process.
- *
- * @TODO avoid global variable
- */
-class LoggerBase : public Logger
-{
- public:
-     LoggerBase() : m_level(INFO) {}
+        operator bool () const { return m_logger; }
+        bool operator == (Logger *logger) const { return m_logger.get() == logger; }
+        Logger *get() const { return m_logger.get(); }
+
+        void messagev(const MessageOptions &options,
+                      const char *format,
+                      va_list args)
+        {
+            m_logger->messagev(options, format, args);
+        }
+
+        void message(Level level,
+                     const std::string *prefix,
+                     const char *file,
+                     int line,
+                     const char *function,
+                     const char *format,
+                     ...)
+#ifdef __GNUC__
+            __attribute__((format(printf, 7, 8)))
+#endif
+            ;
+        void message(Level level,
+                     const std::string &prefix,
+                     const char *file,
+                     int line,
+                     const char *function,
+                     const char *format,
+                     ...)
+#ifdef __GNUC__
+            __attribute__((format(printf, 7, 8)))
+#endif
+            ;
+        void messageWithOptions(const MessageOptions &options,
+                                const char *format,
+                                ...)
+#ifdef __GNUC__
+            __attribute__((format(printf, 3, 4)))
+#endif
+            ;
+        void setLevel(Level level) { m_logger->setLevel(level); }
+        Level getLevel() { return m_logger->getLevel(); }
+        void remove() throw () { m_logger->remove(); }
+    };
 
     /**
      * Grants access to the singleton which implements logging.
@@ -234,31 +306,25 @@ class LoggerBase : public Logger
      * class itself is platform specific: if no Log instance
      * has been set yet, then this call has to create one.
      */
-    static LoggerBase &instance();
+    static Handle instance();
 
     /**
-     * Overrides the default Logger implementation. The Logger class
-     * itself will never delete the active logger.
+     * Overrides the current default Logger implementation.
      *
      * @param logger    will be used for all future logging activities
      */
-
-    static void pushLogger(LoggerBase *logger);
-    /**
-     * Remove the current logger and restore previous one.
-     * Must match a pushLogger() call.
-     */
-    static void popLogger();
-
-    /** total number of active loggers */
-    static int numLoggers();
+    static void addLogger(const Handle &logger);
 
     /**
-     * access to active logger
-     * @param index    0 for oldest (inner-most) logger
-     * @return pointer or NULL for invalid index
+     * Remove the specified logger.
+     *
+     * Note that the logger might still be in use afterwards, for
+     * example when a different thread currently uses it. Therefore
+     * loggers should be small stub classes. If they need access to
+     * more expensive classes to do their work, they shold hold weak
+     * reference to those and only lock them when logging.
      */
-    static LoggerBase *loggerAt(int index);
+    static void removeLogger(Logger *logger);
 
     virtual void setLevel(Level level) { m_level = level; }
     virtual Level getLevel() { return m_level; }
@@ -273,11 +339,14 @@ class LoggerBase : public Logger
      * Each chunk already includes the necessary line breaks (in
      * particular after the last line when it contains the entire
      * output). It may be modified by the callback.
+     *
+     * @param processName  NULL means use the current process' name,
+     *                     empty means use none
      */
     void formatLines(Level msglevel,
                      Level outputlevel,
-                     const std::string &processName,
-                     const char *prefix,
+                     const std::string *processName,
+                     const std::string *prefix,
                      const char *format,
                      va_list args,
                      boost::function<void (std::string &chunk, size_t expectedTotal)> print);
@@ -293,42 +362,103 @@ class LoggerBase : public Logger
     Timespec m_startTime;
 };
 
+/**
+ * Takes a logger and adds it to the stack
+ * as long as the instance exists.
+ */
+template<class L> class PushLogger : boost::noncopyable
+{
+    Logger::Handle m_logger;
+
+ public:
+    PushLogger() {}
+    /**
+     * Can use Handle directly here.
+     */
+    PushLogger(const Logger::Handle &logger) : m_logger(logger)
+    {
+        if (m_logger) {
+            Logger::addLogger(m_logger);
+        }
+    }
+    /**
+     * Take any type that a Handle constructor accepts, then use it as
+     * Handle.
+     */
+    template <class M> PushLogger(M logger) : m_logger(Logger::Handle(logger))
+    {
+        if (m_logger) {
+            Logger::addLogger(m_logger);
+        }
+    }
+    ~PushLogger() throw ()
+    {
+        if (m_logger) {
+            Logger::removeLogger(m_logger.get());
+        }
+    }
+
+    operator bool () const { return m_logger; }
+
+    void reset(const Logger::Handle &logger)
+    {
+        if (m_logger) {
+            Logger::removeLogger(m_logger.get());
+        }
+        m_logger = logger;
+        if (m_logger) {
+            Logger::addLogger(m_logger);
+        }
+    }
+    template<class M> void reset(M logger)
+    {
+        if (m_logger) {
+            Logger::removeLogger(m_logger.get());
+        }
+        m_logger = Logger::Handle(logger);
+        if (m_logger) {
+            Logger::addLogger(m_logger);
+        }
+    }
+
+    void reset()
+    {
+        if (m_logger) {
+            Logger::removeLogger(m_logger.get());
+        }
+        m_logger = Logger::Handle();
+    }
+
+    L *get() { return static_cast<L *>(m_logger.get()); }
+    L * operator -> () { return get(); }
+};
 
 /**
- * Vararg macro which passes the message through a specific
- * Logger class instance (if non-NULL) and otherwise calls
- * the global logger directly. Adds source file and line.
+ * Wraps Logger::message() in the current default logger.
+ * and adds file and line where the message comes from.
+ *
+ * This macro reverses _prefix and _level to avoid the situation where
+ * the compiler mistakes a NULL _prefix with the _format parameter
+ * (happened once while doing code refactoring).
  *
  * @TODO make source and line info optional for release
  * @TODO add function name (GCC extension)
  */
-#define SE_LOG(_level, _instance, _prefix, _format, _args...) \
-    do { \
-        if (_instance) { \
-            static_cast<Logger *>(_instance)->message(_level, \
-                                                                     _prefix, \
-                                                                     __FILE__, \
-                                                                     __LINE__, \
-                                                                     0, \
-                                                                     _format, \
-                                                                     ##_args); \
-        } else { \
-            LoggerBase::instance().message(_level, \
-                                                          _prefix, \
-                                                          __FILE__, \
-                                                          __LINE__, \
-                                                          0, \
-                                                          _format, \
-                                                          ##_args); \
-        } \
-    } while(false)
+#define SE_LOG(_prefix, _level, _format, _args...) \
+    SyncEvo::Logger::instance().message(_level, \
+                                        _prefix, \
+                                        __FILE__, \
+                                        __LINE__, \
+                                        NULL, \
+                                        _format, \
+                                        ##_args);
 
-#define SE_LOG_SHOW(_instance, _prefix, _format, _args...) SE_LOG(Logger::SHOW, _instance, _prefix, _format, ##_args)
-#define SE_LOG_ERROR(_instance, _prefix, _format, _args...) SE_LOG(Logger::ERROR, _instance, _prefix, _format, ##_args)
-#define SE_LOG_WARNING(_instance, _prefix, _format, _args...) SE_LOG(Logger::WARNING, _instance, _prefix, _format, ##_args)
-#define SE_LOG_INFO(_instance, _prefix, _format, _args...) SE_LOG(Logger::INFO, _instance, _prefix, _format, ##_args)
-#define SE_LOG_DEV(_instance, _prefix, _format, _args...) SE_LOG(Logger::DEV, _instance, _prefix, _format, ##_args)
-#define SE_LOG_DEBUG(_instance, _prefix, _format, _args...) SE_LOG(Logger::DEBUG, _instance, _prefix, _format, ##_args)
+#define SE_LOG_SHOW(_prefix, _format, _args...) SE_LOG(_prefix, SyncEvo::Logger::SHOW, _format, ##_args)
+#define SE_LOG_ERROR(_prefix, _format, _args...) SE_LOG(_prefix, SyncEvo::Logger::ERROR, _format, ##_args)
+#define SE_LOG_WARNING(_prefix, _format, _args...) SE_LOG(_prefix, SyncEvo::Logger::WARNING, _format, ##_args)
+#define SE_LOG_INFO(_prefix, _format, _args...) SE_LOG(_prefix, SyncEvo::Logger::INFO, _format, ##_args)
+#define SE_LOG_DEV(_prefix, _format, _args...) SE_LOG(_prefix, SyncEvo::Logger::DEV, _format, ##_args)
+#define SE_LOG_DEBUG(_prefix, _format, _args...) SE_LOG(_prefix, SyncEvo::Logger::DEBUG, _format, ##_args)
  
 SE_END_CXX
 #endif // INCL_LOGGING

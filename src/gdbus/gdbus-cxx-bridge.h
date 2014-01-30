@@ -871,10 +871,11 @@ template <class T> class DBusVector {
     void push_back(const T &element) {
         if (m_entries + 1 >= m_size) {
             size_t newSize = m_size ? m_size * 2 : 16;
-            m_elements = static_cast<T *>(realloc(m_elements, newSize * sizeof(T)));
-            if (!m_elements) {
+            T *elements = static_cast<T *>(realloc(m_elements, newSize * sizeof(T)));
+            if (!elements) {
                 throw std::bad_alloc();
             }
+            m_elements = elements;
             m_size = newSize;
         }
         m_elements[m_entries] = element;
@@ -2425,7 +2426,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2)> >
         entry.signature = strdup(buffer.c_str());
         // now the same for reply types
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         entry.reply = strdup(buffer.c_str());
@@ -2609,7 +2610,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2, A3, A4, A5, A6, A7, A8, A9)> 
         buffer += dbus_traits<A9>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         buffer += dbus_traits<A3>::getReply();
@@ -2788,7 +2789,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2, A3, A4, A5, A6, A7, A8)> >
         buffer += dbus_traits<A8>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         buffer += dbus_traits<A3>::getReply();
@@ -2961,7 +2962,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2, A3, A4, A5, A6, A7)> >
         buffer += dbus_traits<A7>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         buffer += dbus_traits<A3>::getReply();
@@ -3128,7 +3129,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2, A3, A4, A5, A6)> >
         buffer += dbus_traits<A6>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         buffer += dbus_traits<A3>::getReply();
@@ -3287,7 +3288,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2, A3, A4, A5)> >
         buffer += dbus_traits<A5>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         buffer += dbus_traits<A3>::getReply();
@@ -3440,7 +3441,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2, A3, A4)> >
         buffer += dbus_traits<A4>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         buffer += dbus_traits<A3>::getReply();
@@ -3587,7 +3588,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2, A3)> >
         buffer += dbus_traits<A3>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         buffer += dbus_traits<A3>::getReply();
@@ -3728,7 +3729,7 @@ struct MakeMethodEntry< boost::function<R (A1, A2)> >
         buffer += dbus_traits<A2>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         buffer += dbus_traits<A2>::getReply();
         entry.reply = strdup(buffer.c_str());
@@ -3863,7 +3864,7 @@ struct MakeMethodEntry< boost::function<R (A1)> >
         buffer += dbus_traits<A1>::getSignature();
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         buffer += dbus_traits<A1>::getReply();
         entry.reply = strdup(buffer.c_str());
         entry.function = methodFunction;
@@ -3982,7 +3983,7 @@ struct MakeMethodEntry< boost::function<R ()> >
         std::string buffer;
         entry.signature = strdup(buffer.c_str());
         buffer.clear();
-        buffer += dbus_traits<R>::getReply();
+        buffer += dbus_traits<R>::getType();
         entry.reply = strdup(buffer.c_str());
         entry.function = methodFunction;
         entry.destroy = destroyFunction;

@@ -55,7 +55,9 @@
 #if defined(USE_EDS_CLIENT)
 #include <libedataserver/libedataserver.h>
 #else
+#ifdef HAVE_LIBEDATASERVER_EDS_VERSION_H
 #include <libedataserver/eds-version.h>
+#endif
 #include <libedataserver/e-source.h>
 #include <libedataserver/e-source-list.h>
 #endif
@@ -91,14 +93,18 @@
 extern "C" {
 #endif
 
+#ifdef EVOLUTION_COMPATIBILITY
+
 /** libebook, libecal, libedataserver available (currently checks for e_book_new/e_cal_new/e_source_group_peek_sources) */
 extern int EDSAbiHaveEbook, EDSAbiHaveEcal, EDSAbiHaveEdataserver;
 extern int EDSAbiHaveIcal;
+extern int EDSAbiHaveIcal1; // libical.so.1
 
 /** libbluetooth available (checks sdp_connect()) */
 extern int SyncEvoHaveLibbluetooth;
 
-#ifdef EVOLUTION_COMPATIBILITY
+/** initialize pointers to EDS functions, if necessary; can be called multiple times */
+void EDSAbiWrapperInit();
 
 /**
  * This is a struct instead of a namespace because that allows
@@ -245,6 +251,10 @@ struct EDSAbiWrapper {
     char* (*icaltimezone_get_tzid) (icaltimezone *zone);
     icaltimezone *(*icaltimezone_new) (void);
     int (*icaltimezone_set_component) (icaltimezone *zone, icalcomponent *comp);
+
+    // Optional, added in libical.so.1. Can't be called be like this,
+    // we merely check for the method to detect the ABI.
+    void (*icalparameter_new_scheduleagent)(void);
 
     // optional variants which allocate the returned string for us
     const char* (*icaltime_as_ical_string_r) (const struct icaltimetype tt);
@@ -442,6 +452,23 @@ extern struct EDSAbiWrapper EDSAbiWrapperSingleton;
 
 #else /* EVOLUTION_COMPATIBILITY */
 
+// This is necessary because in C++, 1 && 1 triggers
+// a warning with some gcc versions.
+#ifdef __cplusplus
+# define EDS_ABI_HACK_TRUE true
+#else
+# define EDS_ABI_HACK_TRUE 1
+#endif
+
+# define EDSAbiHaveEbook EDS_ABI_HACK_TRUE
+# define EDSAbiHaveEcal EDS_ABI_HACK_TRUE
+# define EDSAbiHaveEdataserver EDS_ABI_HACK_TRUE
+# define EDSAbiHaveIcal EDS_ABI_HACK_TRUE
+# define SyncEvoHaveLibbluetooth EDS_ABI_HACK_TRUE
+
+
+# define EDSAbiWrapperInit()
+
 # if !defined(EDS_ABI_WRAPPER_NO_REDEFINE) && defined(HAVE_LIBICAL_R)
 #  ifdef ENABLE_ICAL
 #   ifndef LIBICAL_MEMFIXES
@@ -454,9 +481,6 @@ extern struct EDSAbiWrapper EDSAbiWrapperSingleton;
 #  endif /* ENABLE_ICAL */
 # endif /* EDS_ABI_WRAPPER_NO_REDEFINE */
 #endif /* EVOLUTION_COMPATIBILITY */
-
-/** initialize pointers to EDS functions, if necessary; can be called multiple times */
-void EDSAbiWrapperInit();
 
 const char *EDSAbiWrapperInfo();
 const char *EDSAbiWrapperDebug();

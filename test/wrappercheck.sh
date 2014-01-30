@@ -44,8 +44,8 @@ while [ $# -gt 1 ] && [ "$1" != "--" ] ; do
 done
 shift
 
-( set +x; echo "*** starting ${BACKGROUND[0]} as background daemon, output to ${DAEMON_LOG:-stdout}" )
-( set -x; if [ "$DAEMON_LOG" ]; then exec >>"$DAEMON_LOG" 2>&1; fi; exec env "${ENV[@]}" "${BACKGROUND[@]}" ) &
+( set +x; echo >&2 "*** starting ${BACKGROUND[0]} as background daemon, output to ${DAEMON_LOG:-stderr}" )
+( set -x; exec >>${DAEMON_LOG:-&2} 2>&1; exec env "${ENV[@]}" "${BACKGROUND[@]}" ) &
 BACKGROUND_PID=$!
 PIDS+="$BACKGROUND_PID"
 
@@ -54,14 +54,20 @@ set +e
 RET=$?
 set -e
 
-( set +x; echo "*** killing and waiting for ${BACKGROUND[0]}" )
+( set +x; echo >&2 "*** killing and waiting for ${BACKGROUND[0]}" )
 kill -INT $BACKGROUND_PID && kill -TERM $BACKGROUND_PID || true
 ( sleep 60; kill -KILL $BACKGROUND_PID ) &
 KILL_PID=$!
 set +e
 wait $BACKGROUND_PID
-kill -KILL $KILL_PID
+msg=$(kill -KILL $KILL_PID 2>&1)
 SUBRET=$?
+if echo "$msg" | grep -q 'No such process'; then
+    # Consider this a success.
+    SUBRET=0
+else
+    echo "$msg"
+fi
 set -e
 if [ $RET = 0 ]; then
     RET=$SUBRET

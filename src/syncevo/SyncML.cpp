@@ -72,6 +72,12 @@ SimpleSyncMode SimplifySyncMode(SyncMode mode, bool peerIsClient)
     case SA_SYNC_TWO_WAY:
         return SIMPLE_SYNC_TWO_WAY;
 
+    case SYNC_LOCAL_CACHE_SLOW:
+        return SIMPLE_SYNC_LOCAL_CACHE_SLOW;
+
+    case SYNC_LOCAL_CACHE_INCREMENTAL:
+        return SIMPLE_SYNC_LOCAL_CACHE_INCREMENTAL;
+
     case SYNC_LAST:
     case SYNC_INVALID:
         return SIMPLE_SYNC_INVALID;
@@ -90,10 +96,12 @@ SANSyncMode AlertSyncMode(SyncMode mode, bool peerIsClient)
         return SA_INVALID;
 
     case SYNC_SLOW:
+    case SYNC_LOCAL_CACHE_SLOW:
         return SA_SLOW;
 
     case SYNC_TWO_WAY:
     case SA_SYNC_TWO_WAY:
+    case SYNC_LOCAL_CACHE_INCREMENTAL: // use two-way because it is more likely to be implemented
         return SA_TWO_WAY;
 
     case SYNC_ONE_WAY_FROM_CLIENT:
@@ -161,6 +169,10 @@ std::string PrettyPrintSyncMode(SyncMode mode, bool userVisible)
         return userVisible ? "one-way-from-remote" : "SYNC_ONE_WAY_FROM_REMOTE";
     case SYNC_REFRESH_FROM_REMOTE:
         return userVisible ? "refresh-from-remote" : "SYNC_REFRESH_FROM_REMOTE";
+    case SYNC_LOCAL_CACHE_SLOW:
+        return userVisible ? "local-cache-slow" : "SYNC_LOCAL_CACHE_SLOW";
+    case SYNC_LOCAL_CACHE_INCREMENTAL:
+        return userVisible ? "local-cache-incremental" : "SYNC_LOCAL_CACHE_INCREMENTAL";
     default:
         std::stringstream res;
 
@@ -193,6 +205,10 @@ SyncMode StringToSyncMode(const std::string &mode, bool serverAlerted)
         return SYNC_ONE_WAY_FROM_LOCAL;
     } else if (boost::iequals(mode, "disabled") || boost::iequals(mode, "SYNC_NONE")) {
         return SYNC_NONE;
+    } else if (boost::iequals(mode, "local-cache-slow") || boost::iequals(mode, "SYNC_LOCAL_CACHE_SLOW")) {
+        return SYNC_LOCAL_CACHE_SLOW;
+    } else if (boost::iequals(mode, "local-cache-incremental") || boost::iequals(mode, "SYNC_LOCAL_CACHE_INCREMENTAL")) {
+        return SYNC_LOCAL_CACHE_INCREMENTAL;
     } else {
         return SYNC_INVALID;
     }
@@ -951,9 +967,14 @@ std::string SyncReport::formatSyncTimes() const
     if (!m_start) {
         out << "unknown";
     } else {
-        char buffer[160];
-        strftime(buffer, sizeof(buffer), "%c", localtime(&m_start));
-        out << buffer;
+        struct tm tmbuffer, *tm = localtime_r(&m_start, &tmbuffer);
+        if (tm) {
+            char buffer[160];
+            strftime(buffer, sizeof(buffer), "%c", tm);
+            out << buffer;
+        } else {
+            out << "???";
+        }
         if (!m_end) {
             out << ", unknown duration (crashed?!)";
         } else {
@@ -983,7 +1004,7 @@ std::string SyncReport::slowSyncExplanation(const std::string &peer,
                      "Analyzing the current state:\n"
                      "    syncevolution --status %s %s\n\n"
                      "Running with one of the three modes:\n"
-                     "    syncevolution --sync [slow|refresh-from-server|refresh-from-client] %s %s\n",
+                     "    syncevolution --sync [slow|refresh-from-remote|refresh-from-local] %s %s\n",
                      peer.c_str(), sourceparam.c_str(),
                      peer.c_str(), sourceparam.c_str());
     return explanation;
@@ -1125,12 +1146,12 @@ ConfigNode &operator >> (ConfigNode &node, SyncReport &report)
                         source.setRestarts(value);
                     }
                 } else if (key == "first") {
-                    bool value;
+                    bool value = false;
                     if (node.getProperty(prop.first, value)) {
                         source.recordFirstSync(value);
                     }
                 } else if (key == "resume") {
-                    bool value;
+                    bool value = false;
                     if (node.getProperty(prop.first, value)) {
                         source.recordResumeSync(value);
                     }

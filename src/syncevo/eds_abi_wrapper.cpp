@@ -163,10 +163,9 @@ void *findSymbols(const char *libname, int minver, int maxver,
 
 }
 
-#endif // EVOLUTION_COMPATIBILITY
-
 int EDSAbiHaveEbook, EDSAbiHaveEcal, EDSAbiHaveEdataserver;
 int EDSAbiHaveIcal;
+int EDSAbiHaveIcal1;
 int SyncEvoHaveLibbluetooth;
 
 extern "C" void EDSAbiWrapperInit()
@@ -179,7 +178,6 @@ extern "C" void EDSAbiWrapperInit()
         initialized = true;
     }
 
-#ifdef EVOLUTION_COMPATIBILITY
 # ifdef HAVE_EDS
     edshandle =
     findSymbols("libedataserver-1.2.so", 7, 16,
@@ -196,7 +194,7 @@ extern "C" void EDSAbiWrapperInit()
 
 # ifdef ENABLE_EBOOK
     static const int libebookMinVersion = 5,
-        libebookMaxVersion = 13;
+        libebookMaxVersion = 13; // EDS 3.4
     ebookhandle =
     findSymbols("libebook-1.2.so", libebookMinVersion, libebookMaxVersion,
                 FIND_SYMBOLS_NEED_ALL, NULL,
@@ -310,14 +308,18 @@ extern "C" void EDSAbiWrapperInit()
                 &EDSAbiWrapperSingleton.icaltimezone_new, "icaltimezone_new", \
                 &EDSAbiWrapperSingleton.icaltimezone_set_component, "icaltimezone_set_component",
 
+    // icalparameter_new_scheduleagent was added in libical.so.1. We
+    // use it only to detect the libical 1.0 ABI. This works because
+    // all methods in EDS_ABI_WRAPPER_ICAL_R are considered optional.
 #define EDS_ABI_WRAPPER_ICAL_R \
+                &EDSAbiWrapperSingleton.icalparameter_new_scheduleagent, "icalparameter_new_scheduleagent", \
                 &EDSAbiWrapperSingleton.icalcomponent_as_ical_string_r, "icalcomponent_as_ical_string_r", \
                 &EDSAbiWrapperSingleton.icaltime_as_ical_string_r, "icaltime_as_ical_string_r", \
                 &EDSAbiWrapperSingleton.icalproperty_get_value_as_string_r, "icalproperty_get_value_as_string_r",
 
 # ifdef ENABLE_ECAL
     static const int libecalMinVersion = 3,
-        libecalMaxVersion = 11;
+        libecalMaxVersion = 11; // EDS 3.4
     ecalhandle =
     findSymbols("libecal-1.2.so", libecalMinVersion, libecalMaxVersion,
                 FIND_SYMBOLS_NEED_ALL, NULL,
@@ -357,17 +359,18 @@ extern "C" void EDSAbiWrapperInit()
         // libecal not found above (or not enabled), but libical
         // might still be available, so check for it separately
         ecalhandle =
-            findSymbols("libical.so", 0, 0,
+            findSymbols("libical.so", 0, 1,
                         FIND_SYMBOLS_NEED_ALL, NULL,
                         EDS_ABI_WRAPPER_ICAL_BASE
                         (void *)0);
         ecalhandle =
-            findSymbols("libical.so", 0, 0,
+            findSymbols("libical.so", 0, 1,
                         0, NULL,
                         EDS_ABI_WRAPPER_ICAL_R
                         (void *)0);
     }
     EDSAbiHaveIcal = EDSAbiWrapperSingleton.icalcomponent_add_component != 0;
+    EDSAbiHaveIcal1 = EDSAbiWrapperSingleton.icalparameter_new_scheduleagent != 0;
 # endif // ENABLE_ICAL
 
 # ifdef ENABLE_BLUETOOTH
@@ -412,24 +415,8 @@ extern "C" void EDSAbiWrapperInit()
     }
     SyncEvoHaveLibbluetooth = EDSAbiWrapperSingleton.sdp_connect != 0;
 # endif
-#else // EVOLUTION_COMPATIBILITY
-# ifdef HAVE_EDS
-    EDSAbiHaveEdataserver = true;
-# endif
-# ifdef ENABLE_EBOOK
-    EDSAbiHaveEbook = true;
-# endif
-# ifdef ENABLE_ECAL
-    EDSAbiHaveEcal = true;
-# endif
-# ifdef ENABLE_ICAL
-    EDSAbiHaveIcal = true;
-# endif
-# ifdef ENABLE_BLUETOOTH
-    SyncEvoHaveLibbluetooth = true;
-# endif
-#endif // EVOLUTION_COMPATIBILITY
 }
+#endif // EVOLUTION_COMPATIBILITY
 
 extern "C" const char *EDSAbiWrapperInfo() { EDSAbiWrapperInit(); return lookupInfo.c_str(); }
 extern "C" const char *EDSAbiWrapperDebug() { EDSAbiWrapperInit(); return lookupDebug.c_str(); }

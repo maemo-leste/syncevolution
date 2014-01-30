@@ -130,7 +130,8 @@ TYPE_rpm = -R
 #   Squeeze the package was replaced by individual library packages. On such
 #   distros, libkdeui5 is what we need.
 # - same for kdepimlibs5 -> libakonadi-kde4
-REQUIRES_SED_KDE = -e 's/kdelibs5 ([^,]*),/kdelibs5 | libkdeui5,/g' -e 's/kdepimlibs5 ([^,]*),/kdepimlibs5 | libakonadi-kde4,/g'
+# - kdebase-runtime became kde-runtime in Debian Wheezy
+REQUIRES_SED_KDE = -e 's/kdelibs5 ([^,]*),/kdelibs5 | libkdeui5,/g' -e 's/kdepimlibs5 ([^,]*),/kdepimlibs5 | libakonadi-kde4,/g' -e 's/kdebase-runtime/kdebase-runtime | kde-runtime/g'
 REQUIRES_deb = --requires="'$(shell set -x; cd checkinstall/dist; LD_LIBRARY_PATH=$(distdir)/usr/lib:$(distdir)/usr/lib/syncevolution dpkg-shlibdeps -L$(srcdir)/src/shlibs.local --ignore-missing-info -O $$(for i in $$(find $(distdir) -type f -perm /u+x | grep -v -e client-test -e lib/syncevolution/backends/); do if file $$i | grep ELF >/dev/null; then echo $$i; fi; done) | sed $(REQUIRES_SED_KDE) -e 's/[^=]*=//')$(REQUIRES_deb_neon)$(REQUIRES_deb_ical)'"
 if NEON_COMPATIBILITY
 # --enable-neon-compatibility in src/backends/webdav:
@@ -140,7 +141,7 @@ else
 REQUIRES_deb_neon =
 endif
 if ENABLE_ICAL
-REQUIRES_deb_ical = , libical0
+REQUIRES_deb_ical = , libical0 | libical1
 endif
 VERSION_deb = 1:$(STABLE_VERSION)$(VERSION)
 VERSION_rpm = `echo $(VERSION) | sed -e s/-/_/g`
@@ -167,7 +168,9 @@ PKGS = $(addprefix syncevolution-evolution-, 2.6 2.8 2.12)
 # after the lib and its major version, which holds for libsmltk and
 # libsynthesis in Debian.
 deb rpm : checkinstall/dist/$(distdir) checkinstall/dist/debian/control
-	(echo "SyncEvolution - synchronizing personal information management data" && cat $(srcdir)/description) >description-pak
+	(echo "SyncEvolution - synchronizing personal information management data" && cat $(srcdir)/description) >checkinstall/description-pak
+	 echo "/sbin/ldconfig" >checkinstall/postremove-pak
+	 echo "/sbin/ldconfig" >checkinstall/postinstall-pak
 	conflicts=`ls -1 checkinstall/dist/$(distdir)/usr/lib/*.so.[0123456789] | sed -e 's;.*/;;' -e 's/\.so\.//' -e 's/$$/, /'` && \
 	tmpdir=`mktemp -d $$HOME/syncevolution.XXXXXXXXXX` && \
 	trap "rm -rf $$tmpdir" EXIT && \
@@ -217,11 +220,11 @@ SYNCEVOLUTION_kde_DEB_ARGS = \
 	--conflicts=syncevolution-foobar \
         --replaces=syncevolution-foobar
 SYNCEVOLUTION_evolution_DEB_ARGS = \
-	--conflicts="'evolution-data-server (>= 3.6), libebook-1.2-14 (>= 3.6), libecal-1.2.12 (>= 3.6)'" \
+	--conflicts=syncevolution-foobar \
 	--replaces=syncevolution-foobar
 SYNCEVOLUTION_evolution_DEB_REQUIRES = \
-	, libebook1.2-5 | libebook1.2-6 | libebook1.2-7 | libebook1.2-8 | libebook1.2-9 | libebook1.2-10 | libebook1.2-11 | libebook-1.2-11 | libebook-1.2-12 | libebook-1.2-13 \
-	, libecal1.2-3 | libecal1.2-4 | libecal1.2-5 | libecal1.2-6 | libecal1.2-7 | libecal1.2-8 | libecal1.2-9 | libecal1.2-10 | libecal-1.2-10 | libecal-1.2-11
+	, libebook1.2-5 | libebook1.2-6 | libebook1.2-7 | libebook1.2-8 | libebook1.2-9 | libebook1.2-10 | libebook1.2-11 | libebook-1.2-11 | libebook-1.2-12 | libebook-1.2-13 $(EXTRA_BACKENDS_EBOOK_REQUIRES) \
+	, libecal1.2-3 | libecal1.2-4 | libecal1.2-5 | libecal1.2-6 | libecal1.2-7 | libecal1.2-8 | libecal1.2-9 | libecal1.2-10 | libecal-1.2-10 | libecal-1.2-11 $(EXTRA_BACKENDS_ECAL_REQUIRES)
 
 syncevolution-%-deb: checkinstall/dist/$(distdir) checkinstall/dist/debian/control
 	(echo "SyncEvolution - meta package for $*" && cat $(srcdir)/description) >checkinstall/description-pak
@@ -298,10 +301,12 @@ if ENABLE_EVOLUTION_COMPATIBILITY
 # (relevant in that case and for static builds) for dependencies on
 # problematic libraries and symbols
 #
+# Exclude *-2.so, these are EXTRA_BACKENDS for which other rules apply.
+#
 # ical_strdup is an exception because it is in SyncEvolution.
 all_local_installchecks += toplevel_so_check
 toplevel_so_check:
-	for i in `find $(DESTDIR)/$(libdir)/syncevolution $(DESTDIR)/$(libdir)/libsyncevo* $(DESTDIR)/$(libdir)/libsynthesis* -name *.so` $(DESTDIR)/$(bindir)/syncevolution; \
+	for i in `find $(DESTDIR)/$(libdir)/syncevolution $(DESTDIR)/$(libdir)/libsyncevo* $(DESTDIR)/$(libdir)/libsynthesis* -name *.so | grep -v -2.so` $(DESTDIR)/$(bindir)/syncevolution; \
 	do \
 	  if objdump -T -C $$i | grep -v :: | grep '\*UND\*' | sort | grep -v -w ical_strdup | grep -e ical -e " e_"; then \
 	    echo "$$i should not depend on EDS, libical or libbluetooth"; \
@@ -349,6 +354,10 @@ if NEON_COMPATIBILITY
 # libneon is intentionally not linked against, to choose between
 # GNUTLS and OpenSSL at runtime.
 LINK_CHECK_ALLOWED += -e 'symbol ne_.*syncdav.so'
+# Allow undefined references to libstdcxx. This happens when
+# adding backends compiled on more recent Linux distros into
+# the release archive.
+LINK_CHECK_ALLOWED += -e '@GLIBCXX_[^ ]* used by'
 endif
 
 # Be strict about running 'syncevolution' only when not doing
@@ -402,12 +411,23 @@ CLEANFILES += README.html
 installcheck-local: $(all_local_installchecks) ;
 
 dist-hook: $(all_dist_hooks)
+install-exec-hook: $(all_install_exec_hooks)
+uninstall-hook: $(all_uninstall_hooks)
 
 # Force sequential installation. This is a workaround for relinking failures
 # during concurrent distcheck (a backend was relinked against not yet installed
 # libsyncevolution.la).
+#
+# Also used to add additional backends. EXTRA_BACKENDS must already contain
+# renamed files, by convention using -2.so, -3.so, etc as suffix instead of the
+# base file's .so.
 install-am: all-am
 	@$(MAKE) $(AM_MAKEFLAGS) install-exec-am
 	@$(MAKE) $(AM_MAKEFLAGS) install-data-am
+	for i in $(EXTRA_BACKENDS); do $(INSTALL) $$i $(DESTDIR)/$(BACKENDS_DIRECTORY)/; done
+
+# Necessary for "make distcheck": must not leave files behind.
+uninstall-local:
+	rm -f $(DESTDIR)/$(BACKENDS_DIRECTORY)/*-[0-9].so
 
 .DELETE_ON_ERROR:

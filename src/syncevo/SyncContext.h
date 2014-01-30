@@ -41,6 +41,7 @@ SE_BEGIN_CXX
 class TransportAgent;
 class SourceList;
 class SyncSource;
+class SyncSourceEvent;
 
 /**
  * This is the main class inside SyncEvolution which
@@ -137,8 +138,8 @@ class SyncContext : public SyncConfig {
      * */
     string m_usedSyncURL;
 
-    /* Indicates whether current sync session is triggered by remote peer
-     * (such as server alerted sync)
+    /* True iff current sync session was triggered by us
+     * (such as in server alerted sync).
      */
     bool m_remoteInitiated;
   public:
@@ -157,6 +158,12 @@ class SyncContext : public SyncConfig {
      */
     typedef boost::signals2::signal<void (const char *appname)> InitMainSignal;
     static InitMainSignal &GetInitMainSignal();
+
+    /**
+     * A signal invoked each time a source has gone through a sync cycle.
+     */
+    typedef boost::signals2::signal<void (const std::string &name, const SyncSourceReport &source)> SourceSyncedSignal;
+    SourceSyncedSignal m_sourceSyncedSignal;
 
     /**
      * true if binary was compiled as stable release
@@ -369,7 +376,7 @@ class SyncContext : public SyncConfig {
      *
      * @param error     a string describing the error
      */
-    static void throwError(const string &error);
+    static void throwError(const string &error) SE_NORETURN;
 
     /**
      * throw an exception with a specific status code after an operation failed and
@@ -382,7 +389,7 @@ class SyncContext : public SyncConfig {
      *                   as a fatal local error
      * @param action     a string describing what was attempted *and* how it failed
      */
-    static void throwError(SyncMLStatus status, const string &failure);
+    static void throwError(SyncMLStatus status, const string &failure) SE_NORETURN;
 
     /**
      * throw an exception after an operation failed and
@@ -393,7 +400,7 @@ class SyncContext : public SyncConfig {
      * @Param action   a string describing the operation or object involved
      * @param error    the errno error code for the failure
      */
-    static void throwError(const string &action, int error);
+    static void throwError(const string &action, int error) SE_NORETURN;
 
     /**
      * An error handler which prints the error message and then
@@ -402,7 +409,7 @@ class SyncContext : public SyncConfig {
      * The API was chosen so that it can be used as libebook/libecal
      * "backend-dies" signal handler.
      */
-    static void fatalError(void *object, const char *error);
+    static void fatalError(void *object, const char *error) SE_NORETURN;
 
     /**
      * When using Evolution this function starts a background thread
@@ -516,47 +523,6 @@ class SyncContext : public SyncConfig {
     SharedEngine createEngine();
 
     /**
-     * Maps from source name to sync mode with one default
-     * for all sources which don't have a specific entry
-     * in the hash.
-     */
-    class SyncModes : public std::map<string, SyncMode> {
-        SyncMode m_syncMode;
-
-    public:
-        SyncModes(SyncMode syncMode = SYNC_NONE) :
-        m_syncMode(syncMode)
-        {}
-
-        SyncMode getDefaultSyncMode() { return m_syncMode; }
-        void setDefaultMode(SyncMode syncMode) { m_syncMode = syncMode; }
-
-        SyncMode getSyncMode(const string &sourceName) const {
-            const_iterator it = find(sourceName);
-            if (it == end()) {
-                return m_syncMode;
-            } else {
-                return it->second;
-            }
-        }
-
-        void setSyncMode(const string &sourceName, SyncMode syncMode) {
-            (*this)[sourceName] = syncMode;
-        }
-    };
-
-    /**
-     * An utility function which can be used as part of
-     * prepare() below to reconfigure the sync mode that
-     * is going to be used for the active sync session.
-     * SYNC_NONE as mode means that the sync mode of the
-     * source is not modified and the default from the
-     * configuration is used.
-     */
-    void setSyncModes(const std::vector<SyncSource *> &sources,
-                      const SyncModes &modes);
-
-    /**
      * Return skeleton Synthesis client XML configuration.
      *
      * The <scripting/>, <datatypes/>, <clientorserver/> elements (if
@@ -660,17 +626,41 @@ class SyncContext : public SyncConfig {
                                      int32_t extra1, int32_t extra2, int32_t extra3);
 
     /**
+     * An event plus its parameters, see Synthesis engine.
+     */
+    class SyncSourceEvent
+    {
+      public:
+        sysync::TProgressEventEnum m_type;
+        int32_t m_extra1, m_extra2, m_extra3;
+
+        SyncSourceEvent() :
+            m_type(sysync::PEV_NOP)
+        {}
+
+        SyncSourceEvent(sysync::TProgressEventEnum type,
+                        int32_t extra1,
+                        int32_t extra2,
+                        int32_t extra3)
+        {
+            m_type = type;
+            m_extra1 = extra1;
+            m_extra2 = extra2;
+            m_extra3 = extra3;
+        }
+    };
+
+    /**
      * display sync source specific progress
      *
-     * @param type    PEV_*, see <synthesis/engine_defs.h>
      * @param source  source which is the target of the event
-     * @param extra1  extra information depending on type
-     * @param extra2  extra information depending on type
-     * @param extra3  extra information depending on type
+     * @param event   contains PEV_* and extra parameters, see <synthesis/engine_defs.h>
+     * @param flush   if true, then bypass caching events and print directly
+     * @return true if the event was cached
      */
-    virtual void displaySourceProgress(sysync::TProgressEventEnum type,
-                                       SyncSource &source,
-                                       int32_t extra1, int32_t extra2, int32_t extra3);
+    virtual bool displaySourceProgress(SyncSource &source,
+                                       const SyncSourceEvent &event,
+                                       bool flush);
 
     /**
      * report step command info
@@ -680,27 +670,6 @@ class SyncContext : public SyncConfig {
      * @param stepCmd step command enum value 
      */
     virtual void reportStepCmd(sysync::uInt16 stepCmd) {}
-
-    /**
-     * Called to find out whether user wants to abort sync.
-     *
-     * Will be called regularly. Once it has flagged an abort, all
-     * following calls should return the same value. When the engine
-     * aborts, the sync is shut down as soon as possible.  The next
-     * sync most likely has to be done in slow mode, so don't do this
-     * unless absolutely necessary.
-     *
-     * @return true if user wants to abort
-     */
-    virtual bool checkForAbort();
-
-    /**
-     * Called to find out whether user wants to suspend sync.
-     *
-     * Same as checkForAbort(), but the session is finished
-     * gracefully so that it can be resumed.
-     */
-    virtual bool checkForSuspend();
 
  private:
     /** initialize members as part of constructors */
@@ -769,6 +738,10 @@ class SyncContext : public SyncConfig {
     //a flag indicating whether it is the first time to start source access.
     //It can be used to report infomation about a sync is successfully started.
     bool m_firstSourceAccess;
+
+    // Cache for use in displaySourceProgress().
+    SyncSource *m_sourceProgress;
+    SyncSourceEvent m_sourceEvent;
 
 public:
     /**

@@ -34,6 +34,7 @@ SE_BEGIN_CXX
 
 class LogRedirect;
 class ForkExecChild;
+class SessionHelperLogger;
 
 /**
  * Waits for requests via the internal D-Bus connection in run(), sent
@@ -43,28 +44,28 @@ class ForkExecChild;
  * traditional syncevo-dbus-server did.
  */
 class SessionHelper : public GDBusCXX::DBusObjectHelper,
-    private LoggerBase,
     private boost::noncopyable
 {
     GMainLoop *m_loop;
     GDBusCXX::DBusConnectionPtr m_conn;
     boost::shared_ptr<ForkExecChild> m_forkexec;
-    LogRedirect *m_parentLogger;
     boost::function<bool ()> m_operation;
+    boost::shared_ptr<SessionHelperLogger> m_logger;
+    PushLogger<Logger> m_pushLogger;
 
     /** valid during doSync() */
     boost::scoped_ptr<DBusSync> m_sync;
 
     /** called by main event loop: initiate a sync operation */
     void sync(const SessionCommon::SyncParams &params,
-              const boost::shared_ptr< GDBusCXX::Result1<bool> > &result);
+              const boost::shared_ptr< GDBusCXX::Result2<bool, SyncReport> > &result);
 
     /**
      * called by run(): do the sync operation
      * @return true if the helper is meant to terminate
      */
     bool doSync(const SessionCommon::SyncParams &params,
-                const boost::shared_ptr< GDBusCXX::Result1<bool> > &result);
+                const boost::shared_ptr< GDBusCXX::Result2<bool, SyncReport> > &result);
 
     void restore(const std::string &configName,
                  const string &dir, bool before, const std::vector<std::string> &sources,
@@ -81,23 +82,16 @@ class SessionHelper : public GDBusCXX::DBusObjectHelper,
     /** SessionHelper.PasswordResponse */
     void passwordResponse(bool timedOut, bool aborted, const std::string &password);
 
-    // Logger implementation -> output via D-Bus emitLogOutput
-    virtual void messagev(Level level,
-                          const char *prefix,
-                          const char *file,
-                          int line,
-                          const char *function,
-                          const char *format,
-                          va_list args);
-    virtual bool isProcessSafe() const { return false; }
-
  public:
     SessionHelper(GMainLoop *loop,
                   const GDBusCXX::DBusConnectionPtr &conn,
-                  const boost::shared_ptr<ForkExecChild> &forkexec,
-                  LogRedirect *parentLogger);
+                  const boost::shared_ptr<ForkExecChild> &forkexec);
     ~SessionHelper();
 
+    void setDBusLogLevel(Logger::Level level);
+    Logger::Level getDBusLogLevel() const;
+
+    void activate();
     void run();
     GMainLoop *getLoop() const { return m_loop; }
 
@@ -118,6 +112,9 @@ class SessionHelper : public GDBusCXX::DBusObjectHelper,
     GDBusCXX::EmitSignal6<sysync::TProgressEventEnum,
         std::string, SyncMode,
         int32_t, int32_t, int32_t, true> emitSourceProgress;
+
+    /** SyncContext::m_sourceSyncedSignal */
+    GDBusCXX::EmitSignal2<std::string, SyncSourceReport, true> emitSourceSynced;
 
     /** SyncContext::reportStepCmd -> true/false for "waiting on IO" */
     GDBusCXX::EmitSignal1<bool, true> emitWaiting;

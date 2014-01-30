@@ -18,10 +18,11 @@
  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  02110-1301  USA
 '''
-import sys,os,glob,datetime,popen2
+import sys,os,glob,datetime
 import re
 import fnmatch
 import cgi
+import subprocess
 
 """ 
 resultcheck.py: tranverse the test result directory, generate an XML
@@ -40,7 +41,7 @@ def check (resultdir, serverlist,resulturi, srcdir, shellprefix, backenddir):
         servers = serverlist.split(",")
     else:
         servers = []
-    result = open("nightly.xml","w")
+    result = open("%s/nightly.xml" % resultdir,"w")
     result.write('''<?xml version="1.0" encoding="utf-8" ?>\n''')
     result.write('''<nightly-test>\n''')
     indents=[space]
@@ -74,7 +75,10 @@ def extractPatchSummary(patchfile):
 def step1(resultdir, result, indents, dir, resulturi, shellprefix, srcdir):
     '''Step1 of the result checking, collect system information and 
     check the preparation steps (fetch, compile)'''
+
+    # Always keep checking, even if any of the preparation steps failed.
     cont = True
+
     input = os.path.join(resultdir, "output.txt")
     indent =indents[-1]+space
     indents.append(indent)
@@ -102,43 +106,43 @@ def step1(resultdir, result, indents, dir, resulturi, shellprefix, srcdir):
     indent =indents[-1]+space
     indents.append(indent)
     result.write(indent+'''<cpuinfo>\n''')
-    fout,fin=popen2.popen2('cat /proc/cpuinfo|grep "model name" |uniq')
-    s = fout.read()
-    result.write(indent+s)
+    fout=subprocess.check_output('cat /proc/cpuinfo|grep "model name" |uniq', shell=True)
+    result.write(indent+fout)
     result.write(indent+'''</cpuinfo>\n''')
     result.write(indent+'''<memoryinfo>\n''')
-    fout,fin=popen2.popen2('cat /proc/meminfo|grep "Mem"')
-    for s in fout:
+    fout=subprocess.check_output('cat /proc/meminfo|grep "Mem"', shell=True)
+    for s in fout.split('\n'):
         result.write(indent+s)
     result.write(indent+'''</memoryinfo>\n''')
     result.write(indent+'''<osinfo>\n''')
-    fout,fin=popen2.popen2('uname -osr')
-    s = fout.read()
-    result.write(indent+s)
+    fout=subprocess.check_output('uname -osr'.split())
+    result.write(indent+fout)
     result.write(indent+'''</osinfo>\n''')
     if 'schroot' in shellprefix:
         result.write(indent+'''<chrootinfo>\n''')
-        fout,fin=popen2.popen2(shellprefix.replace('schroot', 'schroot -i'))
-        s = ""
-        for line in fout:
-            if line.startswith("  Name ") or line.startswith("  Description "):
-                 s = s + line
-        result.write(indent+s)
+        # Don't make assumption about the schroot invocation. Instead
+        # extract the schroot name from the environment of the shell.
+        name=subprocess.check_output(shellprefix + "sh -c 'echo $SCHROOT_CHROOT_NAME'",
+                                     shell=True)
+        info = re.sub(r'schroot .*', 'schroot -i -c ' + name, shellprefix)
+        fout=subprocess.check_output(info, shell=True)
+        s = []
+        for line in fout.split('\n'):
+            m = re.match(r'^\s+(Name|Description)\s+(.*)', line)
+            if m:
+                s.append(indent + m.group(1) + ': ' + m.group(2))
+        result.write('\n'.join(s))
         result.write(indent+'''</chrootinfo>\n''')
     result.write(indent+'''<libraryinfo>\n''')
     libs = ['libsoup-2.4', 'evolution-data-server-1.2', 'glib-2.0','dbus-glib-1']
     s=''
-    #change to a dir so that schroot will change to an available directory, without this
-    #schroot will fail which in turn causes the following cmd has no chance to run
-    oldpath = os.getcwd()  
-    tmpdir = srcdir
-    while (os.path.exists(tmpdir) == False):
-        tmpdir = os.path.dirname(tmpdir)
-    os.chdir(tmpdir)
     for lib in libs:
-        fout,fin=popen2.popen2(shellprefix+' pkg-config --modversion '+lib +' |grep -v pkg-config')
-        s = s + lib +': '+fout.read() +'  '
-    os.chdir(oldpath)
+        try:
+            fout=subprocess.check_output(shellprefix+' pkg-config --modversion '+lib +' |grep -v pkg-config',
+                                         shell=True)
+            s = s + lib +': '+fout +'  '
+        except subprocess.CalledProcessError:
+            pass
     result.write(indent+s)
     result.write(indent+'''</libraryinfo>\n''')
     indents.pop()
@@ -147,22 +151,28 @@ def step1(resultdir, result, indents, dir, resulturi, shellprefix, srcdir):
     result.write(indent+'''<prepare>\n''')
     indent =indent+space
     indents.append(indent)
-    tags=['libsynthesis', 'syncevolution', 'compile', 'dist']
-    tagsp={'libsynthesis':'libsynthesis-fetch-config',
-            'syncevolution':'syncevolution-fetch-config','compile':'compile','dist':'dist'}
+    tags=['libsynthesis', 'syncevolution', 'activesyncd', 'compile', 'dist', 'distcheck']
+    tagsp={'libsynthesis':'libsynthesis-source',
+           'syncevolution':'syncevolution-source',
+           'activesyncd':'activesyncd-source',
+           'compile':'compile',
+           'distcheck': 'distcheck',
+           'dist':'dist'}
     for tag in tags:
         result.write(indent+'''<'''+tagsp[tag])
-        fout,fin=popen2.popen2('find `dirname '+input+'` -type d -name *'+tag)
-        s = fout.read().rpartition('/')[2].rpartition('\n')[0]
+        fout=subprocess.check_output('find `dirname '+input+'` -type d -name *'+tag, shell=True)
+        s = fout.rpartition('/')[2].rpartition('\n')[0]
         result.write(' path ="'+s+'">')
 	'''check the result'''
-        if(not os.system("grep -q '^"+tag+".* disabled in configuration$' "+input)):
-            result.write("skipped")
-        elif(os.system ("grep -q '^"+tag+" successful' "+input)):
+        if 0 == os.system("grep -q '^"+tag+": .*: failed' "+input):
             result.write("failed")
-            cont = False
-        else:
+        elif 0 == os.system ("grep -q '^"+tag+" successful' "+input):
             result.write("okay")
+        elif 0 == os.system("grep -q '^"+tag+".* disabled in configuration$' "+input):
+            result.write("skipped")
+        else:
+            # Not listed at all? Fail.
+            result.write("failed")
         result.write('''</'''+tagsp[tag]+'''>\n''')
     indents.pop()
     indent = indents[-1]
@@ -188,16 +198,22 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
         cmd='sed -n '
         for server in servers:
             cmd+= '-e /^'+server+'/p '
-        fout,fin=popen2.popen2(cmd +resultdir+'/output.txt')
-        for line in fout:
+        print "Analyzing overall result %s" % (resultdir+'/output.txt')
+        cmd = cmd +resultdir+'/output.txt'
+        fout=subprocess.check_output(cmd, shell=True)
+        for line in fout.split('\n'):
             for server in servers:
-                # find first line with "foobar successful" or "foobar: <command failure>"
+                # Find first line with "foobar successful" or "foobar: <command failure>",
+                # ignore "skipped".
                 if (line.startswith(server + ":") or line.startswith(server + " ")) and server not in params:
-                    t = line.partition(server)[2].rpartition('\n')[0]
+                    t = line.partition(server)[2]
                     if(t.startswith(':')):
                         t=t.partition(':')[2]
-                    params[server]=t
-    
+                    t = t.strip()
+                    if t != 'skipped: disabled in configuration':
+                        print "Result for %s: %s" % (server, t)
+                        params[server]=t
+
     indent =indents[-1]+space
     indents.append(indent)
     '''start of testcase results '''
@@ -208,13 +224,16 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
     sourceServers = ['evolution',
                      'evolution-prebuilt-build',
                      'yahoo',
+                     'owndrive',
                      'davical',
                      'googlecalendar',
+                     'googlecontacts',
                      'googleeas',
                      'apple',
                      'egroupware-dav',
                      'oracle',
                      'exchange',
+                     'pim',
                      'dbus']
     sourceServersRun = 0
     haveSource = False
@@ -268,11 +287,9 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
                 # then get added at the end.
                 clientSync = re.compile(r' +Client::Sync::(.*?)::(?:(Suspend|Resend|Retry)::)?([^:]+)')
                 for source in ('file_task', 'file_event', 'file_contact', 'eds_contact', 'eds_event'):
-                    os.chdir (srcdir)
-                    cmd = shellprefix + " env LD_LIBRARY_PATH=build-synthesis/src/.libs SYNCEVOLUTION_BACKEND_DIR="+backenddir +" CLIENT_TEST_PEER_CAN_RESTART=1 CLIENT_TEST_RETRY=t CLIENT_TEST_RESEND=t CLIENT_TEST_SUSPEND=t CLIENT_TEST_SOURCES="+source+" ./client-test -h"
-                    fout,fin=popen2.popen2(cmd)
-                    os.chdir(oldpath)
-                    for line in fout:
+                    cmd = shellprefix + " env LD_LIBRARY_PATH=%s/build-synthesis/src/.libs SYNCEVOLUTION_BACKEND_DIR=%s CLIENT_TEST_PEER_CAN_RESTART=1 CLIENT_TEST_RETRY=t CLIENT_TEST_RESEND=t CLIENT_TEST_SUSPEND=t CLIENT_TEST_SOURCES=%s %s/client-test -h" % (srcdir, backenddir, source, srcdir)
+                    fout=subprocess.check_output(cmd, shell=True)
+                    for line in fout.split('\n'):
                         m = clientSync.match(line)
                         if m:
                             if m.group(2):
@@ -303,7 +320,7 @@ def step2(resultdir, result, servers, indents, srcdir, shellprefix, backenddir):
             logs = map(lambda entry: entry[1], logs)
             logdic ={}
             logprefix ={}
-            if server == 'dbus':
+            if server in ('dbus', 'pim'):
                 # Extract tests and their results from output.txt,
                 # which contains Python unit test output. Example follows.
                 # Note that there can be arbitrary text between the test name
@@ -526,6 +543,8 @@ span.hl { color: #c02020 }
 
 if(__name__ == "__main__"):
     if (len(sys.argv)!=7):
+        # srcdir and basedir must be usable inside the shell started by shellprefix (typically
+        # the chroot).
         print "usage: python resultchecker.py resultdir servers resulturi srcdir shellprefix backenddir"
     else:
-        check(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
+        check(*sys.argv[1:])

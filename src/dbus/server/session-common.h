@@ -171,6 +171,15 @@ namespace GDBusCXX {
         typedef SharedBuffer host_type;
         typedef const SharedBuffer &arg_type;
 
+#ifdef GDBUS_CXX_GIO
+        static void get(GDBusCXX::ExtractArgs &context,
+                        GDBusCXX::reader_type &iter, host_type &buffer)
+        {
+            base::host_type array;
+            base::get(context, iter, array);
+            buffer = SharedBuffer(reinterpret_cast<const char *>(array.second), array.first);
+        }
+#else
         static void get(GDBusCXX::connection_type *conn, GDBusCXX::message_type *msg,
                         GDBusCXX::reader_type &iter, host_type &buffer)
         {
@@ -178,6 +187,7 @@ namespace GDBusCXX {
             base::get(conn, msg, iter, array);
             buffer = SharedBuffer(reinterpret_cast<const char *>(array.second), array.first);
         }
+#endif
 
         static void append(GDBusCXX::builder_type &builder, arg_type buffer)
         {
@@ -185,6 +195,83 @@ namespace GDBusCXX {
             base::append(builder, array);
         }
     };
+
+    template <> struct dbus_traits<SyncReport> :
+        public dbus_traits< std::string >
+    {
+        typedef dbus_traits< std::string > base;
+
+        typedef SyncReport host_type;
+        typedef const SyncReport &arg_type;
+
+#ifdef GDBUS_CXX_GIO
+        static void get(GDBusCXX::ExtractArgs &context,
+                        GDBusCXX::reader_type &iter, host_type &report)
+        {
+            std::string dump;
+            base::get(context, iter, dump);
+            report = SyncReport(dump);
+        }
+#else
+        static void get(GDBusCXX::connection_type *conn, GDBusCXX::message_type *msg,
+                        GDBusCXX::reader_type &iter, host_type &report)
+        {
+            std::string dump;
+            base::get(conn, msg, iter, dump);
+            report = SyncReport(dump);
+        }
+#endif
+
+        static void append(GDBusCXX::builder_type &builder, arg_type report)
+        {
+            base::append(builder, report.toString());
+        }
+    };
+
+    template <> struct dbus_traits<SyncSourceReport> :
+        public dbus_traits< std::string >
+    {
+        typedef dbus_traits< std::string > base;
+
+        typedef SyncSourceReport host_type;
+        typedef const SyncSourceReport &arg_type;
+
+#ifdef GDBUS_CXX_GIO
+        static void get(GDBusCXX::ExtractArgs &context,
+                        GDBusCXX::reader_type &iter, host_type &source)
+        {
+            std::string dump;
+            base::get(context, iter, dump);
+            SyncReport report = SyncReport(dump);
+            const SyncSourceReport *foo = report.findSyncSourceReport("foo");
+            if (!foo) {
+                SE_THROW("incomplete SyncReport");
+            }
+            source = *foo;
+        }
+#else
+        static void get(GDBusCXX::connection_type *conn, GDBusCXX::message_type *msg,
+                        GDBusCXX::reader_type &iter, host_type &source)
+        {
+            std::string dump;
+            base::get(conn, msg, iter, dump);
+            SyncReport report = SyncReport(dump);
+            const SyncSourceReport *foo = report.findSyncSourceReport("foo");
+            if (!foo) {
+                SE_THROW("incomplete SyncReport");
+            }
+            source = *foo;
+        }
+#endif
+
+        static void append(GDBusCXX::builder_type &builder, arg_type source)
+        {
+            SyncReport report;
+            report.addSyncSourceReport("foo", source);
+            base::append(builder, report.toString());
+        }
+    };
+
 }
 
 #endif // SESSION_COMMON_H

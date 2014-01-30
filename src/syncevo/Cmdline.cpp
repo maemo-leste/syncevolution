@@ -51,6 +51,7 @@ using namespace std;
 #include <boost/tokenizer.hpp>
 #include <boost/foreach.hpp>
 #include <boost/range.hpp>
+#include <boost/assign/list_of.hpp>
 #include <fstream>
 
 #include <syncevo/declarations.h>
@@ -109,7 +110,7 @@ bool Cmdline::parse()
 /**
  * Detects "--sync foo", "--sync=foo", "-s foo".
  */
-static bool IsKeyword(const std::string arg,
+static bool IsKeyword(const std::string &arg,
                       const char *longWord,
                       const char *shortWord)
 {
@@ -204,6 +205,12 @@ bool Cmdline::parse(vector<string> &parsed)
         } else if(boost::iequals(m_argv[opt], "--print-databases")) {
             operations.push_back(m_argv[opt]);
             m_printDatabases = true;
+        } else if(boost::iequals(m_argv[opt], "--create-database")) {
+            operations.push_back(m_argv[opt]);
+            m_createDatabase = true;
+        } else if(boost::iequals(m_argv[opt], "--remove-database")) {
+            operations.push_back(m_argv[opt]);
+            m_removeDatabase = true;
         } else if(boost::iequals(m_argv[opt], "--print-servers") ||
                   boost::iequals(m_argv[opt], "--print-peers") ||
                   boost::iequals(m_argv[opt], "--print-configs")) {
@@ -403,6 +410,8 @@ bool Cmdline::isSync()
         m_printTemplates || m_dontrun ||
         m_argc == 1 || (m_useDaemon.wasSet() && m_argc == 2) ||
         m_printDatabases ||
+        m_createDatabase ||
+        m_removeDatabase ||
         m_printConfig || m_remove ||
         (m_server == "" && m_argc > 1) ||
         m_configure || m_migrate ||
@@ -474,6 +483,11 @@ void Cmdline::makeObsolete(boost::shared_ptr<SyncConfig> &from)
     } else {
         newConfigName = oldContext + suffix;
     }
+
+    // Clear old pointer first. That frees cached data in SyncConfig,
+    // which otherwise fails to notice that we moved files on disk
+    // around.
+    from.reset();
     from.reset(new SyncConfig(newConfigName));
 }
 
@@ -646,27 +660,61 @@ public:
     }
 };
 
-void Cmdline::checkSyncPasswords(SyncContext &context)
+static void ShowLUID(SyncSourceLogging *logging, const std::string &luid)
 {
-    ConfigPropertyRegistry& registry = SyncConfig::getRegistry();
-    BOOST_FOREACH(const ConfigProperty *prop, registry) {
-        prop->checkPassword(context.getUserInterfaceNonNull(),
-                            context.getConfigName(),
-                            *context.getProperties());
+    string description;
+    if (logging) {
+        description = logging->getDescription(luid);
     }
+    SE_LOG_SHOW(NULL, "%s%s%s",
+                CmdlineLUID::fromLUID(luid).c_str(),
+                description.empty() ? "" : ": ",
+                description.c_str());
 }
 
-void Cmdline::checkSourcePasswords(SyncContext &context,
-                                   const std::string &sourceName,
-                                   SyncSourceNodes &nodes)
+static void ExportLUID(SyncSourceRaw *raw,
+                       ostream *out,
+                       const std::string &defDelimiter,
+                       const std::string &itemPath,
+                       bool &haveItem, bool &haveNewline,
+                       const std::string &luid)
 {
-    ConfigPropertyRegistry &registry = SyncSourceConfig::getRegistry();
-    BOOST_FOREACH(const ConfigProperty *prop, registry) {
-        prop->checkPassword(context.getUserInterfaceNonNull(),
-                            context.getConfigName(),
-                            *context.getProperties(),
-                            sourceName,
-                            nodes.getProperties());
+    string item;
+    raw->readItemRaw(luid, item);
+    if (!out) {
+        // write into directory
+        string fullPath = itemPath + "/" + luid;
+        ofstream file((itemPath + "/" + luid).c_str());
+        file << item;
+        file.close();
+        if (file.bad()) {
+            SyncContext::throwError(fullPath, errno);
+        }
+    } else {
+        std::string delimiter;
+        if (haveItem) {
+            if (defDelimiter.size() > 1 &&
+                haveNewline &&
+                defDelimiter[0] == '\n') {
+                // already wrote initial newline, skip it
+                delimiter = defDelimiter.substr(1);
+            } else {
+                delimiter = defDelimiter;
+            }
+        }
+        if (out == &std::cout) {
+            // special case, use logging infrastructure
+            SE_LOG_SHOW(NULL, "%s%s",
+                        delimiter.c_str(),
+                        item.c_str());
+            // always prints newline
+            haveNewline = true;
+        } else {
+            // write to file
+            *out << delimiter << item;
+            haveNewline = boost::ends_with(item, "\n");
+        }
+        haveItem = true;
     }
 }
 
@@ -682,7 +730,7 @@ bool Cmdline::run() {
     if (m_usage) {
         usage(true);
     } else if (m_version) {
-        SE_LOG_SHOW(NULL, NULL, "SyncEvolution %s%s\n%s%s",
+        SE_LOG_SHOW(NULL, "SyncEvolution %s%s\n%s%s",
                     VERSION,
                     SyncContext::isStableRelease() ? "" : " (pre-release)",
                     EDSAbiWrapperInfo(),
@@ -704,8 +752,8 @@ bool Cmdline::run() {
         }
     } else if (m_dontrun) {
         // user asked for information
-    } else if (m_printDatabases) {
-        // list databases
+    } else if (m_printDatabases || m_createDatabase || m_removeDatabase) {
+        // manipulate databases
         const SourceRegistry &registry(SyncSource::getSourceRegistry());
         boost::shared_ptr<SyncSourceNodes> nodes;
         std::string header;
@@ -713,6 +761,11 @@ bool Cmdline::run() {
         FilterConfigNode::ConfigFilter sourceFilter;
         std::string sourceName;
         FilterConfigNode::ConfigFilter::const_iterator backend;
+
+        void (Cmdline::*operation)(SyncSource *, const std::string &) =
+            m_printDatabases ? &Cmdline::listDatabases :
+            m_createDatabase ? &Cmdline::createDatabase :
+            &Cmdline::removeDatabase;
 
         if (!m_server.empty()) {
             // list for specific backend chosen via config
@@ -754,17 +807,19 @@ bool Cmdline::run() {
         SyncSourceParams params("list", *nodes, context);
         if (!m_server.empty() || backend != sourceFilter.end()) {
             // list for specific backend
+            params.m_name = sourceName;
             auto_ptr<SyncSource> source(SyncSource::createSource(params, false, NULL));
             if (source.get() != NULL) {
                 if (!m_server.empty() && nodes) {
                     // ensure that we have passwords for this config
-                    checkSyncPasswords(*context);
-                    checkSourcePasswords(*context, sourceName, *nodes);
+                    PasswordConfigProperty::checkPasswords(context->getUserInterfaceNonNull(),
+                                                           *context,
+                                                           PasswordConfigProperty::CHECK_PASSWORD_ALL,
+                                                           boost::assign::list_of(sourceName));
                 }
-                listSources(*source, header);
-                SE_LOG_SHOW(NULL, NULL, "\n");
+                (this->*operation)(source.get(), header);
             } else {
-                SE_LOG_SHOW(NULL, NULL, "%s:\n   cannot list databases", header.c_str());
+                SE_LOG_SHOW(NULL, "%s:\n   cannot access databases", header.c_str());
             }
         } else {
             // list for all backends
@@ -775,16 +830,14 @@ bool Cmdline::run() {
                         nodes->getProperties()->setProperty("backend", type.m_backend);
                         std::string header = boost::join(alias, " = ");
                         try {
+                            // The name is used in error messages. We
+                            // don't have a source name, so let's fall
+                            // back to the backend instead.
+                            params.m_name = type.m_backend;
                             auto_ptr<SyncSource> source(SyncSource::createSource(params, false));
-                            if (!source.get()) {
-                                // silently skip backends like the "file" backend which do not support
-                                // listing databases and return NULL unless configured properly
-                            } else {
-                                listSources(*source, header);
-                                SE_LOG_SHOW(NULL, NULL, "\n");
-                            }
+                            (this->*operation)(source.get(), header);
                         } catch (...) {
-                            SE_LOG_ERROR(NULL, NULL, "%s:\nlisting databases failed", header.c_str());
+                            SE_LOG_ERROR(NULL, "%s:\naccessing databases failed", header.c_str());
                             Exception::handle();
                         }
                     }
@@ -803,7 +856,7 @@ bool Cmdline::run() {
             }
             config.reset(new SyncConfig(m_server));
             if (!config->exists()) {
-                SE_LOG_ERROR(NULL, NULL, "Server '%s' has not been configured yet.", m_server.c_str());
+                SE_LOG_ERROR(NULL, "Server '%s' has not been configured yet.", m_server.c_str());
                 return false;
             }
 
@@ -818,7 +871,7 @@ bool Cmdline::run() {
                                           peer, context);
             config = SyncConfig::createPeerTemplate(peer);
             if (!config.get()) {
-                SE_LOG_ERROR(NULL, NULL, "No configuration template for '%s' available.", m_template.c_str());
+                SE_LOG_ERROR(NULL, "No configuration template for '%s' available.", m_template.c_str());
                 return false;
             }
 
@@ -854,7 +907,7 @@ bool Cmdline::run() {
         BOOST_FOREACH(const string &name, sources) {
             if (m_sources.empty() ||
                 m_sources.find(name) != m_sources.end()) {
-                SE_LOG_SHOW(NULL, NULL, "[%s]", name.c_str());
+                SE_LOG_SHOW(NULL, "[%s]", name.c_str());
                 SyncSourceNodes nodes = config->getSyncSourceNodes(name);
                 boost::shared_ptr<FilterConfigNode> sourceProps = nodes.getProperties();
                 sourceProps->setFilter(sourceFilters.createSourceFilter(name));
@@ -906,7 +959,7 @@ bool Cmdline::run() {
         string origPeer;
         if (m_migrate) {
             if (!m_sources.empty()) {
-                SE_LOG_ERROR(NULL, NULL, "cannot migrate individual sources");
+                SE_LOG_ERROR(NULL, "cannot migrate individual sources");
                 return false;
             }
 
@@ -917,7 +970,7 @@ bool Cmdline::run() {
                 oldContext = "";
                 from.reset(new SyncConfig(peer));
                 if (!from->exists()) {
-                    SE_LOG_ERROR(NULL, NULL, "Server '%s' has not been configured yet.", m_server.c_str());
+                    SE_LOG_ERROR(NULL, "Server '%s' has not been configured yet.", m_server.c_str());
                     return false;
                 }
             }
@@ -994,7 +1047,7 @@ bool Cmdline::run() {
                     if (SyncConfig::splitConfigString(SyncConfig::normalizeConfigString(configTemplate,
                                                                                         SyncConfig::NormalizeFlags(SyncConfig::NORMALIZE_SHORTHAND|SyncConfig::NORMALIZE_IS_NEW)),
                                                       peer, context)) {
-                        SE_LOG_ERROR(NULL, NULL, "Template %s must not specify a context.", configTemplate.c_str());
+                        SE_LOG_ERROR(NULL, "Template %s must not specify a context.", configTemplate.c_str());
                         return false;
                     }
                     string tmp;
@@ -1024,15 +1077,15 @@ bool Cmdline::run() {
                     }
                 }
                 if (!from.get()) {
-                    SE_LOG_ERROR(NULL, NULL, "No configuration template for '%s' available.", configTemplate.c_str());
+                    SE_LOG_ERROR(NULL, "No configuration template for '%s' available.", configTemplate.c_str());
                     if (m_template.empty()) {
-                        SE_LOG_INFO(NULL, NULL,
+                        SE_LOG_INFO(NULL,
                                     "Use '--template none' and/or specify relevant properties on the command line to create a configuration without a template. Need values for: %s",
                                     boost::join(missing, ", ").c_str());
                     } else if (missing.empty()) {
-                        SE_LOG_INFO(NULL, NULL, "All relevant properties seem to be set, omit the --template parameter to proceed.");
+                        SE_LOG_INFO(NULL, "All relevant properties seem to be set, omit the --template parameter to proceed.");
                     }
-                    SE_LOG_INFO(NULL, NULL, "\n");
+                    SE_LOG_INFO(NULL, "\n");
                     SyncConfig::DeviceList devices;
                     devices.push_back(SyncConfig::DeviceDescription("", "", SyncConfig::MATCH_ALL));
                     dumpConfigTemplates("Available configuration templates (clients and servers):",
@@ -1139,7 +1192,7 @@ bool Cmdline::run() {
 
         // TODO: update complete --configure output to be more informative.
         // This is a first step, but shouldn't be done in isolation.
-        // SE_LOG_INFO(NULL, NULL, "%s configuration %s",
+        // SE_LOG_INFO(NULL, "%s configuration %s",
         //             fromScratch ? "creating" : "updating",
         //             to->getConfigName().c_str());
 
@@ -1175,8 +1228,26 @@ bool Cmdline::run() {
 
                     // check whether the sync source works; this can
                     // take some time, so allow the user to abort
-                    SE_LOG_INFO(NULL, NULL, "%s: looking for databases...",
+                    SE_LOG_INFO(NULL, "%s: looking for databases...",
                                 source.c_str());
+                    // Even if the peer config does not exist yet
+                    // (fromScratch == true), the source config itself
+                    // may already exist with a username/password
+                    // using the keyring. Need to retrieve that
+                    // password before using the source.
+                    //
+                    // We need to check for databases again here,
+                    // because otherwise we don't know whether the
+                    // source is usable. The "database" property can
+                    // be empty in a usable source, and the "sync"
+                    // property in some potential other peer config
+                    // is not accessible.
+                    PasswordConfigProperty::checkPasswords(to->getUserInterfaceNonNull(),
+                                                           *to,
+                                                           PasswordConfigProperty::CHECK_PASSWORD_SOURCE|
+                                                           PasswordConfigProperty::CHECK_PASSWORD_RESOLVE_PASSWORD|
+                                                           PasswordConfigProperty::CHECK_PASSWORD_RESOLVE_USERNAME,
+                                                           boost::assign::list_of(source));
                     SyncSourceParams params(source, to->getSyncSourceNodes(source), to);
                     auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false, to.get()));
                     if (syncSource.get() == NULL) {
@@ -1188,11 +1259,13 @@ bool Cmdline::run() {
                                 disable = "no database to synchronize";
                             }
                         } catch (...) {
-                            disable = "backend failed";
+                            std::string explanation;
+                            Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
+                            disable = "backend failed: " + explanation;
                         }
                     }
                     s.checkForNormal();
-                    SE_LOG_INFO(NULL, NULL, "%s: %s\n",
+                    SE_LOG_INFO(NULL, "%s: %s\n",
                                 source.c_str(),
                                 disable.empty() ? "okay" : disable.c_str());
                 }
@@ -1313,8 +1386,11 @@ bool Cmdline::run() {
         sysync::TSyError err;
 #define CHECK_ERROR(_op) if (err) { SE_THROW_EXCEPTION_STATUS(StatusException, string(source->getName()) + ": " + (_op), SyncMLStatus(err)); }
 
-        checkSyncPasswords(*context);
-        checkSourcePasswords(*context, source->getName(), sourceNodes);
+        PasswordConfigProperty::checkPasswords(context->getUserInterfaceNonNull(),
+                                               *context,
+                                               PasswordConfigProperty::CHECK_PASSWORD_ALL,
+                                               boost::assign::list_of(source->getName()));
+        source->setNeedChanges(false);
         source->open();
         const SyncSource::Operations &ops = source->getOperations();
         if (m_printItems) {
@@ -1326,18 +1402,8 @@ bool Cmdline::run() {
 
             err = ops.m_startDataRead(*source, "", "");
             CHECK_ERROR("reading items");
-            list<string> luids;
-            readLUIDs(source, luids);
-            BOOST_FOREACH(string &luid, luids) {
-                string description;
-                if (logging) {
-                    description = logging->getDescription(luid);
-                }
-                SE_LOG_SHOW(NULL, NULL, "%s%s%s",
-                            CmdlineLUID::fromLUID(luid).c_str(),
-                            description.empty() ? "" : ": ",
-                            description.c_str());
-            }
+            source->setReadAheadOrder(SyncSourceBase::READ_ALL_ITEMS);
+            processLUIDs(source, boost::bind(ShowLUID, logging, _1));
         } else if (m_deleteItems) {
             if (!ops.m_deleteItem) {
                 source->throwError("deleting items not supported");
@@ -1406,7 +1472,7 @@ bool Cmdline::run() {
                                 luid = *m_luids.begin();
                             }
                         }
-                        SE_LOG_SHOW(NULL, NULL, "#0: %s",
+                        SE_LOG_SHOW(NULL, "#0: %s",
                                     insertItem(raw, luid, content).getEncoded().c_str());
                     } else {
                         typedef boost::split_iterator<string::iterator> string_split_iterator;
@@ -1441,7 +1507,7 @@ bool Cmdline::run() {
                                 luid = *luidit;
                                 ++luidit;
                             }
-                            SE_LOG_SHOW(NULL, NULL, "#%d: %s",
+                            SE_LOG_SHOW(NULL, "#%d: %s",
                                         count,
                                         insertItem(raw,
                                                    luid,
@@ -1458,7 +1524,7 @@ bool Cmdline::run() {
                         if (!ReadFile(path, content)) {
                             SyncContext::throwError(path, errno);
                         }
-                        SE_LOG_SHOW(NULL, NULL, "#%d: %s: %s",
+                        SE_LOG_SHOW(NULL, "#%d: %s: %s",
                                     count,
                                     entry.c_str(),
                                     insertItem(raw, "", content).getEncoded().c_str());
@@ -1484,50 +1550,29 @@ bool Cmdline::run() {
                     outFile.set(new ofstream(m_itemPath.c_str()));
                     out = outFile;
                 }
-                if (m_luids.empty()) {
-                    readLUIDs(source, m_luids);
-                }
                 bool haveItem = false;     // have written one item
                 bool haveNewline = false;  // that item had a newline at the end
-                BOOST_FOREACH(const string &luid, m_luids) {
-                    string item;
-                    raw->readItemRaw(luid, item);
-                    if (!out) {
-                        // write into directory
-                        string fullPath = m_itemPath + "/" + luid;
-                        ofstream file((m_itemPath + "/" + luid).c_str());
-                        file << item;
-                        file.close();
-                        if (file.bad()) {
-                            SyncContext::throwError(fullPath, errno);
-                        }
-                    } else {
-                        std::string delimiter;
-                        if (haveItem) {
-                            if (m_delimiter.size() > 1 &&
-                                haveNewline &&
-                                m_delimiter[0] == '\n') {
-                                // already wrote initial newline, skip it
-                                delimiter = m_delimiter.substr(1);
-                            } else {
-                                delimiter = m_delimiter;
-                            }
-                        }
-                        if (out == &std::cout) {
-                            // special case, use logging infrastructure
-                            SE_LOG_SHOW(NULL, NULL, "%s%s",
-                                        delimiter.c_str(),
-                                        item.c_str());
-                            // always prints newline
-                            haveNewline = true;
-                        } else {
-                            // write to file
-                            *out << delimiter << item;
-                            haveNewline = boost::ends_with(item, "\n");
-                        }
-                        haveItem = true;
+                if (m_luids.empty()) {
+                    // Read all items.
+                    raw->setReadAheadOrder(SyncSourceBase::READ_ALL_ITEMS);
+                    processLUIDs(source, boost::bind(ExportLUID,
+                                                     raw,
+                                                     out,
+                                                     boost::ref(m_delimiter),
+                                                     boost::ref(m_itemPath),
+                                                     boost::ref(haveItem),
+                                                     boost::ref(haveNewline),
+                                                     _1));
+                } else {
+                    SyncSourceBase::ReadAheadItems luids;
+                    luids.reserve(m_luids.size());
+                    luids.insert(luids.begin(), m_luids.begin(), m_luids.end());
+                    raw->setReadAheadOrder(SyncSourceBase::READ_SELECTED_ITEMS, luids);
+                    BOOST_FOREACH(const string &luid, m_luids) {
+                        ExportLUID(raw, out, m_delimiter, m_itemPath, haveItem, haveNewline, luid);
                     }
                 }
+                raw->setReadAheadOrder(SyncSourceBase::READ_NONE);
                 if (outFile) {
                     outFile->close();
                     if (outFile->bad()) {
@@ -1600,7 +1645,7 @@ bool Cmdline::run() {
         }
 
         // check whether there were any sources specified which do not exist
-        if (unmatchedSources.size()) {
+        if (!unmatchedSources.empty()) {
             context->throwError(string("no such source(s): ") + boost::join(unmatchedSources, " "));
         }
 
@@ -1614,15 +1659,15 @@ bool Cmdline::run() {
                 if (first) {
                     first = false;
                 } else if(!m_quiet) {
-                    SE_LOG_SHOW(NULL, NULL, "\n");
+                    SE_LOG_SHOW(NULL, "\n");
                 }
-                SE_LOG_SHOW(NULL, NULL, "%s", dir.c_str());
+                SE_LOG_SHOW(NULL, "%s", dir.c_str());
                 if (!m_quiet) {
                     SyncReport report;
                     context->readSessionInfo(dir, report);
                     ostringstream out;
                     out << report;
-                    SE_LOG_SHOW(NULL, NULL, "%s", out.str().c_str());
+                    SE_LOG_SHOW(NULL, "%s", out.str().c_str());
                 }
             }
         } else if (!m_restore.empty()) {
@@ -1663,13 +1708,18 @@ bool Cmdline::run() {
 
 void Cmdline::readLUIDs(SyncSource *source, list<string> &luids)
 {
+    processLUIDs(source, boost::bind(&list<string>::push_back, boost::ref(luids), _1));
+}
+
+void Cmdline::processLUIDs(SyncSource *source, const boost::function<void (const std::string &)> &process)
+{
     const SyncSource::Operations &ops = source->getOperations();
     sysync::ItemIDType id;
     sysync::sInt32 status;
     sysync::TSyError err = ops.m_readNextItem(*source, &id, &status, true);
     CHECK_ERROR("next item");
     while (status != sysync::ReadNextItem_EOF) {
-        luids.push_back(id.item);
+        process(id.item);
         StrDispose(id.item);
         StrDispose(id.parent);
         err = ops.m_readNextItem(*source, &id, &status, false);
@@ -1797,13 +1847,13 @@ bool Cmdline::parseProp(PropertyType propertyType,
                 // replaced it
                 prop = validProps->find("backend");
                 if (!prop) {
-                    SE_LOG_ERROR(NULL, NULL, "backend: no such property");
+                    SE_LOG_ERROR(NULL, "backend: no such property");
                     return false;
                 }
                 SourceType sourceType(paramstr);
                 string error;
                 if (!prop->checkValue(sourceType.m_backend, error)) {
-                    SE_LOG_ERROR(NULL, NULL, "%s: %s", args.c_str(), error.c_str());
+                    SE_LOG_ERROR(NULL, "%s: %s", args.c_str(), error.c_str());
                     return false;
                 }
                 ContextProps &props = m_props[spec.m_config];
@@ -1822,19 +1872,19 @@ bool Cmdline::parseProp(PropertyType propertyType,
                     InitStateString("0", false);
                 return true;
             } else if (!prop) {
-                SE_LOG_ERROR(NULL, NULL, "%s: no such property", args.c_str());
+                SE_LOG_ERROR(NULL, "%s: no such property", args.c_str());
                 return false;
             } else {
                 string error;
                 if (!prop->checkValue(paramstr, error)) {
-                    SE_LOG_ERROR(NULL, NULL, "%s: %s", args.c_str(), error.c_str());
+                    SE_LOG_ERROR(NULL, "%s: %s", args.c_str(), error.c_str());
                     return false;
                 } else {
                     ContextProps &props = m_props[spec.m_config];
                     if (validProps == &m_validSyncProps) {
                         // complain if sync property includes source prefix
                         if (!spec.m_source.empty()) {
-                            SE_LOG_ERROR(NULL, NULL, "%s: source name '%s' not allowed in sync property",
+                            SE_LOG_ERROR(NULL, "%s: source name '%s' not allowed in sync property",
                                          args.c_str(),
                                          spec.m_source.c_str());
                             return false;
@@ -1886,7 +1936,7 @@ bool Cmdline::listPropValues(const ConfigPropertyRegistry &validProps,
 {
     const ConfigProperty *prop = validProps.find(propName);
     if (!prop && boost::iequals(propName, "type")) {
-        SE_LOG_SHOW(NULL, NULL,
+        SE_LOG_SHOW(NULL,
                     "%s\n"
                     "   <backend>[:<format>[:<version][!]]\n"
                     "   legacy property, replaced by 'backend', 'databaseFormat',\n"
@@ -1894,7 +1944,7 @@ bool Cmdline::listPropValues(const ConfigPropertyRegistry &validProps,
                     opt.c_str());
         return true;
     } else if (!prop) {
-        SE_LOG_ERROR(NULL, NULL, "%s: no such property", opt.c_str());
+        SE_LOG_ERROR(NULL, "%s: no such property", opt.c_str());
         return false;
     } else {
         ostringstream out;
@@ -1910,7 +1960,7 @@ bool Cmdline::listPropValues(const ConfigPropertyRegistry &validProps,
         } else {
             out << "   no documentation available" << endl;
         }
-        SE_LOG_SHOW(NULL, NULL, "%s", out.str().c_str());
+        SE_LOG_SHOW(NULL, "%s", out.str().c_str());
         return true;
     }
 }
@@ -1955,7 +2005,7 @@ bool Cmdline::listProperties(const ConfigPropertyRegistry &validProps,
     }
     out << endl;
     dumpComment(out, "   ", comment);
-    SE_LOG_SHOW(NULL, NULL, "%s", out.str().c_str());
+    SE_LOG_SHOW(NULL, "%s", out.str().c_str());
     return true;
 }
 
@@ -1997,15 +2047,21 @@ void Cmdline::checkForPeerProps()
     }
 }
 
-void Cmdline::listSources(SyncSource &syncSource, const string &header)
+void Cmdline::listDatabases(SyncSource *source, const string &header)
 {
+    if (!source) {
+        // silently skip backends like the "file" backend which do not support
+        // listing databases and return NULL unless configured properly
+        return;
+    }
+
     ostringstream out;
     out << header << ":\n";
 
-    if (syncSource.isInactive()) {
-        out << "not enabled during compilation or not usable in the current environment\n";
+    if (source->isInactive()) {
+        out << source->getBackend() << ": not enabled during compilation or not usable in the current environment\n";
     } else {
-        SyncSource::Databases databases = syncSource.getDatabases();
+        SyncSource::Databases databases = source->getDatabases();
 
         BOOST_FOREACH(const SyncSource::Database &database, databases) {
             out << "   " << database.m_name << " (" << database.m_uri << ")";
@@ -2015,7 +2071,54 @@ void Cmdline::listSources(SyncSource &syncSource, const string &header)
             out << endl;
         }
     }
-    SE_LOG_SHOW(NULL, NULL, "%s", out.str().c_str());
+    SE_LOG_SHOW(NULL, "%s", out.str().c_str());
+    SE_LOG_SHOW(NULL, "\n");
+}
+
+void Cmdline::createDatabase(SyncSource *source, const string &header)
+{
+    if (!source) {
+        SE_THROW(StringPrintf("%s:\ncannot access databases", header.c_str()));
+        return;
+    }
+
+    // Only the name can be set via the command line. URI is chosen by backend.
+    InitStateString databaseID = source->getDatabaseID();
+    if (!databaseID.wasSet()) {
+        SE_THROW("The 'database' property must be set to the name of the new database");
+    }
+    SyncSource::Database database = source->createDatabase(SyncSource::Database(databaseID, ""));
+    SE_LOG_SHOW(NULL, "%s: database '%s' (%s) was created.",
+                header.c_str(),
+                database.m_name.c_str(),
+                database.m_uri.c_str());
+}
+
+void Cmdline::removeDatabase(SyncSource *source, const string &header)
+{
+    if (!source) {
+        SE_THROW(StringPrintf("%s:\ncannot access databases", header.c_str()));
+        return;
+    }
+
+    InitStateString databaseID = source->getDatabaseID();
+    if (!databaseID.wasSet()) {
+        SE_THROW("The 'database' property was not set. Cowardly refusing to remove the default database. Set it to the empty string and try again if that was the intention.");
+    }
+
+    // determine URI
+    source->open();
+    SyncSource::Database database = source->getDatabase();
+    if (database.m_uri.empty()) {
+        SE_THROW(StringPrintf("Cannot determine database from 'database' property value '%s'.",
+                              databaseID.c_str()));
+    }
+
+    source->deleteDatabase(database.m_uri, SyncSource::REMOVE_DATA_DEFAULT);
+    SE_LOG_SHOW(NULL, "%s: database '%s' (%s) was removed.",
+                header.c_str(),
+                database.m_name.c_str(),
+                database.m_uri.c_str());
 }
 
 void Cmdline::dumpConfigs(const string &preamble,
@@ -2029,7 +2132,7 @@ void Cmdline::dumpConfigs(const string &preamble,
     if (!servers.size()) {
         out << "   none" << endl;
     }
-    SE_LOG_SHOW(NULL, NULL, "%s", out.str().c_str());
+    SE_LOG_SHOW(NULL, "%s", out.str().c_str());
 }
 
 void Cmdline::dumpConfigTemplates(const string &preamble,
@@ -2055,7 +2158,7 @@ void Cmdline::dumpConfigTemplates(const string &preamble,
     if (!templates.size()) {
         out << "   none" << endl;
     }
-    SE_LOG(level, NULL, NULL, "%s", out.str().c_str());
+    SE_LOG(NULL, level, "%s", out.str().c_str());
 }
 
 void Cmdline::dumpProperties(const ConfigNode &configuredProps,
@@ -2118,7 +2221,7 @@ void Cmdline::dumpProperties(const ConfigNode &configuredProps,
         }
     }
 
-    SE_LOG_SHOW(NULL, NULL, "%s", out.str().c_str());
+    SE_LOG_SHOW(NULL, "%s", out.str().c_str());
 }
 
 void Cmdline::dumpComment(ostream &stream,
@@ -2134,17 +2237,17 @@ void Cmdline::dumpComment(ostream &stream,
 
 void Cmdline::usage(bool full, const string &error, const string &param)
 {
-    SE_LOG_SHOW(NULL, NULL, "%s", synopsis);
+    SE_LOG_SHOW(NULL, "%s", synopsis);
     if (full) {
-        SE_LOG_SHOW(NULL, NULL, "\nOptions:\n%s", options);
+        SE_LOG_SHOW(NULL, "\nOptions:\n%s", options);
     }
 
     if (error != "") {
-        SE_LOG_SHOW(NULL, NULL, "\n");
-        SE_LOG_ERROR(NULL, NULL, "%s", error.c_str());
+        SE_LOG_SHOW(NULL, "\n");
+        SE_LOG_ERROR(NULL, "%s", error.c_str());
     }
     if (param != "") {
-        SE_LOG_INFO(NULL, NULL, "use '%s%s?' to get a list of valid parameters",
+        SE_LOG_INFO(NULL, "use '%s%s?' to get a list of valid parameters",
                     param.c_str(),
                     boost::ends_with(param, "=") ? "" : " ");
     }
@@ -2443,6 +2546,18 @@ static const std::string yahoo =
                "[calendar]\n"
                "sync = two-way\n"
                "backend = CalDAV\n";
+
+// Expected content of config.ini file depends on whether
+// a keyring is enabled or not.
+static const char DATABASE_PASSWORD_BAR[] =
+#ifdef HAVE_KEYRING
+               // In keyring.
+               "databasePassword = -"
+#else
+               // In file.
+               "databasePassword = bar"
+#endif
+               ;
 
 /**
  * Testing is based on a text representation of a directory
@@ -3098,12 +3213,12 @@ protected:
         TestCmdline failure2("--sync", "foo", NULL);
         CPPUNIT_ASSERT(!failure2.m_cmdline->parse());
         CPPUNIT_ASSERT_EQUAL_DIFF("", failure2.m_out.str());
-        CPPUNIT_ASSERT_EQUAL_DIFF("[ERROR] '--sync foo': not one of the valid values (two-way, slow, refresh-from-local, refresh-from-remote = refresh, one-way-from-local, one-way-from-remote = one-way, refresh-from-client = refresh-client, refresh-from-server = refresh-server, one-way-from-client = one-way-client, one-way-from-server = one-way-server, disabled = none)\n", failure2.m_err.str());
+        CPPUNIT_ASSERT_EQUAL_DIFF("[ERROR] '--sync foo': not one of the valid values (two-way, slow, refresh-from-local, refresh-from-remote = refresh, one-way-from-local, one-way-from-remote = one-way, refresh-from-client = refresh-client, refresh-from-server = refresh-server, one-way-from-client = one-way-client, one-way-from-server = one-way-server, local-cache-slow, local-cache-incremental = local-cache, disabled = none)\n", failure2.m_err.str());
 
         TestCmdline failure3("--sync=foo", NULL);
         CPPUNIT_ASSERT(!failure3.m_cmdline->parse());
         CPPUNIT_ASSERT_EQUAL_DIFF("", failure3.m_out.str());
-        CPPUNIT_ASSERT_EQUAL_DIFF("[ERROR] '--sync=foo': not one of the valid values (two-way, slow, refresh-from-local, refresh-from-remote = refresh, one-way-from-local, one-way-from-remote = one-way, refresh-from-client = refresh-client, refresh-from-server = refresh-server, one-way-from-client = one-way-client, one-way-from-server = one-way-server, disabled = none)\n", failure3.m_err.str());
+        CPPUNIT_ASSERT_EQUAL_DIFF("[ERROR] '--sync=foo': not one of the valid values (two-way, slow, refresh-from-local, refresh-from-remote = refresh, one-way-from-local, one-way-from-remote = one-way, refresh-from-client = refresh-client, refresh-from-server = refresh-server, one-way-from-client = one-way-client, one-way-from-server = one-way-server, local-cache-slow, local-cache-incremental = local-cache, disabled = none)\n", failure3.m_err.str());
 
         TestCmdline help("--sync", " ?", NULL);
         help.doit();
@@ -3124,7 +3239,12 @@ protected:
                                   "       transmit changes from peer\n"
                                   "     one-way-from-local\n"
                                   "       transmit local changes\n"
-                                  "     disabled (or none)\n"
+                                  "     local-cache-slow (server only)\n"
+                                  "       mirror remote data locally, transferring all data\n"
+                                  "     local-cache-incremental (server only)\n"
+                                  "       mirror remote data locally, transferring only changes;\n"
+                                  "       falls back to local-cache-slow automatically if necessary\n"
+                                 "     disabled (or none)\n"
                                   "       synchronization disabled\n"
                                   "   \n"
                                   "   refresh/one-way-from-server/client are also supported. Their use is\n"
@@ -3828,7 +3948,7 @@ protected:
         boost::replace_first(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
         boost::replace_first(expected, "# database = ", "database = xyz");
         boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
-        boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+        boost::replace_first(expected, "# databasePassword = ", DATABASE_PASSWORD_BAR);
         // migrating "type" sets forceSyncFormat if not the default,
         // and databaseFormat (if format was part of type, as for addressbook)
         boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
@@ -3944,7 +4064,7 @@ protected:
             boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
             boost::replace_first(expected, "# database = ", "database = xyz");
             boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
-            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            boost::replace_first(expected, "# databasePassword = ", DATABASE_PASSWORD_BAR);
             // migrating "type" sets forceSyncFormat if different from the "false" default
             // and databaseFormat (if format was part of type, as for addressbook)
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
@@ -3978,7 +4098,7 @@ protected:
             boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
             boost::replace_first(expected, "# database = ", "database = xyz");
             boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
-            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            boost::replace_first(expected, "# databasePassword = ", DATABASE_PASSWORD_BAR);
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
             string renamedConfig = scanFiles(newRoot, "scheduleworld.old.1");
@@ -4010,7 +4130,7 @@ protected:
             boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
             boost::replace_first(expected, "# database = ", "database = xyz");
             boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
-            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            boost::replace_first(expected, "# databasePassword = ", DATABASE_PASSWORD_BAR);
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
             boost::replace_first(expected,
                                  "peers/scheduleworld/sources/addressbook/config.ini",
@@ -4049,7 +4169,7 @@ protected:
             boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
             boost::replace_first(expected, "# database = ", "database = xyz");
             boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
-            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            boost::replace_first(expected, "# databasePassword = ", DATABASE_PASSWORD_BAR);
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
             string renamedConfig = scanFiles(oldRoot + ".old");
@@ -4076,7 +4196,7 @@ protected:
             boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
             boost::replace_first(expected, "# database = ", "database = xyz");
             boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
-            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            boost::replace_first(expected, "# databasePassword = ", DATABASE_PASSWORD_BAR);
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
             renamedConfig = scanFiles(otherRoot, "scheduleworld.old.3");
@@ -4241,7 +4361,7 @@ protected:
             boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
             boost::replace_first(expected, "# database = ", "database = xyz");
             boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
-            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            boost::replace_first(expected, "# databasePassword = ", DATABASE_PASSWORD_BAR);
             // migrating "type" sets forceSyncFormat if not already the default,
             // and databaseFormat (if format was part of type, as for addressbook)
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
@@ -4270,7 +4390,7 @@ protected:
             boost::replace_all(expected, "# ConsumerReady = 0", "ConsumerReady = 1");
             boost::replace_first(expected, "# database = ", "database = xyz");
             boost::replace_first(expected, "# databaseUser = ", "databaseUser = foo");
-            boost::replace_first(expected, "# databasePassword = ", "databasePassword = bar");
+            boost::replace_first(expected, "# databasePassword = ", DATABASE_PASSWORD_BAR);
             boost::replace_first(expected, "# databaseFormat = ", "databaseFormat = text/vcard");
             CPPUNIT_ASSERT_EQUAL_DIFF(expected, migratedConfig);
             string renamedConfig = scanFiles(newRoot, "scheduleworld.old.1");
@@ -4291,9 +4411,9 @@ private:
      * vararg constructor with NULL termination,
      * out and error stream into stringstream members
      */
-    class TestCmdline : private LoggerBase {
+    class TestCmdline : public Logger {
         void init() {
-            pushLogger(this);
+            addLogger(boost::shared_ptr<Logger>(this, NopDestructor()));
 
             m_argv.reset(new const char *[m_argvstr.size() + 1]);
             m_argv[0] = "client-test";
@@ -4327,7 +4447,7 @@ private:
         }
 
         ~TestCmdline() {
-            popLogger();
+            removeLogger(this);
         }
 
         boost::shared_ptr<SyncContext> parse()
@@ -4368,7 +4488,7 @@ private:
             std::string out = m_out.str();
             std::string err = m_err.str();
             std::string all = m_all.str();
-            CPPUNIT_ASSERT(boost::starts_with(out, "List databases:\n"));
+            CPPUNIT_ASSERT(boost::starts_with(out, "List and manipulate databases:\n"));
             CPPUNIT_ASSERT(out.find("\nOptions:\n") == std::string::npos);
             CPPUNIT_ASSERT(boost::ends_with(out,
                                             "Remove item(s):\n"
@@ -4392,14 +4512,11 @@ private:
         boost::scoped_array<const char *> m_argv;
 
         /** capture output produced while test ran */
-        void messagev(Level level,
-                      const char *prefix,
-                      const char *file,
-                      int line,
-                      const char *function,
+        void messagev(const MessageOptions &options,
                       const char *format,
                       va_list args)
         {
+            Level level = options.m_level;
             if (level <= INFO) {
                 ostringstream &out = level != SHOW ? m_err : m_out;
                 std::string str = StringPrintfV(format, args);
@@ -4415,7 +4532,6 @@ private:
                 }
             }
         }
-        virtual bool isProcessSafe() const { return false; }
     };
 
     string DefaultConfig() {

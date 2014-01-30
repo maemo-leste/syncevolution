@@ -26,12 +26,15 @@
 #include <syncevo/Logging.h>
 #include <syncevo/LogRedirect.h>
 #include <syncevo/SuspendFlags.h>
+#include <syncevo/GLibSupport.h>
 
 #include <synthesis/syerror.h>
 
 #include <boost/scoped_array.hpp>
 #include <boost/foreach.hpp>
 #include <boost/algorithm/string/join.hpp>
+#include <boost/lambda/lambda.hpp>
+#include <boost/lambda/bind.hpp>
 #include <fstream>
 #include <iostream>
 
@@ -252,7 +255,7 @@ int Execute(const std::string &cmd, ExecuteFlags flags) throw()
             if (flags & EXECUTE_NO_STDOUT) {
                 fullcmd += " >/dev/null";
             }
-            SE_LOG_DEBUG(NULL, NULL, "running command via system(): %s", cmd.c_str());
+            SE_LOG_DEBUG(NULL, "running command via system(): %s", cmd.c_str());
             ret = system(fullcmd.c_str());
         } else {
             // Need to catch at least one of stdout or stderr. A
@@ -260,7 +263,7 @@ int Execute(const std::string &cmd, ExecuteFlags flags) throw()
             // are read after system() returns. But we want true
             // streaming of the output, so use fork()/exec() plus
             // reliable output redirection.
-            SE_LOG_DEBUG(NULL, NULL, "running command via fork/exec with output redirection: %s", cmd.c_str());
+            SE_LOG_DEBUG(NULL, "running command via fork/exec with output redirection: %s", cmd.c_str());
             LogRedirect io(flags);
             pid_t child = fork();
             switch (child) {
@@ -296,7 +299,7 @@ int Execute(const std::string &cmd, ExecuteFlags flags) throw()
             }
             case -1:
                 // error handling in parent when fork() fails
-                SE_LOG_ERROR(NULL, NULL, "%s: fork() failed: %s",
+                SE_LOG_ERROR(NULL, "%s: fork() failed: %s",
                              cmd.c_str(), strerror(errno));
                 break;
             default:
@@ -387,6 +390,7 @@ ReadDir::ReadDir(const string &path, bool throwError) : m_path(path)
         if (errno) {
             SyncContext::throwError(path, errno);
         }
+        std::sort(m_entries.begin(), m_entries.end());
     } catch(...) {
         if (dir) {
             closedir(dir);
@@ -763,31 +767,38 @@ double Sleep(double seconds)
     SuspendFlags &s = SuspendFlags::getSuspendFlags();
     if (s.getState() == SuspendFlags::NORMAL) {
 #ifdef HAVE_GLIB
-        bool triggered = false;
-        GLibEvent timeout(g_timeout_add(seconds * 1000,
-                                        SleepTimeout,
-                                        &triggered),
-                          "glib timeout");
-        while (!triggered) {
-            if (s.getState() != SuspendFlags::NORMAL) {
-                break;
-            }
-            g_main_context_iteration(NULL, true);
-        }
-        // done
-        return 0;
-#else
-        // Only works when abort or suspend requests are delivered via signal.
-        // Not the case when used inside helper processes; but those have
-        // and depend on glib.
-        timeval delay;
-        delay.tv_sec = floor(seconds);
-        delay.tv_usec = (seconds - (double)delay.tv_sec) * 1e6;
-        if (select(0, NULL, NULL, NULL, &delay) != -1) {
+        // Only use glib if we are the owner of the main context.
+        // Otherwise we would interfere (?) with that owner or
+        // depend on it to drive the context (?). The glib docs
+        // don't say anything about this; in practice, it was
+        // observed that with some versions of glib, a second
+        // thread just blocked here when the main thread was not
+        // processing glib events.
+        if (g_main_context_is_owner(g_main_context_default())) {
+            bool triggered = false;
+            GLibEvent timeout(g_timeout_add(seconds * 1000,
+                                            SleepTimeout,
+                                            &triggered),
+                              "glib timeout");
+            GRunWhile(! boost::lambda::var(triggered) &&
+                      boost::lambda::bind(&SuspendFlags::getState, boost::ref(s)) == SuspendFlags::NORMAL);
             // done
             return 0;
         }
 #endif
+
+        // Fallback when glib is not available or unusable (= outside the main thread).
+        // Busy loop to detect abort requests.
+	Timespec deadline = start + Timespec(floor(seconds), (seconds - floor(seconds)) * 1e9);
+	while (deadline > Timespec::monotonic()) {
+            timeval delay;
+            delay.tv_sec = 0;
+            delay.tv_usec = 1e5;
+            select(0, NULL, NULL, NULL, &delay);
+            if (s.getState() != SuspendFlags::NORMAL) {
+                break;
+            }
+        }
     }
 
     // not done normally, calculate remaining time
@@ -817,7 +828,7 @@ const char * const SYNTHESIS_PROBLEM = "error code from Synthesis engine ";
 const char * const SYNCEVOLUTION_PROBLEM = "error code from SyncEvolution ";
 
 SyncMLStatus Exception::handle(SyncMLStatus *status,
-                               Logger *logger,
+                               const std::string *logPrefix,
                                std::string *explanation,
                                Logger::Level level,
                                HandleExceptionFlags flags)
@@ -830,7 +841,7 @@ SyncMLStatus Exception::handle(SyncMLStatus *status,
     try {
         throw;
     } catch (const TransportException &ex) {
-        SE_LOG_DEBUG(logger, NULL, "TransportException thrown at %s:%d",
+        SE_LOG_DEBUG(logPrefix, "TransportException thrown at %s:%d",
                      ex.m_file.c_str(), ex.m_line);
         error = std::string(TRANSPORT_PROBLEM) + ex.what();
         new_status = SyncMLStatus(sysync::LOCERR_TRANSPFAIL);
@@ -841,7 +852,7 @@ SyncMLStatus Exception::handle(SyncMLStatus *status,
                              Status2String(new_status).c_str());
     } catch (const StatusException &ex) {
         new_status = ex.syncMLStatus();
-        SE_LOG_DEBUG(logger, NULL, "exception thrown at %s:%d",
+        SE_LOG_DEBUG(logPrefix, "exception thrown at %s:%d",
                      ex.m_file.c_str(), ex.m_line);
         error = StringPrintf("%s%s: %s",
                              SYNCEVOLUTION_PROBLEM,
@@ -851,7 +862,7 @@ SyncMLStatus Exception::handle(SyncMLStatus *status,
             level = Logger::DEBUG;
         }
     } catch (const Exception &ex) {
-        SE_LOG_DEBUG(logger, NULL, "exception thrown at %s:%d",
+        SE_LOG_DEBUG(logPrefix, "exception thrown at %s:%d",
                      ex.m_file.c_str(), ex.m_line);
         error = ex.what();
     } catch (const std::exception &ex) {
@@ -865,7 +876,7 @@ SyncMLStatus Exception::handle(SyncMLStatus *status,
     if (flags & HANDLE_EXCEPTION_NO_ERROR) {
         level = Logger::DEBUG;
     }
-    SE_LOG(level, logger, NULL, "%s", error.c_str());
+    SE_LOG(logPrefix, level, "%s", error.c_str());
     if (flags & HANDLE_EXCEPTION_FATAL) {
         // Something unexpected went wrong, can only shut down.
         ::abort();
@@ -881,7 +892,7 @@ SyncMLStatus Exception::handle(SyncMLStatus *status,
     return status ? *status : new_status;
 }
 
-void Exception::tryRethrow(const std::string &explanation)
+void Exception::tryRethrow(const std::string &explanation, bool mustThrow)
 {
     static const std::string statusre = ".* \\((?:local|remote), status (\\d+)\\)";
     int status;
@@ -900,6 +911,10 @@ void Exception::tryRethrow(const std::string &explanation)
         if (re.FullMatch(explanation.substr(strlen(SYNCEVOLUTION_PROBLEM)), &status, &details)) {
             SE_THROW_EXCEPTION_STATUS(StatusException, details, (SyncMLStatus)status);
         }
+    }
+
+    if (mustThrow) {
+        throw std::runtime_error(explanation);
     }
 }
 
@@ -970,7 +985,7 @@ std::vector<std::string> unescapeJoinedString (const std::string& src, char sep)
         if (!((s1.length() - ((pos == s1.npos) ? 0: pos-1)) &1 )) {
             s2="";
             boost::trim (s1);
-            for (std::string::iterator i = s1.begin(); i != s1.end(); i++) {
+            for (std::string::iterator i = s1.begin(); i != s1.end(); ++i) {
                 //unescape characters
                 if (*i == '\\') {
                     if(++i == s1.end()) {
@@ -1034,7 +1049,11 @@ ScopedEnvChange::~ScopedEnvChange()
 std::string getCurrentTime()
 {
     time_t seconds = time (NULL);
-    tm *data = localtime (&seconds);
+    tm tmbuffer;
+    tm *data = localtime_r(&seconds, &tmbuffer);
+    if (!data) {
+        return "???";
+    }
     arrayptr<char> buffer (new char [13]);
     strftime (buffer.get(), 13, "%y%m%d%H%M%S", data);
     return buffer.get();

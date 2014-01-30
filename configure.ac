@@ -8,7 +8,7 @@ dnl Invoke autogen.sh to produce a configure script.
 #
 # Starting with the 1.1 release cycle, the rpm-style
 # .99 pseudo-version number is used to mark a pre-release.
-AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.3.2])])
+AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.3.99.7])])
 # STABLE_VERSION=1.0.1+
 AC_SUBST(STABLE_VERSION)
 
@@ -25,7 +25,7 @@ SE_CHECK_FOR_STABLE_RELEASE
 
 # Minimum version of libsynthesis as defined in its
 # configure script and thus .pc files:
-define([SYNTHESIS_MIN_VERSION], [3.4.0.16.8])
+define([SYNTHESIS_MIN_VERSION], [3.4.0.47.1])
 
 # Line above is patched by gen-autotools.sh. Handle
 # both "yes" and "no".
@@ -55,11 +55,17 @@ dnl Specify git revisions/branches without prefix, i.e., without 'origin'.
 dnl We'll sort that out below.
 define([SYNTHESISSRC_REVISION], [syncevolution-0.9])
 AC_CONFIG_HEADERS(config.h)
-LT_INIT([dlopen])
+AC_LIBTOOL_DLOPEN
+AC_PROG_LIBTOOL
 
 dnl check for programs.
 AC_PROG_CXX
 AC_PROG_MAKE_SET
+
+# Boost headers: boost/foreach.hpp is needed (1.33/Debian Etch
+# doesn't have it, 1.34/Ubuntu 8.10 Hardy does). 1.35 is available
+# as Debian Etch backport.
+AX_BOOST_BASE(1.34)
 
 # TODO: Fix code to pass with -pedantic -Wextra.
 # -Wno-unknown-pragmas needed because icalstrdup.h
@@ -160,14 +166,17 @@ AC_CHECK_HEADERS(signal.h dlfcn.h)
 # cppunit-config is used even when both unit tests and integration tests are disabled.
 AC_PATH_PROG([CPPUNIT_CONFIG], [cppunit-config], [no])
 
-test "x$CPPUNIT_CONFIG" != 'xno' || AC_MSG_ERROR("cppunit-config not found.")
-
 # cppunit needed?
-#if test "x$enable_unit_tests" = 'xyes' || test "x$enable_integration_tests" = 'xyes'
-#then
+if test "x$enable_unit_tests" = 'xyes' || test "x$enable_integration_tests" = 'xyes'; then
+  test "x$CPPUNIT_CONFIG" != 'xno' || AC_MSG_ERROR("cppunit-config not found.")
+fi
+if test "x$CPPUNIT_CONFIG" != 'xno'; then
+  # Export the flags if available, even if not enabled. This allows
+  # "make src/client-test" in cases where "make all" would not build
+  # client-test.
   CPPUNIT_CXXFLAGS=`$CPPUNIT_CONFIG --cflags`
   CPPUNIT_LDFLAGS=`$CPPUNIT_CONFIG --libs`
-#fi
+fi
 AC_SUBST(CPPUNIT_CXXFLAGS)
 AC_SUBST(CPPUNIT_LDFLAGS)
 
@@ -280,6 +289,30 @@ AC_ARG_ENABLE(libsoup,
 
 # SoupTransportAgent depends on glib
 case "$TRANSPORT" in *libsoup*) need_glib=yes;; esac
+
+AC_ARG_ENABLE(dlt,
+              AS_HELP_STRING([--enable-dlt],
+                             [enable logging via GENIVI Diagnostic Log and Trace (DLT)]),
+              [enable_dlt=$enableval
+               test $enable_dlt = "yes" || test $enable_dlt = "no" || AC_ERROR([invalid value of --enable-dlt: $enableval])],
+              [enable_dlt="no"])
+if test "$enable_dlt" = "yes"; then
+    PKG_CHECK_MODULES(DLT, automotive-dlt,
+                      [USE_DLT=1],
+                      [AC_ERROR([dlt not found, required for --enable-dlt])])
+    AC_DEFINE(USE_DLT, 1, "optionally use GENIVI Diagnostic Log and Trace for logging")
+    AC_ARG_WITH([dlt-syncevolution],
+                AS_HELP_STRING([--with-dlt-syncevolution=SYNS,SYNH,SYNL],
+                               [controls the application IDs used by syncevo-dbus-server, syncevo-dbus-helper and syncevo-local-sync]),
+                [with_dlt_ids="$withval"],
+                [with_dlt_ids="SYNS,SYNH,SYNL"])
+    syns=`echo $with_dlt_ids | cut -d , -f 1`
+    synh=`echo $with_dlt_ids | cut -d , -f 2`
+    synl=`echo $with_dlt_ids | cut -d , -f 3`
+    AC_DEFINE_UNQUOTED(DLT_SYNCEVO_DBUS_SERVER_ID, "$syns", "DLT app ID for syncevo-dbus-server")
+    AC_DEFINE_UNQUOTED(DLT_SYNCEVO_DBUS_HELPER_ID, "$synh", "DLT app ID for syncevo-dbus-helper")
+    AC_DEFINE_UNQUOTED(DLT_SYNCEVO_LOCAL_HELPER_ID, "$synl", "DLT app ID for syncevo-local-helper")
+fi
 
 bluetooth_disabled=no
 AC_ARG_ENABLE(bluetooth,
@@ -432,16 +465,24 @@ AC_ARG_ENABLE(core,
 AM_CONDITIONAL([COND_CORE], [test "$enable_core" = "yes"])
 
 AC_ARG_ENABLE(dbus-service,
-              AS_HELP_STRING([--enable-dbus-service],
-                             [enables building the dbus service executable and all related features
-                             (the DBus wrapper library, command line usage of server, etc).]),
+              AS_HELP_STRING([--enable-dbus-service=args],
+                             [Enables building the dbus service executable and all related features
+                             (the DBus wrapper library, command line usage of server, etc).
+                             The optional arguments are syncevo-dbus-server command line arguments
+                             that are used when auto-starting via D-Bus or .desktop file. By default,
+                             the daemon logs to syslog. This can be changed via command line arguments.
+                             ]),
               enable_dbus_service="$enableval",
               [if test $enable_gui = "no"; then
                   enable_dbus_service="no"
                else
                   enable_dbus_service="yes"
                fi])
-AM_CONDITIONAL([COND_DBUS], [test "$enable_dbus_service" = "yes"])
+AM_CONDITIONAL([COND_DBUS], [test "$enable_dbus_service" != "no"])
+if test "$enable_dbus_service" != "no" && test "$enable_dbus_service" != "yes"; then
+   SYNCEVO_DBUS_SERVER_ARGS="$enable_dbus_service"
+fi
+AC_SUBST(SYNCEVO_DBUS_SERVER_ARGS)
 
 AC_ARG_WITH([gio-gdbus],
             AS_HELP_STRING([--with-gio-gdbus],
@@ -471,7 +512,7 @@ AS_IF([test "x$with_gio_gdbus" = "xyes"],
                     AC_DEFINE(NEED_DBUS_WATCH_GET_UNIX_FD, 1,
                     [Define to 1 if you need the dbus_watch_get_unix_fd() function.]))])
 
-if test $enable_dbus_service = "yes"; then
+if test "$enable_dbus_service" != "no"; then
     if test -z "$XSLT"; then
        AC_MSG_ERROR([xsltproc not found, is required for D-Bus service])
     fi
@@ -515,8 +556,72 @@ if test $enable_dbus_service = "yes"; then
         MLITE_LIBS=
     fi
     AC_DEFINE(DBUS_SERVICE, 1, [define if dbus service is enabled])
+
+    AC_ARG_ENABLE(dbus-service-pim,
+                  AS_HELP_STRING([--enable-dbus-service-pim[=<locale>]],
+                                 [Enable implementation of org._01.pim D-Bus APIs (depends on libfolks),
+                                  using src/dbus/server/pim/locale-factory-<locale>.cpp to implement sorting
+                                  and searching. The default is <locale>=boost, which uses boost::locale.]),
+                  [ enable_dbus_pim="$enableval" ],
+                  [ enable_dbus_pim="no" ])
+    case "$enable_dbus_pim" in
+         no) ;;
+         *)
+                if test "$enable_dbus_pim" = "yes"; then
+                    enable_dbus_pim=boost
+                fi
+                if ! test -r "$srcdir/src/dbus/server/pim/locale-factory-$enable_dbus_pim.cpp"; then
+                    AC_MSG_ERROR([invalid value '$enable_dbus_pim' for --enable-dbus-service-pim, $srcdir/src/dbus/server/pim/locale-factory-$enable_dbus_pim.cpp does not exist or is not readable])
+                fi
+                PKG_CHECK_MODULES(FOLKS, [folks folks-eds])
+                AC_DEFINE(ENABLE_DBUS_PIM, 1, [org._01.pim D-Bus API enabled])
+                DBUS_PIM_PLUGIN=$enable_dbus_pim
+                AC_SUBST(DBUS_PIM_PLUGIN)
+
+                case "$enable_dbus_pim" in
+                    boost)
+                        AX_BOOST_LOCALE
+                        # AX_BOOST_LOCALE incorrectly puts -L/... into LDFLAGS.
+                        # That's broken because it then overrides the search path
+                        # for *all* libraries in a link, not just for boost. Fix
+                        # this by putting the LDFLAGS before the lib and leaving
+                        # DBUS_PIM_PLUGIN_LDFLAGS empty (for now - might have to
+                        # be revised if there ever are any boost flags which need
+                        # to go to the start of the link line).
+                        DBUS_PIM_PLUGIN_LIBS='$(BOOST_LDFLAGS) $(BOOST_LOCALE_LIB)'
+                        DBUS_PIM_PLUGIN_LDFLAGS=
+                        # We need to call ICU directly for the Han->Latin transformation.
+                        PKG_CHECK_MODULES(ICU, [icu-uc])
+                        ;;
+                esac
+                AC_SUBST(DBUS_PIM_PLUGIN_CFLAGS)
+                AC_SUBST(DBUS_PIM_PLUGIN_LIBS)
+                AC_SUBST(DBUS_PIM_PLUGIN_LDFLAGS)
+
+                # http://code.google.com/p/libphonenumber/
+                AC_LANG(C++)
+                SAVED_CPPFLAGS=$CPPFLAGS
+                CPPFLAGS="$CPPFLAGS ${PHONENUMBERS_CFLAGS}"
+                AC_CHECK_HEADERS([phonenumbers/phonenumberutil.h])
+                SAVED_LIBS=$LIBS
+                if test ! "$PHONENUMBERS_LIBS"; then
+                      PHONENUMBERS_LIBS=-lphonenumber
+                fi
+                LIBS="$LIBS $PHONENUMBERS_LIBS"
+                AC_LINK_IFELSE(
+                      [AC_LANG_PROGRAM([#include <phonenumbers/phonenumberutil.h>],
+                                       [i18n::phonenumbers::PhoneNumberUtil::GetInstance()])],
+                      [true],
+                      [AC_ERROR([libphonebook not found, set PHONENUMBERS_CFLAGS and PHONENUMBERS_LIBS.])])
+                AC_SUBST(PHONENUMBERS_CFLAGS)
+                AC_SUBST(PHONENUMBERS_LIBS)
+                LIBS=$SAVED_LIBS
+                CPPFLAGS=$SAVED_CPPFLAGS
+                ;;
+    esac
 fi
 AM_CONDITIONAL([NOTIFY_COMPATIBILITY], [test "$enable_notify_compat" = "yes"])
+AM_CONDITIONAL([COND_DBUS_PIM], [test "$enable_dbus_pim" != "no"])
 
 AC_SUBST(DBUS_CFLAGS)
 AC_SUBST(DBUS_LIBS)
@@ -530,7 +635,7 @@ DBUS_SERVICES_DIR="${datadir}/dbus-1/services"
 AC_SUBST(DBUS_SERVICES_DIR)
 AC_DEFINE_UNQUOTED(DBUS_SERVICES_DIR, "$DBUS_SERVICES_DIR", [Location of D-Bus services directory])
 
-if test $enable_gui != "no" || test $enable_dbus_service = "yes"; then
+if test "$enable_gui" != "no" || test "$enable_dbus_service" != "no"; then
     IT_PROG_INTLTOOL([0.37.1])
     GETTEXT_PACKAGE=syncevolution
     AC_DEFINE_UNQUOTED(GETTEXT_PACKAGE, "$GETTEXT_PACKAGE", [The gettext package name])
@@ -594,7 +699,7 @@ if test $enable_gui != "no"; then
 
     PKG_CHECK_MODULES(GUI, $gui_modules)
 
-elif test "$enable_dbus_service" = "yes"; then
+elif test "$enable_dbus_service" != "no"; then
     # syncevo-dbus-server needs localization
     :
 else
@@ -608,14 +713,13 @@ AC_SUBST(GUI_LIBS)
 AC_SUBST(GUI_PROGRAMS)
 AC_SUBST(GUI_DESKTOP_FILES)
 
-# Boost headers: boost/foreach.hpp is needed (1.33/Debian Etch
-# doesn't have it, 1.34/Ubuntu 8.10 Hardy does). 1.35 is available
-# as Debian Etch backport.
-AX_BOOST_BASE(1.34)
-
 # C++ regular expression support is required often enough to make it
 # mandatory.
-PKG_CHECK_MODULES(PCRECPP, libpcrecpp)
+PKG_CHECK_MODULES(PCRECPP, libpcrecpp,,
+AC_CHECK_LIB(pcrecpp,main,
+AC_SUBST(PCRECPP_LIBS,-lpcrecpp),
+AC_MSG_ERROR([pcrecpp not found])
+))
 
 # need rst2man for man pages
 AC_ARG_WITH(rst2man,
@@ -764,7 +868,7 @@ if test $SYNTHESIS_SRC != "no-synthesis-source"; then
     export PKG_CONFIG_PATH=$SYNTHESIS_SUBDIR:$PKG_CONFIG_PATH
     PKG_CHECK_MODULES([WITH_SYNTHESIS_SRC], [synthesis >= SYNTHESIS_MIN_VERSION],
                       [],
-                      [AC_MSG_ERROR([need at least libsynthesis >= SYNTHESIS_MIN_VERSION; the latest libsynthesis for SyncEvolution is the one from http://meego.gitorious.org/meego-middleware/libsynthesis])])
+                      [AC_MSG_ERROR([need at least libsynthesis >= SYNTHESIS_MIN_VERSION; the latest libsynthesis for SyncEvolution is the one from http://cgit.freedesktop.org/SyncEvolution/])])
 
 fi
 
@@ -1000,12 +1104,19 @@ fi
 # When adding something here, remember to also update syncevolution.pc.in.
 # -lrt is for clock_gettime() in the Timespec.h inline functions.
 SYNCEVOLUTION_CFLAGS=-I`cd $srcdir && pwd`/src
+# Linker flags including libsyncevolution.la and some libs.
 SYNCEVOLUTION_LIBS="src/syncevo/libsyncevolution.la -lrt"
 AC_SUBST(SYNCEVOLUTION_CFLAGS)
 AC_SUBST(SYNCEVOLUTION_LIBS)
 
 # invoking syncevolution binary is allowed to fail when cross-compiling
 AM_CONDITIONAL([COND_CROSS_COMPILING], [test "$cross_compiling" = "yes"])
+
+# Set by any of the backends providing a keyring, determines the
+# default for the "keyring" option.
+if test "$have_keyring" = "yes"; then
+   AC_DEFINE(HAVE_KEYRING, 1, [some kind of secure credential store is available])
+fi
 
 AC_CONFIG_FILES([
   Makefile
@@ -1023,6 +1134,7 @@ for backend in $BACKENDS; do
     eval echo $backend: \${enable_${backend}}
 done
 echo "DBus service: $enable_dbus_service"
+echo "org._01.pim support in DBus service: $enable_dbus_pim"
 echo "Notifications: $enable_notify"
 echo "GIO GDBus: $with_gio_gdbus"
 echo "GNOME keyring: $enable_gnome_keyring"

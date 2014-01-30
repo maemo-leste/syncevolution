@@ -2,6 +2,7 @@
 *.la
 *.lo
 *.o
+*.pyc
 *~
 .deps
 .dirstamp
@@ -22,6 +23,7 @@ Makefile.in
 /config.sub
 /configure
 /depcomp
+/INSTALL
 /install-sh
 /libtool
 /ltmain.sh
@@ -33,6 +35,9 @@ Makefile.in
 /stamp-h1
 /syncevolution.1
 /syncevolution-*.tar.gz
+
+# for Maemo build
+/libsynthesis
 
 # po
 /po/*.gmo

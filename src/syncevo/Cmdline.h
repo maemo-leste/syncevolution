@@ -142,6 +142,8 @@ protected:
     Bool m_run;
     Bool m_migrate;
     Bool m_printDatabases;
+    Bool m_createDatabase;
+    Bool m_removeDatabase;
     Bool m_printServers;
     Bool m_printTemplates;
     Bool m_printConfig;
@@ -244,7 +246,9 @@ protected:
     /**
      * list all known data sources of a certain type
      */
-    void listSources(SyncSource &syncSource, const std::string &header);
+    void listDatabases(SyncSource *source, const std::string &header);
+    void createDatabase(SyncSource *source, const std::string &header);
+    void removeDatabase(SyncSource *source, const std::string &header);
 
     void dumpConfigs(const std::string &preamble,
                      const SyncConfig::ConfigList &servers);
@@ -313,11 +317,14 @@ protected:
                    bool &ok);
 
     /**
-     * Fill list with all local IDs of the given source.
-     * Unsafe characters are escaped with SafeConfigNode::escape(true,true).
-     * startDataRead() must have been called.
+     * Fill list with all local IDs of the given source, as used by the source.
      */
     void readLUIDs(SyncSource *source, std::list<std::string> &luids);
+
+    /**
+     * Invoke a callback for each local ID.
+     */
+    void processLUIDs(SyncSource *source, const boost::function<void (const std::string &)> &callback);
 
     /**
      * Add or update one item.
@@ -327,11 +334,6 @@ protected:
      * @return encoded luid of inserted item
      */
     CmdlineLUID insertItem(SyncSourceRaw *source, const std::string &luid, const std::string &data);
-
-    static void checkSyncPasswords(SyncContext &context);
-    static void checkSourcePasswords(SyncContext &context,
-                                     const std::string &sourceName,
-                                     SyncSourceNodes &nodes);
 };
 
 

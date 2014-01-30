@@ -27,6 +27,7 @@
 #include <syncevo/DBusTraits.h>
 #include <syncevo/SuspendFlags.h>
 #include <syncevo/LogRedirect.h>
+#include <syncevo/LogDLT.h>
 #include <syncevo/BoostHelper.h>
 
 #include <synthesis/syerror.h>
@@ -56,8 +57,8 @@ LocalTransportAgent::LocalTransportAgent(SyncContext *server,
     m_clientContext(SyncConfig::normalizeConfigString(clientContext)),
     m_status(INACTIVE),
     m_loop(loop ?
-           GMainLoopCXX(static_cast<GMainLoop *>(loop)) /* increase reference */ :
-           GMainLoopCXX(g_main_loop_new(NULL, false), false) /* use reference handed to us by _new */)
+           GMainLoopCXX(static_cast<GMainLoop *>(loop), ADD_REF) :
+           GMainLoopCXX(g_main_loop_new(NULL, false), TRANSFER_REF))
 {
 }
 
@@ -86,15 +87,25 @@ void LocalTransportAgent::start()
                               m_clientContext.c_str(),
                               context.c_str()));
     }
-    if (m_clientContext == m_server->getContextName()) {
-        SE_THROW(StringPrintf("invalid local sync inside context '%s', need second context with different databases", context.c_str()));
-    }
+    // TODO (?): check that there are no conflicts between the active
+    // sources. The old "contexts must be different" check achieved that
+    // via brute force (because by definition, databases from different
+    // contexts are meant to be independent), but it was too coarse
+    // and ruled out valid configurations.
+    // if (m_clientContext == m_server->getContextName()) {
+    //     SE_THROW(StringPrintf("invalid local sync inside context '%s', need second context with different databases", context.c_str()));
+    // }
 
     if (m_forkexec) {
         SE_THROW("local transport already started");
     }
     m_status = ACTIVE;
     m_forkexec = ForkExecParent::create("syncevo-local-sync");
+#ifdef USE_DLT
+    if (getenv("SYNCEVOLUTION_USE_DLT")) {
+        m_forkexec->addEnvVar("SYNCEVOLUTION_USE_DLT", StringPrintf("%d", LoggerDLT::getCurrentDLTLogLevel()));
+    }
+#endif
     m_forkexec->m_onConnect.connect(boost::bind(&LocalTransportAgent::onChildConnect, this, _1));
     // fatal problems, including quitting child with non-zero status
     m_forkexec->m_onFailure.connect(boost::bind(&LocalTransportAgent::onFailure, this, _2));
@@ -170,13 +181,17 @@ class LocalTransportChild : public GDBusCXX::DBusRemoteObject
 
 void LocalTransportAgent::logChildOutput(const std::string &level, const std::string &message)
 {
-    ProcNameGuard guard(m_clientContext);
-    SE_LOG(Logger::strToLevel(level.c_str()), NULL, NULL, "%s", message.c_str());
+    Logger::MessageOptions options(Logger::strToLevel(level.c_str()));
+    options.m_processName = &m_clientContext;
+    // Child should have written this into its own log file and/or syslog/dlt already.
+    // Only pass it on to a user of the command line interface.
+    options.m_flags = Logger::MessageOptions::ALREADY_LOGGED;
+    SyncEvo::Logger::instance().messageWithOptions(options, "%s", message.c_str());
 }
 
 void LocalTransportAgent::onChildConnect(const GDBusCXX::DBusConnectionPtr &conn)
 {
-    SE_LOG_DEBUG(NULL, NULL, "child is ready");
+    SE_LOG_DEBUG(NULL, "child is ready");
     m_parent.reset(new GDBusCXX::DBusObjectHelper(conn,
                                                   LocalTransportParent::path(),
                                                   LocalTransportParent::interface(),
@@ -201,11 +216,13 @@ void LocalTransportAgent::onChildConnect(const GDBusCXX::DBusConnectionPtr &conn
     }
     m_child->m_startSync.start(m_clientContext,
                                StringPair(m_server->getConfigName(),
+                                          m_server->isEphemeral() ?
+                                          "ephemeral" :
                                           m_server->getRootPath()),
                                static_cast<std::string>(m_server->getLogDir()),
                                m_server->getDoLogging(),
-                               StringPair(m_server->getSyncUsername(),
-                                          m_server->getSyncPassword()),
+                               std::make_pair(m_server->getSyncUser(),
+                                              m_server->getSyncPassword()),
                                m_server->getConfigProps(),
                                sources,
                                boost::bind(&LocalTransportAgent::storeReplyMsg, m_self, _1, _2, _3));
@@ -216,14 +233,14 @@ void LocalTransportAgent::onFailure(const std::string &error)
     m_status = FAILED;
     g_main_loop_quit(m_loop.get());
 
-    SE_LOG_ERROR(NULL, NULL, "local transport failed: %s", error.c_str());
+    SE_LOG_ERROR(NULL, "local transport failed: %s", error.c_str());
     m_parent.reset();
     m_child.reset();
 }
 
 void LocalTransportAgent::onChildQuit(int status)
 {
-    SE_LOG_DEBUG(NULL, NULL, "child process has quit with status %d", status);
+    SE_LOG_DEBUG(NULL, "child process has quit with status %d", status);
     g_main_loop_quit(m_loop.get());
 }
 
@@ -257,7 +274,7 @@ void LocalTransportAgent::askPassword(const std::string &passwordName,
                                       const boost::shared_ptr< GDBusCXX::Result1<const std::string &> > &reply)
 {
     // pass that work to our own SyncContext and its UI - currently blocks
-    SE_LOG_DEBUG(NULL, NULL, "local sync parent: asked for password %s, %s",
+    SE_LOG_DEBUG(NULL, "local sync parent: asked for password %s, %s",
                  passwordName.c_str(),
                  descr.c_str());
     try {
@@ -270,7 +287,7 @@ void LocalTransportAgent::askPassword(const std::string &passwordName,
                                                                  boost::bind(PasswordException,
                                                                              reply));
         } else {
-            SE_LOG_DEBUG(NULL, NULL, "local sync parent: password request failed because no m_server");
+            SE_LOG_DEBUG(NULL, "local sync parent: password request failed because no m_server");
             reply->failed(GDBusCXX::dbus_error("org.syncevolution.localtransport.error",
                                                "not connected to UI"));
         }
@@ -281,7 +298,7 @@ void LocalTransportAgent::askPassword(const std::string &passwordName,
 
 void LocalTransportAgent::storeSyncReport(const std::string &report)
 {
-    SE_LOG_DEBUG(NULL, NULL, "got child sync report:\n%s",
+    SE_LOG_DEBUG(NULL, "got child sync report:\n%s",
                  report.c_str());
     m_clientReport = SyncReport(report);
 }
@@ -305,7 +322,7 @@ static void gMainLoopQuit(GMainLoopCXX *loop)
 
 void LocalTransportAgent::shutdown()
 {
-    SE_LOG_DEBUG(NULL, NULL, "parent is shutting down");
+    SE_LOG_DEBUG(NULL, "parent is shutting down");
     if (m_forkexec) {
         // block until child is done
         boost::signals2::scoped_connection c(m_forkexec->m_onQuit.connect(boost::bind(gMainLoopQuit,
@@ -316,7 +333,7 @@ void LocalTransportAgent::shutdown()
         // communication with the parent?
         // m_forkexec->stop();
         while (m_forkexec->getState() != ForkExecParent::TERMINATED) {
-            SE_LOG_DEBUG(NULL, NULL, "waiting for child to stop");
+            SE_LOG_DEBUG(NULL, "waiting for child to stop");
             g_main_loop_run(m_loop.get());
         }
 
@@ -331,7 +348,7 @@ void LocalTransportAgent::send(const char *data, size_t len)
     if (m_child) {
         m_status = ACTIVE;
         m_child->m_sendMsg.start(m_contentType, GDBusCXX::makeDBusArray(len, (uint8_t *)(data)),
-                                 boost::bind(&LocalTransportAgent::storeReplyMsg, this, _1, _2, _3));
+                                 boost::bind(&LocalTransportAgent::storeReplyMsg, m_self, _1, _2, _3));
     } else {
         m_status = FAILED;
         SE_THROW_EXCEPTION(TransportException,
@@ -351,7 +368,7 @@ void LocalTransportAgent::storeReplyMsg(const std::string &contentType,
     } else {
         // Only an error if the client hasn't shut down normally.
         if (m_clientReport.empty()) {
-            SE_LOG_ERROR(NULL, NULL, "sending message to child failed: %s", error.c_str());
+            SE_LOG_ERROR(NULL, "sending message to child failed: %s", error.c_str());
             m_status = FAILED;
         }
     }
@@ -361,7 +378,7 @@ void LocalTransportAgent::storeReplyMsg(const std::string &contentType,
 void LocalTransportAgent::cancel()
 {
     if (m_forkexec) {
-        SE_LOG_DEBUG(NULL, NULL, "killing local transport child in cancel()");
+        SE_LOG_DEBUG(NULL, "killing local transport child in cancel()");
         m_forkexec->stop();
     }
     m_status = CANCELED;
@@ -375,7 +392,7 @@ TransportAgent::Status LocalTransportAgent::wait(bool noReply)
             m_status = INACTIVE;
         } else {
             while (m_status == ACTIVE) {
-                SE_LOG_DEBUG(NULL, NULL, "waiting for child to send message");
+                SE_LOG_DEBUG(NULL, "waiting for child to send message");
                 if (m_forkexec &&
                     m_forkexec->getState() == ForkExecParent::TERMINATED) {
                     m_status = FAILED;
@@ -458,7 +475,7 @@ public:
                                const string &descr,
                                const ConfigPasswordKey &key)
     {
-        SE_LOG_DEBUG(NULL, NULL, "local transport child: requesting password %s, %s via D-Bus",
+        SE_LOG_DEBUG(NULL, "local transport child: requesting password %s, %s via D-Bus",
                      passwordName.c_str(),
                      descr.c_str());
         std::string password;
@@ -493,11 +510,11 @@ private:
     void storePassword(std::string &res, std::string &errorRes, bool &haveRes, const std::string &password, const std::string &error)
     {
         if (!error.empty()) {
-            SE_LOG_DEBUG(NULL, NULL, "local transport child: D-Bus password request failed: %s",
+            SE_LOG_DEBUG(NULL, "local transport child: D-Bus password request failed: %s",
                          error.c_str());
             errorRes = error;
         } else {
-            SE_LOG_DEBUG(NULL, NULL, "local transport child: D-Bus password request succeeded");
+            SE_LOG_DEBUG(NULL, "local transport child: D-Bus password request succeeded");
             res = password;
         }
         haveRes = true;
@@ -509,7 +526,7 @@ static void abortLocalSync(int sigterm)
     // logging anything here is not safe (our own logging system might
     // have been interrupted by the SIGTERM and thus be in an inconsistent
     // state), but let's try it anyway
-    SE_LOG_INFO(NULL, NULL, "local sync child shutting down due to SIGTERM");
+    SE_LOG_INFO(NULL, "local sync child shutting down due to SIGTERM");
     // raise the signal again after disabling the handler, to ensure that
     // the exit status is "killed by signal xxx" - good because then
     // the whoever killed used gets the information that we didn't die for
@@ -542,7 +559,44 @@ public:
                           true /* ignore transmission failures */> m_logOutput;
 };
 
-class LocalTransportAgentChild : public TransportAgent, private LoggerBase
+class ChildLogger : public Logger
+{
+    std::auto_ptr<LogRedirect> m_parentLogger;
+    boost::weak_ptr<LocalTransportChildImpl> m_child;
+
+public:
+    ChildLogger(const boost::shared_ptr<LocalTransportChildImpl> &child) :
+        m_parentLogger(new LogRedirect(LogRedirect::STDERR_AND_STDOUT)),
+        m_child(child)
+    {}
+    ~ChildLogger()
+    {
+        m_parentLogger.reset();
+    }
+
+    /**
+     * Write message into our own log and send to parent.
+     */
+    virtual void messagev(const MessageOptions &options,
+                          const char *format,
+                          va_list args)
+    {
+        if (options.m_level <= m_parentLogger->getLevel()) {
+            m_parentLogger->process();
+            boost::shared_ptr<LocalTransportChildImpl> child = m_child.lock();
+            if (child) {
+                // prefix is used to set session path
+                // for general server output, the object path field is dbus server
+                // the object path can't be empty for object paths prevent using empty string.
+                string strLevel = Logger::levelToStr(options.m_level);
+                string log = StringPrintfV(format, args);
+                child->m_logOutput(strLevel, log);
+            }
+        }
+    }
+};
+
+class LocalTransportAgentChild : public TransportAgent
 {
     /** final return code of our main(): non-zero indicates that we need to shut down */
     int m_ret;
@@ -568,7 +622,7 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
     /**
      * our D-Bus interface, created in onConnect()
      */
-    boost::scoped_ptr<LocalTransportChildImpl> m_child;
+    boost::shared_ptr<LocalTransportChildImpl> m_child;
 
     /**
      * sync context, created in Sync() D-Bus call
@@ -621,7 +675,7 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
      */
     void step(const std::string &status)
     {
-        SE_LOG_DEBUG(NULL, NULL, "local transport: %s", status.c_str());
+        SE_LOG_DEBUG(NULL, "local transport: %s", status.c_str());
         if (!m_forkexec ||
             m_forkexec->getState() == ForkExecChild::DISCONNECTED) {
             SE_THROW("local transport child no longer has a parent, terminating");
@@ -637,13 +691,13 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
         // Never free this state blocker. We can only abort and
         // quit from now on.
         static boost::shared_ptr<SuspendFlags::StateBlocker> abortGuard;
-        SE_LOG_ERROR(NULL, NULL, "sync parent quit unexpectedly");
+        SE_LOG_ERROR(NULL, "sync parent quit unexpectedly");
         abortGuard = SuspendFlags::getSuspendFlags().abort();
     }
 
     void onConnect(const GDBusCXX::DBusConnectionPtr &conn)
     {
-        SE_LOG_DEBUG(NULL, NULL, "child connected to parent");
+        SE_LOG_DEBUG(NULL, "child connected to parent");
 
         // provide our own API
         m_child.reset(new LocalTransportChildImpl(conn));
@@ -657,7 +711,7 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
 
     void onFailure(SyncMLStatus status, const std::string &reason)
     {
-        SE_LOG_DEBUG(NULL, NULL, "child fork/exec failed: %s", reason.c_str());
+        SE_LOG_DEBUG(NULL, "child fork/exec failed: %s", reason.c_str());
 
         // record failure for parent
         if (!m_clientReport.getStatus()) {
@@ -679,14 +733,14 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
                    const StringPair &serverConfig, // config name + root path
                    const std::string &serverLogDir,
                    bool serverDoLogging,
-                   const StringPair &serverSyncCredentials,
+                   const std::pair<UserIdentity, InitStateString> &serverSyncCredentials,
                    const FullProps &serverConfigProps,
                    const LocalTransportChild::ActiveSources_t &sources,
                    const LocalTransportChild::ReplyPtr &reply)
     {
         setMsgToParent(reply, "sync() was called");
         Logger::setProcessName(clientContext);
-        SE_LOG_DEBUG(NULL, NULL, "Sync() called, starting the sync");
+        SE_LOG_DEBUG(NULL, "Sync() called, starting the sync");
         const char *delay = getenv("SYNCEVOLUTION_LOCAL_CHILD_DELAY2");
         if (delay) {
             Sleep(atoi(delay));
@@ -695,9 +749,14 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
         // initialize sync context
         m_client.reset(new SyncContext(std::string("target-config") + clientContext,
                                        serverConfig.first,
+                                       serverConfig.second == "ephemeral" ?
+                                       serverConfig.second :
                                        serverConfig.second + "/." + clientContext,
                                        boost::shared_ptr<TransportAgent>(this, NoopAgentDestructor()),
                                        serverDoLogging));
+        if (serverConfig.second == "ephemeral") {
+            m_client->makeEphemeral();
+        }
         boost::shared_ptr<UserInterface> ui(new LocalTransportUI(m_parent));
         m_client->setUserInterface(ui);
 
@@ -721,8 +780,8 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
         // will end up in our LocalTransportContext::askPassword()
         // implementation above, which will pass the question to
         // the local sync parent.
-        if (!serverSyncCredentials.first.empty()) {
-            m_client->setSyncUsername(serverSyncCredentials.first, true);
+        if (!serverSyncCredentials.first.toString().empty()) {
+            m_client->setSyncUsername(serverSyncCredentials.first.toString(), true);
         }
         if (!serverSyncCredentials.second.empty()) {
             m_client->setSyncPassword(serverSyncCredentials.second, true);
@@ -748,7 +807,8 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
             const std::string &sourceName = entry.first;
             const std::string &targetName = entry.second.first;
             std::string sync = entry.second.second;
-            if (sync != "disabled") {
+            SyncMode mode = StringToSyncMode(sync);
+            if (mode != SYNC_NONE) {
                 SyncSourceNodes targetNodes = m_client->getSyncSourceNodes(targetName);
                 SyncSourceConfig targetSource(targetName, targetNodes);
                 string fullTargetName = clientContext + "/" + targetName;
@@ -772,16 +832,27 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
                                                       serverConfig.first.c_str()));
                 }
                 // invert data direction
-                if (sync == "refresh-from-local") {
-                    sync = "refresh-from-remote";
-                } else if (sync == "refresh-from-remote") {
-                    sync = "refresh-from-local";
-                } else if (sync == "one-way-from-local") {
-                    sync = "one-way-from-remote";
-                } else if (sync == "one-way-from-remote") {
-                    sync = "one-way-from-local";
+                if (mode == SYNC_REFRESH_FROM_LOCAL) {
+                    mode = SYNC_REFRESH_FROM_REMOTE;
+                } else if (mode == SYNC_REFRESH_FROM_REMOTE) {
+                    mode = SYNC_REFRESH_FROM_LOCAL;
+                } else if (mode == SYNC_ONE_WAY_FROM_LOCAL) {
+                    mode = SYNC_ONE_WAY_FROM_REMOTE;
+                } else if (mode == SYNC_ONE_WAY_FROM_REMOTE) {
+                    mode = SYNC_ONE_WAY_FROM_LOCAL;
+                } else if (mode == SYNC_LOCAL_CACHE_SLOW) {
+                    // Remote side is running in caching mode and
+                    // asking for refresh. Send all our data.
+                    mode = SYNC_SLOW;
+                } else if (mode == SYNC_LOCAL_CACHE_INCREMENTAL) {
+                    // Remote side is running in caching mode and
+                    // asking for an update. Use two-way mode although
+                    // nothing is going to come back (simpler that way
+                    // than using one-way, which has special code
+                    // paths in libsynthesis).
+                    mode = SYNC_TWO_WAY;
                 }
-                targetSource.setSync(sync, true);
+                targetSource.setSync(PrettyPrintSyncMode(mode, true), true);
                 targetSource.setURI(sourceName, true);
             }
         }
@@ -795,7 +866,7 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
                  const GDBusCXX::DBusArray<uint8_t> &data,
                  const LocalTransportChild::ReplyPtr &reply)
     {
-        SE_LOG_DEBUG(NULL, NULL, "child got message of %ld bytes", (long)data.first);
+        SE_LOG_DEBUG(NULL, "child got message of %ld bytes", (long)data.first);
         setMsgToParent(LocalTransportChild::ReplyPtr(), "sendMsg() was called");
         if (m_status == ACTIVE) {
             m_msgToParent = reply;
@@ -809,42 +880,13 @@ class LocalTransportAgentChild : public TransportAgent, private LoggerBase
         }
     }
 
-    /**
-     * Write message into our own log and send to parent.
-     */
-    virtual void messagev(Level level,
-                          const char *prefix,
-                          const char *file,
-                          int line,
-                          const char *function,
-                          const char *format,
-                          va_list args)
-    {
-        if (m_parentLogger) {
-            m_parentLogger->process();
-        }
-        if (m_child) {
-            // prefix is used to set session path
-            // for general server output, the object path field is dbus server
-            // the object path can't be empty for object paths prevent using empty string.
-            string strLevel = Logger::levelToStr(level);
-            string log = StringPrintfV(format, args);
-            m_child->m_logOutput(strLevel, log);
-        }
-    }
-
-    virtual bool isProcessSafe() const { return false; }
-
 public:
     LocalTransportAgentChild() :
         m_ret(0),
-        m_parentLogger(new LogRedirect(true)), // redirect all output via D-Bus
         m_forkexec(SyncEvo::ForkExecChild::create()),
         m_reportSent(false),
         m_status(INACTIVE)
     {
-        LoggerBase::pushLogger(this);
-
         m_forkexec->m_onConnect.connect(boost::bind(&LocalTransportAgentChild::onConnect, this, _1));
         m_forkexec->m_onFailure.connect(boost::bind(&LocalTransportAgentChild::onFailure, this, _1, _2));
         // When parent quits, we need to abort whatever we do and shut
@@ -856,14 +898,14 @@ public:
         // for a password. However, that does not cover failures
         // like the parent not asking us to sync in the first place
         // and also does not work with libdbus (https://bugs.freedesktop.org/show_bug.cgi?id=49728).
-        m_forkexec->m_onQuit.connect(onParentQuit);
+        m_forkexec->m_onQuit.connect(&onParentQuit);
 
         m_forkexec->connect();
     }
 
-    ~LocalTransportAgentChild()
+    boost::shared_ptr<ChildLogger> createLogger()
     {
-        LoggerBase::popLogger();
+        return boost::shared_ptr<ChildLogger>(new ChildLogger(m_child));
     }
 
     void run()
@@ -872,14 +914,14 @@ public:
 
         while (!m_parent) {
             if (s.getState() != SuspendFlags::NORMAL) {
-                SE_LOG_DEBUG(NULL, NULL, "aborted, returning while waiting for parent");
+                SE_LOG_DEBUG(NULL, "aborted, returning while waiting for parent");
                 return;
             }
             step("waiting for parent");
         }
         while (!m_client) {
             if (s.getState() != SuspendFlags::NORMAL) {
-                SE_LOG_DEBUG(NULL, NULL, "aborted, returning while waiting for Sync() call from parent");
+                SE_LOG_DEBUG(NULL, "aborted, returning while waiting for Sync() call from parent");
             }
             step("waiting for Sync() call from parent");
         }
@@ -901,8 +943,8 @@ public:
             new_action.sa_handler = abortLocalSync;
             sigaction(SIGTERM, &new_action, NULL);
 
-            SE_LOG_DEBUG(NULL, NULL, "LocalTransportChild: ignore SIGINT, die in SIGTERM");
-            SE_LOG_INFO(NULL, NULL, "target side of local sync ready");
+            SE_LOG_DEBUG(NULL, "LocalTransportChild: ignore SIGINT, die in SIGTERM");
+            SE_LOG_INFO(NULL, "target side of local sync ready");
             m_client->sync(&m_clientReport);
         } catch (...) {
             string explanation;
@@ -914,14 +956,14 @@ public:
             }
             if (m_parent) {
                 std::string report = m_clientReport.toString();
-                SE_LOG_DEBUG(NULL, NULL, "child sending sync report after failure:\n%s", report.c_str());
+                SE_LOG_DEBUG(NULL, "child sending sync report after failure:\n%s", report.c_str());
                 m_parent->m_storeSyncReport.start(report,
                                                   boost::bind(&LocalTransportAgentChild::syncReportReceived, this, _1));
                 // wait for acknowledgement for report once:
                 // we are in some kind of error state, better
                 // do not wait too long
                 if (m_parent) {
-                    SE_LOG_DEBUG(NULL, NULL, "waiting for parent's ACK for sync report");
+                    SE_LOG_DEBUG(NULL, "waiting for parent's ACK for sync report");
                     g_main_context_iteration(NULL, true);
                 }
             }
@@ -931,7 +973,7 @@ public:
         if (m_parent) {
             // send final report, ignore result
             std::string report = m_clientReport.toString();
-            SE_LOG_DEBUG(NULL, NULL, "child sending sync report:\n%s", report.c_str());
+            SE_LOG_DEBUG(NULL, "child sending sync report:\n%s", report.c_str());
             m_parent->m_storeSyncReport.start(report,
                                               boost::bind(&LocalTransportAgentChild::syncReportReceived, this, _1));
             while (!m_reportSent && m_parent &&
@@ -943,7 +985,7 @@ public:
 
     void syncReportReceived(const std::string &error)
     {
-        SE_LOG_DEBUG(NULL, NULL, "sending sync report to parent: %s",
+        SE_LOG_DEBUG(NULL, "sending sync report to parent: %s",
                      error.empty() ? "done" : error.c_str());
         m_reportSent = true;
     }
@@ -974,7 +1016,7 @@ public:
      */
     virtual void shutdown()
     {
-        SE_LOG_DEBUG(NULL, NULL, "child local transport shutting down");
+        SE_LOG_DEBUG(NULL, "child local transport shutting down");
         if (m_msgToParent) {
             // Must send non-zero message, empty messages cause an
             // error during D-Bus message decoding on the receiving
@@ -998,7 +1040,7 @@ public:
      */
     virtual void send(const char *data, size_t len)
     {
-        SE_LOG_DEBUG(NULL, NULL, "child local transport sending %ld bytes", (long)len);
+        SE_LOG_DEBUG(NULL, "child local transport sending %ld bytes", (long)len);
         if (m_msgToParent) {
             m_status = ACTIVE;
             m_msgToParent->done(m_contentType, GDBusCXX::makeDBusArray(len, (uint8_t *)(data)));
@@ -1057,7 +1099,7 @@ public:
      */
     virtual void getReply(const char *&data, size_t &len, std::string &contentType)
     {
-        SE_LOG_DEBUG(NULL, NULL, "processing %ld bytes in child", (long)m_message.size());
+        SE_LOG_DEBUG(NULL, "processing %ld bytes in child", (long)m_message.size());
         if (m_status != GOT_REPLY) {
             SE_THROW("getReply() called in child when no reply available");
         }
@@ -1100,20 +1142,38 @@ int LocalTransportMain(int argc, char **argv)
 
     try {
         if (getenv("SYNCEVOLUTION_DEBUG")) {
-            LoggerBase::instance().setLevel(Logger::DEBUG);
+            Logger::instance().setLevel(Logger::DEBUG);
         }
         // process name will be set to target config name once it is known
         Logger::setProcessName("syncevo-local-sync");
 
         boost::shared_ptr<LocalTransportAgentChild> child(new LocalTransportAgentChild);
+        PushLogger<Logger> logger;
+        // Temporary handle is necessary to avoid compiler issue with
+        // clang (ambiguous brackets).
+        {
+            Logger::Handle handle(child->createLogger());
+            logger.reset(handle);
+        }
+
+#ifdef USE_DLT
+        // Set by syncevo-dbus-server for us.
+        bool useDLT = getenv("SYNCEVOLUTION_USE_DLT") != NULL;
+        PushLogger<LoggerDLT> loggerdlt;
+        if (useDLT) {
+            loggerdlt.reset(new LoggerDLT(DLT_SYNCEVO_LOCAL_HELPER_ID, "SyncEvolution local sync helper"));
+        }
+#endif
+
         child->run();
         int ret = child->getReturnCode();
+        logger.reset();
         child.reset();
         return ret;
     } catch ( const std::exception &ex ) {
-        SE_LOG_ERROR(NULL, NULL, "%s", ex.what());
+        SE_LOG_ERROR(NULL, "%s", ex.what());
     } catch (...) {
-        SE_LOG_ERROR(NULL, NULL, "unknown error");
+        SE_LOG_ERROR(NULL, "unknown error");
     }
 
     return 1;

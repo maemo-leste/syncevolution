@@ -33,7 +33,7 @@ SE_BEGIN_CXX
 /**
  * A logger which writes to stdout or a file.
  */
-class LoggerStdout : public LoggerBase
+class LoggerStdout : public Logger
 {
     FILE *m_file;
     bool m_closeFile;
@@ -55,24 +55,16 @@ class LoggerStdout : public LoggerBase
 
     ~LoggerStdout();
 
-    virtual void messagev(FILE *file,
-                          Level msglevel,
-                          Level filelevel,
-                          const char *prefix,
-                          const char *filename,
-                          int line,
-                          const char *function,
+    void write(FILE *file,
+               Level msglevel,
+               Level filelevel,
+               const std::string *prefix,
+               const std::string *procname,
+               const char *format,
+               va_list args);
+    virtual void messagev(const MessageOptions &options,
                           const char *format,
                           va_list args);
-    virtual void messagev(Level level,
-                          const char *prefix,
-                          const char *file,
-                          int line,
-                          const char *function,
-                          const char *format,
-                          va_list args);
-
-    virtual bool isProcessSafe() const { return true; }
 };
 
 SE_END_CXX

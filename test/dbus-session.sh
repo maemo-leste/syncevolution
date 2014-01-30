@@ -4,21 +4,46 @@
 # running a program and kills the D-Bus daemon when done.
 
 # start D-Bus session
+unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
 eval `dbus-launch`
 export DBUS_SESSION_BUS_ADDRESS
+
+if [ "$DBUS_SESSION_SH_SYSTEM_BUS" ]; then
+    # Use own private bus as system bus, then start a new one.
+    DBUS_SYSTEM_BUS_PID=$DBUS_SESSION_BUS_PID
+    DBUS_SYSTEM_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS
+    export DBUS_SYSTEM_BUS_ADDRESS
+    eval `dbus-launch`
+fi
+
+# Ensure that XDG dirs exist. Otherwise some daemons do not work correctly.
+createxdg() {
+    dir="$1"
+
+    if [ "$dir" ]; then
+        mkdir -p "$dir"
+    fi
+}
+createxdg "$XDG_CONFIG_HOME"
+createxdg "$XDG_CACHE_HOME"
+createxdg "$XDG_DATA_HOME"
 
 # Work-around for GNOME keyring daemon not started
 # when accessed via org.freedesktop.secrets: start it
 # explicitly.
 # See https://launchpad.net/bugs/525642 and
 # https://bugzilla.redhat.com/show_bug.cgi?id=572137
-/usr/bin/gnome-keyring-daemon --start --foreground --components=secrets &
-KEYRING_PID=$!
+if [ -x /usr/bin/gnome-keyring-daemon ]; then
+    /usr/bin/gnome-keyring-daemon --start --foreground --components=secrets 1>&2 &
+    KEYRING_PID=$!
+fi
 
 # kill all programs started by us
 atexit() {
-    kill $KEYRING_PID
-    kill $DBUS_SESSION_BUS_PID
+    set -x
+    [ ! "$KEYRING_PID" ] || ( echo >&2 "dbus-session.sh $$: killing keyring pid $KEYRING_PID"; kill -9 $KEYRING_PID )
+    [ ! "$DBUS_SESSION_SH_SYSTEM_BUS" ] || [ ! "$DBUS_SYSTEM_BUS_PID" ] || ( echo >&2 "dbus-session.sh $$: killing system bus daemon $DBUS_SYSTEM_BUS_PID"; kill -9 $DBUS_SYSTEM_BUS_PID )
+    [ ! $DBUS_SESSION_BUS_PID ] || ( echo >&2 "dbus-session.sh $$: killing session bus daemon $DBUS_SESSION_BUS_PID"; kill -9 $DBUS_SESSION_BUS_PID )
 }
 trap atexit EXIT
 
@@ -39,23 +64,25 @@ trap atexit EXIT
 E_CAL_PID=
 E_BOOK_PID=
 case "$@" in *valgrind*) prefix=`echo $@ | perl -p -e 's;.*?(\S*/?valgrind\S*).*;$1;'`;;
-             *setup-syncevolution.sh*|*syncevolution\ *|*client-test\ *|*bash*|*test-dbus.py\ *|*gdb\ *) prefix=env;;
+             *setup-syncevolution.sh*|*syncevolution\ *|*client-test\ *|*bash*|*testpim.py\ *|*test-dbus.py\ *|*gdb\ *) prefix=env;;
              *) prefix=;; # don't start EDS
+esac
+case "$TEST_DBUS_PREFIX" in *valgrind*) prefix="$TEST_DBUS_PREFIX";;
 esac
 akonadi=$prefix
 case "$@" in *test-dbus.py\ *) akonadi=;;
 esac
 
 if [ "$DBUS_SESSION_SH_AKONADI" ] && [ "$akonadi" ]; then
-    akonadictl start
+    akonadictl start 1>&2
     SLEEP=5
 else
     DBUS_SESSION_SH_AKONADI=
 fi
 if [ "$DBUS_SESSION_SH_EDS_BASE" ] && [ "$prefix" ]; then
-    $prefix $DBUS_SESSION_SH_EDS_BASE/evolution-calendar-factory --keep-running &
+    $prefix $DBUS_SESSION_SH_EDS_BASE/evolution-calendar-factory --keep-running 1>&2 &
     E_CAL_PID=$!
-    $prefix $DBUS_SESSION_SH_EDS_BASE/evolution-addressbook-factory --keep-running &
+    $prefix $DBUS_SESSION_SH_EDS_BASE/evolution-addressbook-factory --keep-running 1>&2 &
     E_BOOK_PID=$!
 
     # give daemons some time to start and register with D-Bus
@@ -109,4 +136,4 @@ if [ "$DBUS_SESSION_SH_EDS_BASE" ]; then
 fi
 
 echo dbus-session.sh: final result $res >&2
-return $res
+exit $res

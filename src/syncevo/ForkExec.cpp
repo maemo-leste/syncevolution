@@ -19,15 +19,18 @@
 
 #include "ForkExec.h"
 #include <syncevo/LogRedirect.h>
+#include <syncevo/ThreadSupport.h>
 
 #if defined(HAVE_GLIB)
 
 #include <pcrecpp.h>
+#include <ctype.h>
 #include "test.h"
 
 SE_BEGIN_CXX
 
 static const std::string ForkExecEnvVar("SYNCEVOLUTION_FORK_EXEC=");
+static const std::string ForkExecInstanceEnvVar("SYNCEVOLUTION_FORK_EXEC_INSTANCE=");
 
 #ifndef GDBUS_CXX_HAVE_DISCONNECT
 // internal D-Bus API: only used to monitor parent by having one method call pending
@@ -44,18 +47,34 @@ static const std::string FORKEXEC_PARENT_DESTINATION = "direct.peer"; // doesn't
 class ForkExecParentDBusAPI : public GDBusCXX::DBusObjectHelper
 {
 public:
-    ForkExecParentDBusAPI(const GDBusCXX::DBusConnectionPtr &conn) :
+    /**
+     * @param instance    a unique string to distinguish multiple different ForkExecParent
+     *                    instances; necessary because otherwise GIO GDBus may route messages from
+     *                    one connection to older instances on other connections
+     */
+    ForkExecParentDBusAPI(const GDBusCXX::DBusConnectionPtr &conn, const std::string &instance) :
         GDBusCXX::DBusObjectHelper(conn,
-                                   FORKEXEC_PARENT_PATH,
+                                   FORKEXEC_PARENT_PATH + "/" + instance,
                                    FORKEXEC_PARENT_IFACE)
     {
         add(this, &ForkExecParentDBusAPI::watch, "Watch");
         activate();
     }
 
+    ~ForkExecParentDBusAPI()
+    {
+        SE_LOG_DEBUG(NULL, "ForkExecParentDBusAPI %s: destroying with %ld active watches",
+                     getPath(),
+                     (long)m_watches.size());
+    }
+
+    bool hasWatches() const { return !m_watches.empty(); }
+
 private:
     void watch(const boost::shared_ptr< GDBusCXX::Result0> &result)
     {
+        SE_LOG_DEBUG(NULL, "ForkExecParentDBusAPI %s: received 'Watch' method call from child",
+                     getPath());
         m_watches.push_back(result);
     }
     std::list< boost::shared_ptr< GDBusCXX::Result0> > m_watches;
@@ -66,8 +85,12 @@ ForkExec::ForkExec()
 {
 }
 
-ForkExecParent::ForkExecParent(const std::string &helper) :
+static Mutex ForkExecMutex;
+static unsigned int ForkExecCount;
+
+ForkExecParent::ForkExecParent(const std::string &helper, const std::vector<std::string> &args) :
     m_helper(helper),
+    m_args(args),
     m_childPid(0),
     m_hasConnected(false),
     m_hasQuit(false),
@@ -81,11 +104,15 @@ ForkExecParent::ForkExecParent(const std::string &helper) :
     m_errID(0),
     m_watchChild(NULL)
 {
+    Mutex::Guard guard = ForkExecMutex.lock();
+    ForkExecCount++;
+    m_instance = StringPrintf("forkexec%u", ForkExecCount);
 }
 
-boost::shared_ptr<ForkExecParent> ForkExecParent::create(const std::string &helper)
+boost::shared_ptr<ForkExecParent> ForkExecParent::create(const std::string &helper,
+                                                         const std::vector<std::string> &args)
 {
-    boost::shared_ptr<ForkExecParent> forkexec(new ForkExecParent(helper));
+    boost::shared_ptr<ForkExecParent> forkexec(new ForkExecParent(helper, args));
     return forkexec;
 }
 
@@ -111,6 +138,15 @@ ForkExecParent::~ForkExecParent()
     if (m_childPid) {
         g_spawn_close_pid(m_childPid);
     }
+#ifndef GDBUS_CXX_HAVE_DISCONNECT
+    if (m_api) {
+        SE_LOG_DEBUG(NULL, "ForkExecParent: shutting down, telling %s %ld that it lost the connection, it %s",
+                     m_helper.c_str(),
+                     (long)m_childPid,
+                     m_api->hasWatches() ? "is watching" : "is not watching");
+        m_api.reset();
+    }
+#endif
 }
 
 /**
@@ -128,14 +164,7 @@ void ForkExecParent::forked(gpointer data) throw()
     // any output is printed directly, instead of going through
     // the parent's output processing in LogRedirect.
     if (getenv("SYNCEVOLUTION_DEBUG")) {
-        int index = LoggerBase::numLoggers();
-        LogRedirect *redirect = NULL;
-        while (--index >= 0 &&
-               !(redirect = dynamic_cast<LogRedirect *>(LoggerBase::loggerAt(index)))) {
-        }
-        if (redirect) {
-            redirect->reset();
-        }
+        LogRedirect::removeRedirect();
     }
 
     if (me->m_mergedStdoutStderr) {
@@ -152,7 +181,7 @@ void ForkExecParent::start()
     // boost::shared_ptr<ForkExecParent> me = ...;
     GDBusCXX::DBusErrorCXX dbusError;
 
-    SE_LOG_DEBUG(NULL, NULL, "ForkExecParent: preparing for child process %s", m_helper.c_str());
+    SE_LOG_DEBUG(NULL, "ForkExecParent: preparing for child process %s", m_helper.c_str());
     m_server = GDBusCXX::DBusServerCXX::listen("", &dbusError);
     if (!m_server) {
         dbusError.throwFailure("starting server");
@@ -185,20 +214,25 @@ void ForkExecParent::start()
     }
 
     m_argvStrings.push_back(helper);
+    m_argvStrings.insert(m_argvStrings.end(),
+                         m_args.begin(),
+                         m_args.end());
     m_argv.reset(AllocStringArray(m_argvStrings));
     for (char **env = environ;
          *env;
          env++) {
-        if (!boost::starts_with(*env, ForkExecEnvVar)) {
+        if (!boost::starts_with(*env, ForkExecEnvVar) &&
+            !boost::starts_with(*env, ForkExecInstanceEnvVar)) {
             m_envStrings.push_back(*env);
         }
     }
 
     // pass D-Bus address via env variable
     m_envStrings.push_back(ForkExecEnvVar + m_server->getAddress());
+    m_envStrings.push_back(ForkExecInstanceEnvVar + getInstance());
     m_env.reset(AllocStringArray(m_envStrings));
 
-    SE_LOG_DEBUG(NULL, NULL, "ForkExecParent: running %s with D-Bus address %s",
+    SE_LOG_DEBUG(NULL, "ForkExecParent: running %s with D-Bus address %s",
                  helper.c_str(), m_server->getAddress().c_str());
 
     // Check which kind of output redirection is wanted.
@@ -227,7 +261,7 @@ void ForkExecParent::start()
     setupPipe(m_err, m_errID, err);
     setupPipe(m_out, m_outID, out);
 
-    SE_LOG_DEBUG(NULL, NULL, "ForkExecParent: child process for %s has pid %ld",
+    SE_LOG_DEBUG(NULL, "ForkExecParent: child process for %s has pid %ld",
                  helper.c_str(), (long)m_childPid);
 
     // TODO: introduce C++ wrapper around GSource
@@ -246,7 +280,7 @@ void ForkExecParent::setupPipe(GIOChannel *&channel, guint &sourceID, int fd)
     channel = g_io_channel_unix_new(fd);
     if (!channel) {
         // failure
-        SE_LOG_DEBUG(NULL, NULL, "g_io_channel_unix_new() returned NULL");
+        SE_LOG_DEBUG(NULL, "g_io_channel_unix_new() returned NULL");
         close(fd);
         return;
     }
@@ -289,10 +323,11 @@ gboolean ForkExecParent::outputReady(GIOChannel *source,
         if (status == G_IO_STATUS_EOF ||
             (condition & (G_IO_HUP|G_IO_ERR)) ||
             error) {
-            SE_LOG_DEBUG(NULL, NULL, "reading helper %s done: %s",
+            SE_LOG_DEBUG(NULL, "reading helper %s %ld done: %s",
                          source == me->m_out ? "stdout" :
                          me->m_mergedStdoutStderr ? "combined stdout/stderr" :
                          "stderr",
+                         (long)me->m_childPid,
                          (const char *)error);
 
             // Will remove event source from main loop.
@@ -338,7 +373,8 @@ void ForkExecParent::checkCompletion() throw ()
             m_onQuit(m_status);
             if (!m_hasConnected ||
                 m_status != 0) {
-                SE_LOG_DEBUG(NULL, NULL, "ForkExecParent: child was signaled %s, signal %d, int %d, term %d, int sent %s, term sent %s",
+                SE_LOG_DEBUG(NULL, "ForkExecParent: child %ld was signaled %s, signal %d (SIGINT=%d, SIGTERM=%d), int sent %s, term sent %s",
+                             (long)m_childPid,
                              WIFSIGNALED(m_status) ? "yes" : "no",
                              WTERMSIG(m_status), SIGINT, SIGTERM,
                              m_sigIntSent ? "yes" : "no",
@@ -347,6 +383,19 @@ void ForkExecParent::checkCompletion() throw ()
                     ((WTERMSIG(m_status) == SIGINT && m_sigIntSent) ||
                      (WTERMSIG(m_status) == SIGTERM && m_sigTermSent))) {
                     // not an error when the child dies because we killed it
+                    return;
+                }
+                if (WIFSIGNALED(m_status) &&
+                    WTERMSIG(m_status) == SIGKILL &&
+                    m_sigTermSent) {
+                    // This started to happen on Debian Testing after the Wheezy release:
+                    // everything seems to shut down normally, and yet the exit status
+                    // of the helper shows SIGKILL instead of SIGTERM as the reason for
+                    // quitting. valgrind is involved, too. Not sure where this new (?)
+                    // behavior comes from. It seems to be harmless, so accept that
+                    // additional exit code without complaining (which would break unit
+                    // testing).
+                    SE_LOG_DEBUG(NULL, "ForkExecParent: ignoring unexpected exit signal SIGKILL of child %ld", (long)m_childPid);
                     return;
                 }
                 std::string error = "child process quit";
@@ -360,7 +409,7 @@ void ForkExecParent::checkCompletion() throw ()
                 } else {
                     error += " for unknown reasons";
                 }
-                SE_LOG_ERROR(NULL, NULL, "%s", error.c_str());
+                SE_LOG_ERROR(NULL, "%s", error.c_str());
                 m_onFailure(STATUS_FATAL, error);
             }
         } catch (...) {
@@ -378,11 +427,12 @@ void ForkExecParent::checkCompletion() throw ()
 void ForkExecParent::newClientConnection(GDBusCXX::DBusConnectionPtr &conn) throw()
 {
     try {
-        SE_LOG_DEBUG(NULL, NULL, "ForkExecParent: child %s has connected",
-                     m_helper.c_str());
+        SE_LOG_DEBUG(NULL, "ForkExecParent: child %s %ld has connected",
+                     m_helper.c_str(),
+                     (long)m_childPid);
         m_hasConnected = true;
 #ifndef GDBUS_CXX_HAVE_DISCONNECT
-        m_api.reset(new ForkExecParentDBusAPI(conn));
+        m_api.reset(new ForkExecParentDBusAPI(conn, getInstance()));
 #endif
         m_onConnect(conn);
     } catch (...) {
@@ -410,8 +460,9 @@ void ForkExecParent::stop(int signal)
         return;
     }
 
-    SE_LOG_DEBUG(NULL, NULL, "ForkExecParent: killing %s with signal %d (%s %s)",
+    SE_LOG_DEBUG(NULL, "ForkExecParent: killing %s %ld with signal %d (%s %s)",
                  m_helper.c_str(),
+                 (long)m_childPid,
                  signal,
                  (!signal || signal == SIGINT) ? "SIGINT" : "",
                  (!signal || signal == SIGTERM) ? "SIGTERM" : "");
@@ -426,9 +477,6 @@ void ForkExecParent::stop(int signal)
     if (signal && signal != SIGINT && signal != SIGTERM) {
         ::kill(m_childPid, signal);
     }
-#ifndef GDBUS_CXX_HAVE_DISCONNECT
-    m_api.reset();
-#endif
 }
 
 void ForkExecParent::kill()
@@ -438,17 +486,28 @@ void ForkExecParent::kill()
         return;
     }
 
-    SE_LOG_DEBUG(NULL, NULL, "ForkExecParent: killing %s with SIGKILL",
-                 m_helper.c_str());
+    SE_LOG_DEBUG(NULL, "ForkExecParent: killing %s %ld with SIGKILL",
+                 m_helper.c_str(),
+                 (long)m_childPid);
     ::kill(m_childPid, SIGKILL);
 #ifndef GDBUS_CXX_HAVE_DISCONNECT
-    m_api.reset();
+    // Cancel the pending method call from the child to us. This will
+    // send an error reply to the child, which it'll treat as
+    // "connection lost".
+    if (m_api) {
+        SE_LOG_DEBUG(NULL, "ForkExecParent: telling %s %ld that it lost the connection, it %s",
+                     m_helper.c_str(),
+                     (long)m_childPid,
+                     m_api->hasWatches() ? "is watching" : "is not watching");
+        m_api.reset();
+    }
 #endif
 }
 
 ForkExecChild::ForkExecChild() :
     m_state(IDLE)
 {
+    m_instance = getEnv(ForkExecInstanceEnvVar.substr(0, ForkExecInstanceEnvVar.size() - 1).c_str(), "");
 }
 
 boost::shared_ptr<ForkExecChild> ForkExecChild::create()
@@ -467,7 +526,7 @@ void ForkExecChild::connect()
         SE_THROW("cannot connect to parent, was not forked");
     }
 
-    SE_LOG_DEBUG(NULL, NULL, "ForkExecChild: connecting to parent with D-Bus address %s",
+    SE_LOG_DEBUG(NULL, "ForkExecChild: connecting to parent with D-Bus address %s",
                  address);
     GDBusCXX::DBusErrorCXX dbusError;
     GDBusCXX::DBusConnectionPtr conn = dbus_get_bus_connection(address,
@@ -487,16 +546,16 @@ void ForkExecChild::connect()
     class Parent : public GDBusCXX::DBusRemoteObject
     {
     public:
-        Parent(const GDBusCXX::DBusConnectionPtr &conn) :
+        Parent(const GDBusCXX::DBusConnectionPtr &conn, const std::string &instance) :
             GDBusCXX::DBusRemoteObject(conn,
-                                       FORKEXEC_PARENT_PATH,
+                                       FORKEXEC_PARENT_PATH + "/" + instance,
                                        FORKEXEC_PARENT_IFACE,
                                        FORKEXEC_PARENT_DESTINATION),
             m_watch(*this, "Watch")
         {}
 
         GDBusCXX::DBusClientCall0 m_watch;
-    } parent(conn);
+    } parent(conn, getInstance());
     parent.m_watch.start(boost::bind(&ForkExecChild::connectionLost, this));
 #endif
 
@@ -506,7 +565,7 @@ void ForkExecChild::connect()
 
 void ForkExecChild::connectionLost()
 {
-    SE_LOG_DEBUG(NULL, NULL, "lost connection to parent");
+    SE_LOG_DEBUG(NULL, "lost connection to parent");
     m_state = DISCONNECTED;
     m_onQuit();
 }

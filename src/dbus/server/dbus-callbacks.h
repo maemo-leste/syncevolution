@@ -28,9 +28,7 @@
 
 #include <stdint.h>
 
-namespace GDBusCXX {
-    class Result;
-}
+#include <gdbus-cxx-bridge.h>
 
 SE_BEGIN_CXX
 
@@ -63,11 +61,9 @@ SE_BEGIN_CXX
  *
  * It is the responsibility of the caller to ensure that any objects
  * bound to the callback are still around when the callback gets
- * invoked.
- *
- * TODO: utility class which allows runtime checking whether the
- * callback is still possible when it binds to volatile instances (see
- * boost::signals2 automatic connection management).
+ * invoked. One simple way of doing that is via BoostHelper.h and
+ * binding to a boost::weak_ptr that tracks the instance to which
+ * the callback belongs.
  *
  * The recommended naming is to use the "Async" suffix in the function
  * name and a "const SimpleResult &result" as last parameter. Example:
@@ -109,6 +105,9 @@ template <class P> class Result
        m_onError(onError)
        {}
 
+    boost::function<P> getOnSuccess() const { return m_onSuccess; }
+    ErrorCb_t getOnError() const { return m_onError; }
+
     void done() const { if (m_onSuccess) m_onSuccess(); }
     template <class A1> void done(const A1 &a1) const { if (m_onSuccess) m_onSuccess(a1); }
     template <class A1, class A2> void done(const A1 &a1, const A2 &a2) const { if (m_onSuccess) m_onSuccess(a1, a2); }
@@ -143,6 +142,32 @@ uint32_t dbusErrorCallback(const boost::shared_ptr<GDBusCXX::Result> &result);
  * with the GDBusCXX::Result* class that takes the error.
  */
 ErrorCb_t createDBusErrorCb(const boost::shared_ptr<GDBusCXX::Result> &result);
+
+/**
+ * Creates a result object which passes back results and turns
+ * exceptions into dbus_error instances with the given interface
+ * name.
+ * TODO: interface name
+ */
+template<class R1> Result<void (const R1 &)> createDBusCb(const boost::shared_ptr< GDBusCXX::Result1<R1> > &result)
+{
+    return Result<void (const R1 &)>(boost::bind(&GDBusCXX::Result1<R1>::done,
+                                                 result,
+                                                 _1),
+                                     createDBusErrorCb(result));
+}
+
+/**
+ * Creates a result object which passes back zero results and turns
+ * exceptions into dbus_error instances with the given interface name.
+ * TODO: interface name
+ */
+static inline Result<void ()> createDBusCb(const boost::shared_ptr< GDBusCXX::Result0 > &result)
+{
+    return Result<void ()>(boost::bind(&GDBusCXX::Result0::done,
+                                       result),
+                           createDBusErrorCb(result));
+}
 
 /**
  * a generic "operation successful" callback with no parameters

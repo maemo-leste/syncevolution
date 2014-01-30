@@ -116,8 +116,8 @@ public:
      * can be instantiated as client A with id == "1" and client B with id == "2"
      */
     TestEvolution(const string &id) :
-        ClientTest(getenv("CLIENT_TEST_DELAY") ? atoi(getenv("CLIENT_TEST_DELAY")) : 0,
-                   getenv("CLIENT_TEST_LOG") ? getenv("CLIENT_TEST_LOG") : ""),
+        ClientTest(atoi(getEnv("CLIENT_TEST_DELAY", "0")),
+                   getEnv("CLIENT_TEST_LOG", "")),
         m_initialized(false),
         m_clientID(id),
         m_configs(SyncSource::getTestRegistry())
@@ -208,7 +208,7 @@ public:
             }
         }
         // get configuration and set obligatory fields
-        LoggerBase::instance().setLevel(Logger::DEBUG);
+        Logger::instance().setLevel(Logger::DEBUG);
         std::string root = std::string("evolution/") + server + "_" + m_clientID;
         boost::shared_ptr<SyncConfig> config(new SyncConfig(string(server) + "_" + m_clientID));
         boost::shared_ptr<SyncConfig> from = boost::shared_ptr<SyncConfig> ();
@@ -257,7 +257,7 @@ public:
                 sc->setDatabaseID(database);
             }
             if (!sc->getUser().wasSet() && !m_evoUser.empty()) {
-                sc->setUser(m_evoUser);
+                sc->setUsername(m_evoUser);
             }
             if (!sc->getPassword().wasSet() && !m_evoPassword.empty()) {
                 sc->setPassword(m_evoPassword);
@@ -382,7 +382,7 @@ public:
                 SyncContext::prepare();
                 if (m_options.m_prepareCallback &&
                     m_options.m_prepareCallback(*this, m_options)) {
-                    m_options.m_isAborted = true;
+                    m_options.m_isAborted = SuspendFlags::getSuspendFlags().abort();
                 }
             }
 
@@ -392,13 +392,10 @@ public:
                 if (!m_started) {
                     m_started = true;
                     if (m_options.m_startCallback(*this, m_options)) {
-                        m_options.m_isAborted = true;
+                        m_options.m_isAborted = SuspendFlags::getSuspendFlags().abort();
                     }
                 }
             }
-
-            virtual bool checkForAbort() { return m_options.m_isAborted; }
-            virtual bool checkForSuspend() {return m_options.m_isSuspended;}
 
             virtual boost::shared_ptr<TransportAgent> createTransportAgent()
             {
@@ -486,7 +483,7 @@ private:
         std::string tracking =
             string("_") + m_clientID +
             "_" + (isSourceA ? "A" : "B");
-        SE_LOG_DEBUG(NULL, NULL, "instantiating testing source %s in config %s, with tracking name %s",
+        SE_LOG_DEBUG(NULL, "instantiating testing source %s in config %s, with tracking name %s",
                      name.c_str(),
                      config.c_str(),
                      tracking.c_str());
@@ -500,7 +497,7 @@ private:
         std::string peerName = server ? (std::string(server) + "_" + m_clientID) : "@default";
         boost::shared_ptr<SyncConfig> peer(new SyncConfig(peerName));
         SyncSourceNodes peerNodes = peer->getSyncSourceNodes(name);
-        SE_LOG_DEBUG(NULL, NULL, "overriding testing source %s properties with the ones from config %s = %s",
+        SE_LOG_DEBUG(NULL, "overriding testing source %s properties with the ones from config %s = %s",
                      name.c_str(),
                      peerName.c_str(),
                      peer->getRootPath().c_str());
@@ -510,7 +507,7 @@ private:
             }
             boost::shared_ptr<FilterConfigNode> node = peerNodes.getNode(*prop);
             InitStateString value = prop->getProperty(*node);
-            SE_LOG_DEBUG(NULL, NULL, "   %s = %s (%s)",
+            SE_LOG_DEBUG(NULL, "   %s = %s (%s)",
                          prop->getMainName().c_str(),
                          value.c_str(),
                          value.wasSet() ? "set" : "default");

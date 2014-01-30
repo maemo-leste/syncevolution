@@ -170,12 +170,20 @@ class EvolutionCalendarSource : public EvolutionSyncSource,
     ECalClientSourceType sourceType() const {
         return (ECalClientSourceType)m_type;
     }
-    const char *sourceExtension() const {
+    virtual const char *sourceExtension() const {
         return
             m_type == EVOLUTION_CAL_SOURCE_TYPE_EVENTS ? E_SOURCE_EXTENSION_CALENDAR :
             m_type == EVOLUTION_CAL_SOURCE_TYPE_TASKS ? E_SOURCE_EXTENSION_TASK_LIST :
             m_type == EVOLUTION_CAL_SOURCE_TYPE_MEMOS ? E_SOURCE_EXTENSION_MEMO_LIST :
             "";
+    }
+    virtual ESourceCXX refSystemDB() const {
+        ESource *(*ref)(ESourceRegistry *) =
+            m_type == EVOLUTION_CAL_SOURCE_TYPE_EVENTS ? e_source_registry_ref_builtin_calendar :
+            m_type == EVOLUTION_CAL_SOURCE_TYPE_TASKS ? e_source_registry_ref_builtin_task_list :
+            m_type == EVOLUTION_CAL_SOURCE_TYPE_MEMOS ? e_source_registry_ref_builtin_memo_list :
+            NULL;
+        return ESourceCXX(ref ? ref(EDSRegistryLoader::getESourceRegistry()) : NULL, TRANSFER_REF);
     }
 #else
     ECalSourceType sourceType() const {

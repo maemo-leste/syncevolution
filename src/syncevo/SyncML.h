@@ -64,6 +64,13 @@ enum SimpleSyncMode {
     SIMPLE_SYNC_ONE_WAY_FROM_REMOTE = 214,
     SIMPLE_SYNC_REFRESH_FROM_REMOTE = 215,
 
+    // custom modes in SyncEvolution
+
+    /** mirror data on server side, slow variant (client sends all items) */
+    SIMPLE_SYNC_LOCAL_CACHE_SLOW = 218,
+    /** mirror data on server side, incremental variant (client sends only changes) */
+    SIMPLE_SYNC_LOCAL_CACHE_INCREMENTAL = 219,
+
     SIMPLE_SYNC_INVALID = 255
 };
 
@@ -96,6 +103,10 @@ enum SyncMode {
     SYNC_REFRESH_FROM_LOCAL = 213,
     SYNC_ONE_WAY_FROM_REMOTE = 214,
     SYNC_REFRESH_FROM_REMOTE = 215,
+
+    // custom mode
+    SYNC_LOCAL_CACHE_SLOW = 218,
+    SYNC_LOCAL_CACHE_INCREMENTAL = 219,
 
     SYNC_LAST = 220,
     /** error situation (in contrast to SYNC_NONE) */
@@ -323,6 +334,7 @@ class SyncSourceReport {
  public:
     SyncSourceReport() {
         memset(m_stat, 0, sizeof(m_stat));
+        m_received = 0;
         m_first =
             m_resume = false;
         m_mode = SYNC_NONE;
@@ -410,6 +422,10 @@ class SyncSourceReport {
     void recordStatus(SyncMLStatus status ) { m_status = status; }
     SyncMLStatus getStatus() const { return m_status; }
 
+    /** counts each received add/update/delete */
+    void recordTotalNumItemsReceived(int received) { m_received = received; }
+    int getTotalNumItemsReceived() const { return m_received; }
+
     /**
      * if not empty, then this was the virtual source which cause the
      * current one to be included in the sync
@@ -423,6 +439,7 @@ class SyncSourceReport {
  private:
     /** storage for getItemStat(): allow access with _MAX as index */
     int m_stat[ITEM_LOCATION_MAX + 1][ITEM_STATE_MAX + 1][ITEM_RESULT_MAX + 1];
+    int m_received;
 
     SyncMode m_mode;
     int m_restarts;

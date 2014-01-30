@@ -28,6 +28,7 @@
 #include <syncevo/ConfigFilter.h>
 #include <syncevo/UserInterface.h>
 #include <syncevo/SyncML.h>
+#include <syncevo/SyncConfig.h>
 #include <synthesis/engine_defs.h>
 
 #include <gdbus-cxx-bridge.h>
@@ -41,14 +42,23 @@ namespace GDBusCXX {
         dbus_enum_traits<SyncEvo::SyncMode, uint32_t>
     {};
 
-    /** for InitState or InitStateClass: like a pair of two values, but with different storage class on the host */
-    template <class I> struct dbus_init_state_traits :
-        public dbus_traits< std::pair<typename I::value_type, bool> >
+    /** like a pair of two values, but with different storage class on the host */
+    template <class T> struct dbus_traits< SyncEvo::InitState<T> > :
+        public dbus_traits< std::pair<T, bool> >
     {
-        typedef dbus_traits< std::pair<typename I::value_type, bool> > base_traits;
-        typedef I host_type;
-        typedef const I &arg_type;
+        typedef dbus_traits< std::pair<T, bool> > base_traits;
+        typedef SyncEvo::InitState<T> host_type;
+        typedef const host_type &arg_type;
 
+#ifdef GDBUS_CXX_GIO
+        static void get(ExtractArgs &context,
+                        reader_type &reader, host_type &value)
+        {
+            typename base_traits::host_type tmp;
+            base_traits::get(context, reader, tmp);
+            value = host_type(tmp.first, tmp.second);
+        }
+#else
         static void get(connection_type *conn,
                         message_type *msg,
                         reader_type &reader, host_type &value)
@@ -57,17 +67,13 @@ namespace GDBusCXX {
             base_traits::get(conn, msg, reader, tmp);
             value = host_type(tmp.first, tmp.second);
         }
+#endif
 
         static void append(builder_type &builder, arg_type value)
         {
             base_traits::append(builder, typename base_traits::host_type(value.get(), value.wasSet()));
         }
     };
-
-    template <class T> struct dbus_traits< SyncEvo::InitStateClass<T> > :
-        public dbus_init_state_traits< SyncEvo::InitStateClass<T> > {};
-    template <class T> struct dbus_traits< SyncEvo::InitState<T> > :
-        public dbus_init_state_traits< SyncEvo::InitState<T> > {};
 
     /**
      * Actual content is a std::map, so serialization can be done using that.
@@ -117,6 +123,12 @@ namespace GDBusCXX {
                                   GDBusCXX::dbus_member<SyncEvo::ConfigPasswordKey, std::string, &SyncEvo::ConfigPasswordKey::protocol,
                                   GDBusCXX::dbus_member<SyncEvo::ConfigPasswordKey, std::string, &SyncEvo::ConfigPasswordKey::authtype,
                                   GDBusCXX::dbus_member_single<SyncEvo::ConfigPasswordKey, unsigned int, &SyncEvo::ConfigPasswordKey::port> > > > > > > >
+    {};
+
+    template <> struct dbus_traits<SyncEvo::UserIdentity> :
+        public dbus_struct_traits<SyncEvo::UserIdentity,
+                                  GDBusCXX::dbus_member<SyncEvo::UserIdentity, SyncEvo::InitStateString, &SyncEvo::UserIdentity::m_provider,
+                                  GDBusCXX::dbus_member_single<SyncEvo::UserIdentity, SyncEvo::InitStateString, &SyncEvo::UserIdentity::m_identity> > >
     {};
 }
 

@@ -58,22 +58,20 @@ static void appendOutput(std::string &output, std::string &chunk, size_t expecte
     output.append(chunk);
 }
 
-void LoggerStdout::messagev(FILE *file,
-                            Level msglevel,
-                            Level filelevel,
-                            const char *prefix,
-                            const char *filename,
-                            int line,
-                            const char *function,
-                            const char *format,
-                            va_list args)
+void LoggerStdout::write(FILE *file,
+                         Level msglevel,
+                         Level filelevel,
+                         const std::string *prefix,
+                         const std::string *procname,
+                         const char *format,
+                         va_list args)
 {
     if (file &&
         msglevel <= filelevel) {
         // TODO: print debugging information, perhaps only in log file
         std::string output;
         formatLines(msglevel, filelevel,
-                    m_processName,
+                    procname,
                     prefix,
                     format, args,
                     boost::bind(appendOutput, boost::ref(output), _1, _2));
@@ -82,17 +80,16 @@ void LoggerStdout::messagev(FILE *file,
     }
 }
 
-void LoggerStdout::messagev(Level level,
-                            const char *prefix,
-                            const char *file,
-                            int line,
-                            const char *function,
+void LoggerStdout::messagev(const MessageOptions &options,
                             const char *format,
                             va_list args)
 {
-    messagev(m_file, level, getLevel(),
-             prefix, file, line, function,
-             format, args);
+    if (!(options.m_flags & MessageOptions::ONLY_GLOBAL_LOG)) {
+        write(m_file, options.m_level, getLevel(),
+              options.m_prefix,
+              options.m_processName,
+              format, args);
+    }
 }
 
 SE_END_CXX

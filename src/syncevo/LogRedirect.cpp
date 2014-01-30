@@ -34,6 +34,7 @@
 #include <signal.h>
 
 #include <boost/algorithm/string/predicate.hpp>
+#include <boost/noncopyable.hpp>
 
 #include <algorithm>
 #include <iostream>
@@ -53,11 +54,14 @@ std::set<std::string> LogRedirect::m_knownErrors;
 void LogRedirect::abortHandler(int sig) throw()
 {
     // Don't know state of logging system, don't log here!
-    // SE_LOG_ERROR(NULL, NULL, "caught signal %d, shutting down", sig);
+    // SE_LOG_ERROR(NULL, "caught signal %d, shutting down", sig);
 
     // shut down redirection, also flushes to log
-    if (m_redirect) {
-        m_redirect->restore();
+    {
+        RecMutex::Guard guard = lock();
+        if (m_redirect) {
+            m_redirect->restore();
+        }
     }
 
     // Raise same signal again. Because our handler
@@ -102,13 +106,13 @@ void LogRedirect::init()
     m_knownErrors.insert("Qt: Session management error: None of the authentication protocols specified are supported");
 }
 
-LogRedirect::LogRedirect(bool both, const char *filename) throw()
+LogRedirect::LogRedirect(Mode mode, const char *filename)
 {
     init();
     m_processing = true;
     if (!getenv("SYNCEVOLUTION_DEBUG")) {
         redirect(STDERR_FILENO, m_stderr);
-        if (both) {
+        if (mode == STDERR_AND_STDOUT) {
             redirect(STDOUT_FILENO, m_stdout);
             m_out = filename ?
                 fopen(filename, "w") :
@@ -131,7 +135,12 @@ LogRedirect::LogRedirect(bool both, const char *filename) throw()
                            fileno(m_out) :
                            m_stderr.m_copy), "w");
     }
-    LoggerBase::pushLogger(this);
+
+    // Modify process state while holding the Logger mutex.
+    RecMutex::Guard guard = lock();
+    if (m_redirect) {
+        SE_LOG_WARNING(NULL, "LogRedirect already instantiated?!");
+    }
     m_redirect = this;
 
     if (!getenv("SYNCEVOLUTION_DEBUG")) {
@@ -157,6 +166,8 @@ LogRedirect::LogRedirect(ExecuteFlags flags)
 {
     init();
 
+    // This instance does not modify process state and
+    // doesn't have to be thread-safe.
     m_streams = true;
     if (!(flags & EXECUTE_NO_STDERR)) {
         redirect(STDERR_FILENO, m_stderr);
@@ -168,10 +179,12 @@ LogRedirect::LogRedirect(ExecuteFlags flags)
 
 LogRedirect::~LogRedirect() throw()
 {
-    bool pop = false;
+    RecMutex::Guard guard;
+    if (!m_streams) {
+        guard = lock();
+    }
     if (m_redirect == this) {
         m_redirect = NULL;
-        pop = true;
     }
     process();
     restore();
@@ -185,28 +198,36 @@ LogRedirect::~LogRedirect() throw()
     if (m_buffer) {
         free(m_buffer);
     }
-    if (pop) {
-        LoggerBase::popLogger();
-    }
 }
 
-void LogRedirect::redoRedirect() throw()
+void LogRedirect::remove() throw()
 {
-    bool doStdout = m_stdout.m_copy >= 0;
-    bool doStderr = m_stderr.m_copy >= 0;
+    restore();
+}
 
-    if (doStdout) {
-        restore(m_stdout);
-        redirect(STDOUT_FILENO, m_stdout);
-    }
-    if (doStderr) {
-        restore(m_stderr);
-        redirect(STDERR_FILENO, m_stderr);
+void LogRedirect::removeRedirect() throw()
+{
+    if (m_redirect) {
+        // We were forked. Ignore mutex (might be held by thread which was not
+        // forked) and restore the forked process' state to the one it was
+        // before setting up redirection.
+        //
+        // Do the minimal amount of work possible in restore(), i.e.,
+        // suppress the processing of streams.
+        m_redirect->m_streams = false;
+
+        m_redirect->restore(m_redirect->m_stdout);
+        m_redirect->restore(m_redirect->m_stderr);
     }
 }
 
 void LogRedirect::restore() throw()
 {
+    RecMutex::Guard guard;
+    if (!m_streams) {
+        guard = lock();
+    }
+
     if (m_processing) {
         return;
     }
@@ -218,26 +239,26 @@ void LogRedirect::restore() throw()
     m_processing = false;
 }
 
-void LogRedirect::messagev(Level level,
-                           const char *prefix,
-                           const char *file,
-                           int line,
-                           const char *function,
+void LogRedirect::messagev(const MessageOptions &options,
                            const char *format,
                            va_list args)
 {
+    RecMutex::Guard guard = lock();
+
     // check for other output first
     process();
-    // Choose output channel: SHOW goes to original stdout,
-    // everything else to stderr.
-    LoggerStdout::messagev(level == SHOW ?
-                           (m_out ? m_out : stdout) :
-                           (m_err ? m_err : stderr),
-                           level, getLevel(),
-                           prefix,
-                           file, line, function,
-                           format,
-                           args);
+    if (!(options.m_flags & MessageOptions::ONLY_GLOBAL_LOG)) {
+        // Choose output channel: SHOW goes to original stdout,
+        // everything else to stderr.
+        LoggerStdout::write(options.m_level == SHOW ?
+                            (m_out ? m_out : stdout) :
+                            (m_err ? m_err : stderr),
+                            options.m_level, getLevel(),
+                            options.m_prefix,
+                            options.m_processName,
+                            format,
+                            args);
+    }
 }
 
 void LogRedirect::redirect(int original, FDs &fds) throw()
@@ -352,8 +373,8 @@ bool LogRedirect::process(FDs &fds) throw()
         return data_read;
     }
 
+    ssize_t available = 0;
     do {
-        ssize_t available = 0;
         have_message = false;
 
         // keep peeking at the data with increasing buffer sizes until
@@ -362,11 +383,26 @@ bool LogRedirect::process(FDs &fds) throw()
         while (true) {
             // increase buffer?
             if (newlen > m_len) {
-                m_buffer = (char *)realloc(m_buffer, newlen);
-                if (!m_buffer) {
-                    m_len = 0;
-                    break;
+                void *buffer = realloc(m_buffer, newlen);
+                if (!buffer) {
+                    // Nothing changed.
+                    if (available) {
+                        // We already read some data of a
+                        // datagram. Give up on the rest of the data,
+                        // process what we have below.
+                        if ((size_t)available == m_len) {
+                            // Need the byte for nul termination.
+                            available--;
+                        }
+                        have_message = true;
+                        break;
+                    } else {
+                        // Give up.
+                        SyncContext::throwError("out of memory");
+                        return false;
+                    }
                 } else {
+                    m_buffer = (char *)buffer;
                     m_len = newlen;
                 }
             }
@@ -402,8 +438,10 @@ bool LogRedirect::process(FDs &fds) throw()
             }
         }
         if (have_message) {
-            // swallow packet, even if empty or we couldn't receive it
-            recv(fds.m_read, NULL, 0, MSG_DONTWAIT);
+            if (USE_UNIX_DOMAIN_DGRAM || !m_streams) {
+                // swallow packet, even if empty or we couldn't receive it
+                recv(fds.m_read, NULL, 0, MSG_DONTWAIT);
+            }
             data_read = true;
         }
 
@@ -412,7 +450,7 @@ bool LogRedirect::process(FDs &fds) throw()
             // Now pass it to logger, with a level determined by
             // the channel. This is the point where we can filter
             // out known noise.
-            const char *prefix = NULL;
+            std::string prefix;
             Logger::Level level = Logger::DEV;
             char *text = m_buffer;
 
@@ -426,9 +464,9 @@ bool LogRedirect::process(FDs &fds) throw()
                     if (eol) {
                         m_stdoutData.append(text, eol - text);
                         text = eol + 1;
-                        LoggerBase::instance().message(level, prefix,
-                                                       NULL, 0, NULL,
-                                                       "%s", m_stdoutData.c_str());
+                        Logger::instance().message(level, prefix.empty() ? NULL : &prefix,
+                                                   NULL, 0, NULL,
+                                                   "%s", m_stdoutData.c_str());
                         m_stdoutData.clear();
                     }
                 }
@@ -488,17 +526,25 @@ bool LogRedirect::process(FDs &fds) throw()
             if (len > 0 && text[len - 1] == '\n') {
                 text[len - 1] = 0;
             }
-            LoggerBase::instance().message(level, prefix,
-                                           NULL, 0, NULL,
-                                           "%s", text);
+            Logger::instance().message(level, prefix.empty() ? NULL : &prefix,
+                                       NULL, 0, NULL,
+                                       "%s", text);
+            available = 0;
         }
     } while(have_message);
 
     return data_read;
 }
 
+void LogRedirect::addIgnoreError(const std::string &error)
+{
+    RecMutex::Guard guard = Logger::lock();
+    m_knownErrors.insert(error);
+}
+
 bool LogRedirect::ignoreError(const std::string &text)
 {
+    RecMutex::Guard guard = Logger::lock();
     BOOST_FOREACH(const std::string &entry, m_knownErrors) {
         if (text.find(entry) != text.npos) {
             return true;
@@ -509,6 +555,8 @@ bool LogRedirect::ignoreError(const std::string &text)
 
 void LogRedirect::process()
 {
+    RecMutex::Guard guard;
+
     if (m_streams) {
         // iterate until both sockets are closed by peer
         while (true) {
@@ -574,6 +622,8 @@ void LogRedirect::process()
                 break;
             }
         }
+    } else {
+        guard = lock();
     }
 
     if (m_processing) {
@@ -598,13 +648,15 @@ void LogRedirect::process()
 
 void LogRedirect::flush() throw()
 {
+    RecMutex::Guard guard = lock();
+
     process();
     if (!m_stdoutData.empty()) {
         std::string buffer;
         std::swap(buffer, m_stdoutData);
-        LoggerBase::instance().message(Logger::SHOW, NULL,
-                                       NULL, 0, NULL,
-                                       "%s", buffer.c_str());
+        Logger::instance().message(Logger::SHOW, NULL,
+                                   NULL, 0, NULL,
+                                   "%s", buffer.c_str());
     }
 }
 
@@ -626,35 +678,30 @@ class LogRedirectTest : public CppUnit::TestFixture {
      * redirect stdout/stderr, then intercept the log messages and
      * store them for inspection
      */
-    class LogBuffer : public LoggerBase
+    class LogBuffer : public Logger, private boost::noncopyable
     {
     public:
         std::stringstream m_streams[DEBUG + 1];
-        LogRedirect *m_redirect;
+        PushLogger<LogRedirect> m_redirect;
 
-        LogBuffer(bool both = true)
+        LogBuffer(LogRedirect::Mode mode = LogRedirect::STDERR_AND_STDOUT)
         {
-            m_redirect = new LogRedirect(both);
-            pushLogger(this);
+            m_redirect.reset(new LogRedirect(mode));
+            addLogger(boost::shared_ptr<Logger>(this, NopDestructor()));
         }
         ~LogBuffer()
         {
-            popLogger();
-            delete m_redirect;
+            removeLogger(this);
+            m_redirect.reset();
         }
 
-        virtual void messagev(Level level,
-                          const char *prefix,
-                          const char *file,
-                          int line,
-                          const char *function,
-                          const char *format,
-                          va_list args)
+        virtual void messagev(const MessageOptions &options,
+                              const char *format,
+                              va_list args)
         {
-            CPPUNIT_ASSERT(level <= DEBUG && level >= 0);
-            m_streams[level] << StringPrintfV(format, args);
+            CPPUNIT_ASSERT(options.m_level <= DEBUG && options.m_level >= 0);
+            m_streams[options.m_level] << StringPrintfV(format, args);
         }
-        virtual bool isProcessSafe() const { return true; }
     };
     
 public:
@@ -736,7 +783,7 @@ public:
             orig_stdout = dup(STDOUT_FILENO);
             dup2(new_stdout, STDOUT_FILENO);
 
-            LogBuffer buffer(false);
+            LogBuffer buffer(LogRedirect::STDERR);
 
             fprintf(stdout, "normal message stdout\n");
             fflush(stdout);

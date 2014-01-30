@@ -32,6 +32,7 @@
 #include <SyncML.h>
 #include <TransportAgent.h>
 #include <SyncSource.h>
+#include <syncevo/SuspendFlags.h>
 
 #include "test.h"
 #include "ClientTestAssert.h"
@@ -44,6 +45,8 @@
 
 #include <syncevo/Logging.h>
 #include <syncevo/util.h>
+
+#include <boost/utility.hpp>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -136,9 +139,8 @@ struct SyncOptions {
     int m_retryDuration;
     int m_retryInterval;
 
-    bool m_isSuspended; 
-    
-    bool m_isAborted;
+    boost::shared_ptr<SuspendFlags::StateBlocker> m_isSuspended;
+    boost::shared_ptr<SuspendFlags::StateBlocker> m_isAborted;
 
     /**
      * Callback to be invoked after setting up local sources, but
@@ -174,8 +176,6 @@ struct SyncOptions {
         m_isWBXML(isWBXML),
         m_retryDuration(300),
         m_retryInterval(60),
-        m_isSuspended(false),
-        m_isAborted(false),
         m_startCallback(startCallback),
         m_transport (transport)
     {}
@@ -236,7 +236,7 @@ class SyncTests;
  * properties (like available sync sources) and then creates several
  * tests.
  */
-class ClientTest {
+class ClientTest : private boost::noncopyable {
   public:
     ClientTest(int serverSleepSec = 0, const std::string &serverLog= "");
     virtual ~ClientTest();
@@ -492,9 +492,6 @@ public:
     /** helper funclets to create sources */
     CreateSource createSourceA, createSourceB;
 
-    /** if set, then this will be called at the end of testing */
-    void (*cleanupSources)();
-
     LocalTests(const std::string &name, ClientTest &cl, int sourceParam, ClientTest::Config &co) :
         CppUnit::TestSuite(name),
         client(cl),
@@ -520,16 +517,18 @@ public:
      *
      * @param relaxed   if true, then disable some of the additional checks after adding the item
      * @retval inserted    actual data that was inserted, optional
+     * @param uniqueUIDSuffix    gets added to UID of the inserted item if unique UIDs are necessary
      * @return the LUID of the inserted item
      */
-    virtual std::string insert(CreateSource createSource, const std::string &data, bool relaxed = false, std::string *inserted = NULL);
+    virtual std::string insert(CreateSource createSource, const std::string &data, bool relaxed = false, std::string *inserted = NULL, const std::string &uniqueUIDSuffix = "");
 
     /**
      * assumes that exactly one element is currently inserted and updates it with the given item
      *
      * @param check     if true, then reopen the source and verify that the reported items are as expected
+     * @param uniqueUIDSuffix    same UID suffix as when creating the item
      */
-    virtual void update(CreateSource createSource, const std::string &data, bool check = true);
+    virtual void update(CreateSource createSource, const std::string &data, bool check = true, const std::string &uniqueUIDSuffix = "");
 
     /**
      * updates one item identified by its LUID with the given item
@@ -893,11 +892,11 @@ protected:
     void doSync(const char *file, int line,
                 const char *logPrefix,
                 const SyncOptions &options) {
-        CT_WRAP_ASSERT(file, line, doSync(logPrefix, options));
+        CT_WRAP_ASSERT(file, line, doSync(logPrefix, options), true);
     }
     void doSync(const char *file, int line,
                 const SyncOptions &options) {
-        CT_WRAP_ASSERT(file, line, doSync(options));
+        CT_WRAP_ASSERT(file, line, doSync(options), true);
     }
     virtual void postSync(int res, const std::string &logname);
 
@@ -970,7 +969,7 @@ public:
 
 /** write log message into *.log file of a test */
 #define CLIENT_TEST_LOG(_format, _args...) \
-    SE_LOG_DEBUG(NULL, NULL, "\n%s:%d *** " _format, \
+    SE_LOG_DEBUG(NULL, "\n%s:%d *** " _format, \
                  getBasename(__FILE__).c_str(), __LINE__, \
                  ##_args)
 

@@ -392,7 +392,7 @@ static std::string importItem(TestingSyncSource *source, const ClientTestConfig 
     CT_ASSERT(source);
     if (data.size()) {
         SyncSourceRaw::InsertItemResult res;
-        SOURCE_ASSERT_NO_FAILURE(source, res = source->insertItemRaw("", config.m_mangleItem(data, false)));
+        SOURCE_ASSERT_NO_FAILURE(source, res = source->insertItemRaw("", config.m_mangleItem(data, false, "")));
         CT_ASSERT(!res.m_luid.empty());
         return res.m_luid;
     } else {
@@ -547,7 +547,7 @@ void LocalTests::addTests() {
     }
 }
 
-std::string LocalTests::insert(CreateSource createSource, const std::string &data, bool relaxed, std::string *inserted) {
+std::string LocalTests::insert(CreateSource createSource, const std::string &data, bool relaxed, std::string *inserted, const std::string &uniqueUIDSuffix) {
     restoreStorage(config, client);
 
     // create source
@@ -558,7 +558,7 @@ std::string LocalTests::insert(CreateSource createSource, const std::string &dat
     int numItems = 0;
     CT_ASSERT_NO_THROW(numItems = countItems(source.get()));
     SyncSourceRaw::InsertItemResult res;
-    std::string mangled = config.m_mangleItem(data, false);
+    std::string mangled = config.m_mangleItem(data, false, uniqueUIDSuffix);
     if (inserted) {
         *inserted = mangled;
     }
@@ -607,7 +607,7 @@ static std::string updateItem(CreateSource createSource, const ClientTestConfig 
     // insert item
     SyncSourceRaw::InsertItemResult res;
     std::string mangled;
-    CT_ASSERT_NO_THROW(mangled = config.m_mangleItem(data, true));
+    CT_ASSERT_NO_THROW(mangled = config.m_mangleItem(data, true, ""));
     if (updated) {
         *updated = mangled;
     }
@@ -630,7 +630,7 @@ static void removeItem(CreateSource createSource, const std::string &luid)
     SOURCE_ASSERT_NO_FAILURE(source.get(), source->deleteItem(luid));
 }
 
-void LocalTests::update(CreateSource createSource, const std::string &data, bool check) {
+void LocalTests::update(CreateSource createSource, const std::string &data, bool check, const std::string &uniqueUIDSuffix) {
     CT_ASSERT(createSource.createSource);
 
     restoreStorage(config, client);
@@ -645,7 +645,8 @@ void LocalTests::update(CreateSource createSource, const std::string &data, bool
     CT_ASSERT(it != source->getAllItems().end());
     string luid = *it;
     SyncSourceRaw::InsertItemResult res;
-    SOURCE_ASSERT_NO_FAILURE(source.get(), res = source->insertItemRaw(luid, config.m_mangleItem(data, true)));
+    std::string mangled = config.m_mangleItem(data, true, uniqueUIDSuffix);
+    SOURCE_ASSERT_NO_FAILURE(source.get(), res = source->insertItemRaw(luid, mangled));
     CT_ASSERT_NO_THROW(source.reset());
     CT_ASSERT_EQUAL(luid, res.m_luid);
     CT_ASSERT_EQUAL(ITEM_OKAY, res.m_state);
@@ -677,7 +678,7 @@ void LocalTests::update(CreateSource createSource, const std::string &data, cons
     SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSource()));
 
     // update it
-    SOURCE_ASSERT_NO_FAILURE(source.get(), source->insertItemRaw(luid, config.m_mangleItem(data, true)));
+    SOURCE_ASSERT_NO_FAILURE(source.get(), source->insertItemRaw(luid, config.m_mangleItem(data, true, "")));
 
     backupStorage(config, client);
 }
@@ -747,7 +748,7 @@ bool LocalTests::compareDatabases(const char *refFile, TestingSyncSource &copy, 
     simplifyFilename(copyFile);
     SOURCE_ASSERT_EQUAL(&copy, 0, config.m_dump(client, copy, copyFile));
 
-    bool equal;
+    bool equal = false;
     CT_ASSERT_NO_THROW(equal = config.m_compare(client, sourceFile, copyFile));
     CT_ASSERT(!raiseAssert || equal);
 
@@ -790,7 +791,7 @@ void LocalTests::compareDatabasesRef(TestingSyncSource &copy,
 
 std::string LocalTests::createItem(int item, const std::string &revision, int size)
 {
-    std::string data = config.m_mangleItem(config.m_templateItem, false);
+    std::string data = config.m_mangleItem(config.m_templateItem, false, "");
     std::stringstream prefix;
 
     // string to be inserted at start of unique properties;
@@ -1108,7 +1109,7 @@ void LocalTests::testInsertTwice() {
     SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
 
     // mangle data once
-    std::string data = config.m_mangleItem(config.m_insertItem, false);
+    std::string data = config.m_mangleItem(config.m_insertItem, false, "");
 
     // insert new item
     SyncSourceRaw::InsertItemResult first;
@@ -1201,11 +1202,12 @@ void LocalTests::doChanges(bool restart) {
     CT_ASSERT_EQUAL(luid, *it);
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
 
-    // now make changes via source B directly: these changes are not to be
-    // reported back
+    // Now make changes via source B directly: these changes are not to be
+    // reported back. Google CalDAV is very strict about UID/SEQUENCE,
+    // work around that by not reusing a UID inside this test.
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     // add
-    std::string mangled = config.m_mangleItem(config.m_insertItem, false);
+    std::string mangled = config.m_mangleItem(config.m_insertItem, false, "-B");
     SyncSourceRaw::InsertItemResult res;
     SOURCE_ASSERT_NO_FAILURE(source.get(), res = source->insertItemRaw("", mangled));
     CT_ASSERT(!res.m_luid.empty());
@@ -1216,7 +1218,7 @@ void LocalTests::doChanges(bool restart) {
     SOURCE_ASSERT_EQUAL(source.get(), 0, countNewItems(source.get()));
     SOURCE_ASSERT_EQUAL(source.get(), 0, countUpdatedItems(source.get()));
     SOURCE_ASSERT_EQUAL(source.get(), 0, countDeletedItems(source.get()));
-    mangled = config.m_mangleItem(config.m_updateItem, false);
+    mangled = config.m_mangleItem(config.m_updateItem, false, "-B");
     SOURCE_ASSERT_NO_FAILURE(source.get(), res = source->insertItemRaw(res.m_luid, mangled));
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
     // delete
@@ -1235,7 +1237,7 @@ void LocalTests::doChanges(bool restart) {
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
 
     CLIENT_TEST_LOG("insert another item via source A");
-    CT_ASSERT_NO_THROW(doInsert());
+    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, NULL, "-C"));
     CLIENT_TEST_LOG("check for new item via source B");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     SOURCE_ASSERT_EQUAL(source.get(), 1, countItems(source.get()));
@@ -1254,7 +1256,7 @@ void LocalTests::doChanges(bool restart) {
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
 
     CLIENT_TEST_LOG("update item via source A");
-    CT_ASSERT_NO_THROW(update(createSourceA, config.m_updateItem));
+    CT_ASSERT_NO_THROW(update(createSourceA, config.m_updateItem, "-C"));
     CLIENT_TEST_LOG("check for updated item via source B");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     SOURCE_ASSERT_EQUAL(source.get(), 1, countItems(source.get()));
@@ -1281,8 +1283,10 @@ void LocalTests::doChanges(bool restart) {
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
     CLIENT_TEST_LOG("create and update an item in source A");
-    CT_ASSERT_NO_THROW(doInsert());
-    CT_ASSERT_NO_THROW(update(createSourceA, config.m_updateItem));
+    // Must use a UID different than the one used before despite that data being gone,
+    // to keep Google CalDAV server happy.
+    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, NULL, "-D"));
+    CT_ASSERT_NO_THROW(update(createSourceA, config.m_updateItem, "-D"));
     CLIENT_TEST_LOG("should only be listed as new or updated in source B, but not both");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     SOURCE_ASSERT_EQUAL(source.get(), 1, countItems(source.get()));
@@ -1295,9 +1299,9 @@ void LocalTests::doChanges(bool restart) {
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
     CLIENT_TEST_LOG("create, delete and recreate an item in source A");
-    CT_ASSERT_NO_THROW(doInsert());
+    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, NULL, "-E"));
     CT_ASSERT_NO_THROW(deleteAll(createSourceA));
-    CT_ASSERT_NO_THROW(doInsert());
+    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, NULL, "-F"));
     CLIENT_TEST_LOG("should only be listed as new or updated in source B, even if\n "
                     "(as for calendar with UID) the same LUID gets reused");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
@@ -1758,6 +1762,24 @@ void LocalTests::testLinkedItemsParentChild() {
         CT_ASSERT_MESSAGE(exdate + " not found in:\n" + parentDataEngine, pos != parentDataEngine.npos);
     }
 
+    if (config.m_supportsReccurenceEXDates) {
+        TestingSyncSourcePtr source;
+        SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
+        CLIENT_TEST_LOG("retrieve parent as reported to the Synthesis engine, check for X-SYNCEVOLUTION-EXDATE-DETACHED");
+        std::string parentDataEngine;
+        CT_ASSERT_NO_THROW(source->readItem(parent, parentDataEngine));
+        size_t pos = childData.find("RECURRENCE-ID");
+        CT_ASSERT(pos != childData.npos);
+        size_t end = childData.find_first_of("\r\n", pos);
+        CT_ASSERT(end != childData.npos);
+        std::string exdate = childData.substr(pos, end - pos);
+        boost::replace_first(exdate, "RECURRENCE-ID", "X-SYNCEVOLUTION-EXDATE-DETACHED");
+        // not generated because not needed by Synthesis engine
+        boost::replace_first(exdate, ";VALUE=DATE", "");
+        pos = parentDataEngine.find(exdate);
+        CT_ASSERT_MESSAGE(exdate + " not found in:\n" + parentDataEngine, pos != parentDataEngine.npos);
+    }
+
     if (getenv("CLIENT_TEST_LINKED_ITEMS_NO_DELETE")) {
         return;
     }
@@ -1987,16 +2009,30 @@ void LocalTests::testLinkedItemsRemoveNormal() {
     // Skip the testing, proceed to full removal.
     if (currentServer() != "exchange") {
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
-#ifndef USE_EDS_CLIENT
         if (getCurrentTest().find("::eds_event::") != std::string::npos) {
-            // hack: ignore EDS side effect of adding EXDATE to parent, see http://bugs.meego.com/show_bug.cgi?id=10906
-            size_t pos = parentData.rfind("DTSTART");
-            parentData.insert(pos,
-                              getCurrentTest().find("LinkedItemsAllDay") == std::string::npos ?
-                              "EXDATE:20080413T090000\n" :
-                              "EXDATE:20080413\n");
-        }
+            bool usingEDSLT36;
+
+#ifdef  EVOLUTION_COMPATIBILITY
+            // Need to check at runtime.
+            // We are using EDS < 3.6 if (and only if) we found the right libs.
+            usingEDSLT36 = EDSAbiHaveEcal;
+#elif defined(USE_EDS_CLIENT)
+            // Detected at runtime: new EDS API.
+            usingEDSLT36 = false;
+#else
+            // Detected at runtime: old EDS API.
+            usingEDSLT36 = true;
 #endif
+            if (usingEDSLT36) {
+                // hack: ignore EDS < 3.6 side effect of adding EXDATE to parent, see http://bugs.meego.com/show_bug.cgi?id=10906
+                size_t pos = parentData.rfind("DTSTART");
+                parentData.insert(pos,
+                                  getCurrentTest().find("LinkedItemsAllDay") == std::string::npos ?
+                                  "EXDATE:20080413T090000\n" :
+                                  "EXDATE:20080413\n");
+            }
+        }
+
         CT_ASSERT_NO_THROW(compareDatabases(*source, &parentData, NULL));
         SOURCE_ASSERT_EQUAL(source.get(), 1, countItems(source.get()));
         SOURCE_ASSERT_EQUAL(source.get(), 0, countNewItems(source.get()));
@@ -2009,7 +2045,7 @@ void LocalTests::testLinkedItemsRemoveNormal() {
         SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
         SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
         // parent might have been updated
-        int updated;
+        int updated = false;
         CT_ASSERT_NO_THROW(updated = countUpdatedItems(copy.get()));
         SOURCE_ASSERT(copy.get(), 0 <= updated && updated <= 1);
         SOURCE_ASSERT_EQUAL(copy.get(), 1, countDeletedItems(copy.get()));
@@ -2729,7 +2765,6 @@ void SyncTests::addTests(bool isFirstSource) {
                 // only make sense when restarting works.
                 ADD_TEST(SyncTests, testTwoWayRestart);
                 if (getenv("CLIENT_TEST_PEER_CAN_RESTART")) {
-                    ADD_TEST(SyncTests, testTwoWayRestart);
                     ADD_TEST(SyncTests, testSlowRestart);
                     ADD_TEST(SyncTests, testRefreshFromLocalRestart);
                     ADD_TEST(SyncTests, testOneWayFromLocalRestart);
@@ -2943,7 +2978,7 @@ void SyncTests::deleteAll(DeleteAllMode mode) {
 
 /** get both clients in sync with empty server, then copy one item from client A to B */
 void SyncTests::doCopy() {
-    SyncPrefix("copy", *this);
+    SyncPrefix copy("copy", *this);
 
     // check requirements
     CT_ASSERT(accessClientB);
@@ -3302,7 +3337,9 @@ void SyncTests::doRestartSync(SyncMode mode)
     }
 
     // update item while the sync runs
+#ifndef __clang_analyzer__
     needToConnect = true;
+#endif
     startCount = 0;
     results.clear();
     end =
@@ -3360,7 +3397,9 @@ void SyncTests::doRestartSync(SyncMode mode)
     }
 
     // delete item while the sync runs
+#ifndef __clang_analyzer__
     needToConnect = true;
+#endif
     startCount = 0;
     results.clear();
     end =
@@ -4197,7 +4236,7 @@ bool SyncTests::doConversionCallback(bool *success,
                                        type.c_str(),
                                        type.c_str(),
                                        convertedItem)) {
-                SE_LOG_ERROR(NULL, NULL, "failed parsing as %s:\n%s",
+                SE_LOG_ERROR(NULL, "failed parsing as %s:\n%s",
                              type.c_str(),
                              item.c_str());
             } else {
@@ -4319,8 +4358,13 @@ void SyncTests::testExtensions() {
         // right source config and thus setting it must come after the
         // createSourceB() call.
         ScopedEnvChange env("CLIENT_TEST_SERVER", "");
-        ScopedEnvChange envParams("CLIENT_TEST_STRIP_PARAMETERS", "X-EVOLUTION-UI-SLOT");
-        ScopedEnvChange envProps("CLIENT_TEST_STRIP_PROPERTIES", "(PHOTO|FN)");
+        ScopedEnvChange envParams("CLIENT_TEST_STRIP_PARAMETERS", "X-EVOLUTION-UI-SLOT"); 
+        // X-EVOLUTION-FILE-AS is not preserved correctly with EDS due
+        // to setting it on incoming items. It is not always set as already stored
+        // locally, so when writing back, the new, artificially generated value overwrites
+        // the one chosen by the user. Not ideal, but the alternative (not setting it on
+        // incoming items) is worse.
+        ScopedEnvChange envProps("CLIENT_TEST_STRIP_PROPERTIES", "(PHOTO|FN|X-EVOLUTION-FILE-AS)");
         if (!it->second->compareDatabases(refDir.c_str(), *source, false)) {
             equal = false;
         }
@@ -5176,7 +5220,7 @@ public:
     virtual void send(const char *data, size_t len)
     {
         if (m_interruptAtMessage == m_messageCount) {
-            SE_LOG_DEBUG(NULL, NULL, "TransportFaultInjector: interrupt before sending message #%d", m_messageCount);
+            SE_LOG_DEBUG(NULL, "TransportFaultInjector: interrupt before sending message #%d", m_messageCount);
         }
         m_messageCount++;
         if (m_interruptAtMessage >= 0 &&
@@ -5189,7 +5233,7 @@ public:
         m_status = m_wrappedAgent->wait();
         
         if (m_interruptAtMessage == m_messageCount) {
-            SE_LOG_DEBUG(NULL, NULL, "TransportFaultInjector: interrupt after receiving reply #%d", m_messageCount);
+            SE_LOG_DEBUG(NULL, "TransportFaultInjector: interrupt after receiving reply #%d", m_messageCount);
         }
         m_messageCount++;
         if (m_interruptAtMessage >= 0 &&
@@ -5253,7 +5297,7 @@ public:
             m_interruptAtMessage < m_messageCount &&
             m_interruptAtMessage >= m_messageCount - 3) {
             int offset = m_interruptAtMessage - m_messageCount + 4;
-            SE_LOG_DEBUG(NULL, NULL, "TransportResendProxy: interrupt %s",
+            SE_LOG_DEBUG(NULL, "TransportResendProxy: interrupt %s",
                          offset == 1 ? "before sending message" :
                          offset == 2 ? "directly after sending message" :
                          "after receiving reply");
@@ -5302,12 +5346,12 @@ public:
             len = 0;
         } else {
             if (m_interruptAtMessage == m_messageCount) {
-                 SE_LOG_DEBUG(NULL, NULL, "UserSuspendInjector: user suspend after getting reply #%d", m_messageCount);
+                 SE_LOG_DEBUG(NULL, "UserSuspendInjector: user suspend after getting reply #%d", m_messageCount);
             }
             m_messageCount++;
             if (m_interruptAtMessage >= 0 &&
                     m_messageCount > m_interruptAtMessage) {
-                m_options->m_isSuspended = true;
+                m_options->m_isSuspended = SuspendFlags::getSuspendFlags().suspend();
             }
             m_wrappedAgent->getReply(data, len, contentType);
         }
@@ -5889,7 +5933,7 @@ void SyncTests::doSync(const SyncOptions &options)
     simplifyFilename(logname);
     syncCounter++;
 
-    SE_LOG_DEBUG(NULL, NULL, "%d. starting %s with sync mode %s",
+    SE_LOG_DEBUG(NULL, "%d. starting %s with sync mode %s",
                  syncCounter, logname.c_str(), PrettyPrintSyncMode(options.m_syncMode).c_str());
 
     try {
@@ -6013,7 +6057,6 @@ public:
             }
         }
         alltests->addTest(FilterTest(tests));
-        tests = 0;
 
         // create sync tests with just one source
         tests = new CppUnit::TestSuite(alltests->getName() + "::Sync");
@@ -6190,6 +6233,7 @@ std::string ClientTest::import(ClientTest &client, TestingSyncSource &source, co
 {
     list<string> items;
     getItems(file, items, realfile);
+    SE_LOG_DEBUG(NULL, "importing %d test cases from file %s", (int)items.size(), realfile.c_str());
     std::string failures;
     bool doImport = !luids || luids->empty();
     std::list<std::string>::const_iterator it;
@@ -6280,8 +6324,10 @@ bool ClientTest::compare(ClientTest &client, const std::string &fileA, const std
         }
     }
     if (!success) {
-        printf("failed: env CLIENT_TEST_SERVER=%s synccompare %s %s\n",
-               currentServer().c_str(),
+        printf("failed: env CLIENT_TEST_SERVER=%s 'CLIENT_TEST_STRIP_PARAMETERS=%s' 'CLIENT_TEST_STRIP_PROPERTIES=%s'synccompare %s %s\n",
+               getEnv("CLIENT_TEST_SERVER", ""),
+               getEnv("CLIENT_TEST_STRIP_PARAMETERS", ""),
+               getEnv("CLIENT_TEST_STRIP_PROPERTIES", ""),
                fileA.c_str(), fileB.c_str());
     }
     return success;
@@ -6325,7 +6371,7 @@ void ClientTest::postSync(int res, const std::string &logname)
 
         if (fd >= 0) {
             int out = open((logname + ".server.log").c_str(), O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP);
-            if (out) {
+            if (out >= 0) {
                 char buffer[4096];
                 bool cont = true;
                 ssize_t len;
@@ -6357,7 +6403,7 @@ void ClientTest::postSync(int res, const std::string &logname)
 #endif
 }
 
-static string mangleGeneric(const std::string &data, bool update)
+static string mangleGeneric(const std::string &data, bool update, const std::string &uniqueUIDSuffix)
 {
     std::string item = data;
     if (update) {
@@ -6366,7 +6412,7 @@ static string mangleGeneric(const std::string &data, bool update)
     return item;
 }
 
-static string mangleICalendar20(const std::string &data, bool update)
+static string mangleICalendar20(const std::string &data, bool update, const std::string &uniqueUIDSuffix)
 {
     std::string item = data;
     std::string type;
@@ -6390,7 +6436,8 @@ static string mangleICalendar20(const std::string &data, bool update)
         boost::replace_all(item, "UID:1234567890!@#$%^&*()<>@dummy", "UID:1234567890@dummy");
     }
 
-    if (getenv("CLIENT_TEST_UNIQUE_UID")) {
+    const char *uniqueUID = getenv("CLIENT_TEST_UNIQUE_UID");
+    if (uniqueUID) {
         // Making UID unique per test to avoid issues
         // when the source already holds older copies.
         // Might still be an issue in real life?!
@@ -6402,6 +6449,13 @@ static string mangleICalendar20(const std::string &data, bool update)
         }
         std::string unique = StringPrintf("UID:UNIQUE-UID-%llu-", (long long unsigned)start);
         boost::replace_all(item, "UID:", unique);
+        if (atoi(uniqueUID) > 1) {
+            // Also avoid reusing the same UID inside the same test.
+            // Required by Google CalDAV in calendar testChanges, because
+            // they keep even deleted items around and check the SEQUENCE
+            // number against their old data.
+            boost::replace_all(item, "UNIQUE-UID", "UNIQUE-UID" + uniqueUIDSuffix);
+        }
     } else if (getenv("CLIENT_TEST_LONG_UID")) {
         boost::replace_all(item, "UID:", "UID:this-is-a-ridiculously-long-uid-");
     }
@@ -6467,7 +6521,7 @@ static std::string additionalYearly(const std::string &single,
     }
 
 
-    SE_LOG_DEBUG(NULL, NULL, "additional yearly: start %d, skip %d, index %d/%d:\n%s",
+    SE_LOG_DEBUG(NULL, "additional yearly: start %d, skip %d, index %d/%d:\n%s",
                  start, skip, index, total,
                  event.c_str());
     return event;
@@ -6509,7 +6563,7 @@ static std::string additionalMonthly(const std::string &single,
         }
     }
 
-    SE_LOG_DEBUG(NULL, NULL, "additional monthly: start %d, skip %d, index %d/%d:\n%s",
+    SE_LOG_DEBUG(NULL, "additional monthly: start %d, skip %d, index %d/%d:\n%s",
                  start, skip, index, total,
                  event.c_str());
     return event;
@@ -6631,7 +6685,7 @@ static std::string additionalWeekly(const std::string &single,
         }
     }
 
-    SE_LOG_DEBUG(NULL, NULL, "additional weekly: start %d, skip %d, index %d/%d:\n%s",
+    SE_LOG_DEBUG(NULL, "additional weekly: start %d, skip %d, index %d/%d:\n%s",
                  start, skip, index, total,
                  event.c_str());
     return event;
@@ -7680,7 +7734,7 @@ void CheckSyncReport::check(SyncMLStatus status, SyncReport &report) const
                         serverAdded, serverUpdated, serverDeleted);
     str << "Expected sync mode: " << PrettyPrintSyncMode(syncMode) << "\n";
     str << "Expected cycles: " << restarts + 1 << "\n";
-    SE_LOG_INFO(NULL, NULL, "sync report:\n%s\n", str.str().c_str());
+    SE_LOG_INFO(NULL, "sync report:\n%s\n", str.str().c_str());
 
     if (mustSucceed) {
         // both STATUS_OK and STATUS_HTTP_OK map to the same
@@ -7694,13 +7748,13 @@ void CheckSyncReport::check(SyncMLStatus status, SyncReport &report) const
         const std::string &name = entry.first;
         const SyncSourceReport &source = entry.second;
 
-        SE_LOG_DEBUG(NULL, NULL, "Checking sync source %s...", name.c_str());
+        SE_LOG_DEBUG(NULL, "Checking sync source %s...", name.c_str());
         if (mustSucceed) {
             CLIENT_TEST_EQUAL(name, STATUS_OK, source.getStatus());
         }
         check(name, source);
     }
-    SE_LOG_DEBUG(NULL, NULL, "Done with checking sync report.");
+    SE_LOG_DEBUG(NULL, "Done with checking sync report.");
 }
 
 void CheckSyncReport::check(const std::string &name, const SyncSourceReport &source) const

@@ -38,6 +38,7 @@
 
 #include "libeassync.h"
 #include <eas-item-info.h>
+#include <eas-folder.h>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -179,6 +180,8 @@ class ActiveSyncSource :
     void setStartSyncKey(const std::string &startSyncKey) { m_startSyncKey = startSyncKey; }
     std::string getCurrentSyncKey() { return m_currentSyncKey; }
     void setCurrentSyncKey(const std::string &currentSyncKey) { m_currentSyncKey = currentSyncKey; }
+    void findCollections(const std::string &account, bool force_update);
+    std::string lookupFolder(const std::string &folder);
 
     boost::shared_ptr<ConfigNode> m_itemNode;
 
@@ -212,6 +215,33 @@ class ActiveSyncSource :
      * changes are made (if doing change tracking)
      */
     std::map<std::string, std::string> m_items;
+
+    /**
+     * list of folders
+     */
+    typedef struct Collection {
+	std::string collectionId;
+	std::string name;
+	std::string parentId;
+	std::string pathName;
+	unsigned type;
+	bool pathFound;
+	ActiveSyncSource *source;
+
+        Collection() :
+            type(0),
+            pathFound(false),
+            source(NULL)
+        {}
+
+	int getFolderType();
+	bool collectionIsDefault();
+	std::string fullPath();
+
+    } collection;
+    std::map<std::string, Collection> m_collections; // Indexed by collectionID
+    typedef std::map<std::string, std::string> FolderPaths;
+    FolderPaths m_folderPaths; // Maps pathName to collectionId
 };
 
 class ActiveSyncContactSource : public ActiveSyncSource
@@ -262,6 +292,11 @@ typedef GListCXX<char, GSList, GStringUnref> EASIdsCXX;
 
 /** non-copyable smart pointer to an EasItemInfo, unrefs when going out of scope */
 typedef eptr<EasItemInfo, GObject> EASItemPtr;
+
+void EASFolderUnref(EasFolder *f);
+
+/** non-copyable list of EasFolder pointers, owned by list */
+typedef GListCXX<EasFolder, GSList, EASFolderUnref> EASFoldersCXX;
 
 SE_END_CXX
 

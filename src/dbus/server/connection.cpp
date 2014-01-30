@@ -31,7 +31,7 @@ SE_BEGIN_CXX
 
 void Connection::failed(const std::string &reason)
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: failed: %s (old state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: failed: %s (old state %s)",
                  m_sessionID.c_str(),
                  reason.c_str(),
                  SessionCommon::ConnectionStateToString(m_state).c_str());
@@ -96,11 +96,18 @@ std::string Connection::buildDescription(const StringMap &peer)
     return buffer;
 }
 
+static bool IsSyncML(const std::string &messageType)
+{
+    return messageType == TransportAgent::m_contentTypeSyncML ||
+        messageType == TransportAgent::m_contentTypeSyncWBXML;
+}
+
+
 void Connection::process(const Caller_t &caller,
                          const GDBusCXX::DBusArray<uint8_t> &message,
                          const std::string &message_type)
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: D-Bus client %s sends %lu bytes, %s (old state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: D-Bus client %s sends %lu bytes, %s (old state %s)",
                  m_sessionID.c_str(),
                  caller.c_str(),
                  (unsigned long)message.first,
@@ -109,13 +116,13 @@ void Connection::process(const Caller_t &caller,
 
     boost::shared_ptr<Client> client(m_server.findClient(caller));
     if (!client) {
-        throw runtime_error("unknown client");
+        SE_THROW("unknown client");
     }
 
     boost::shared_ptr<Connection> myself =
         boost::static_pointer_cast<Connection, Resource>(client->findResource(this));
     if (!myself) {
-        throw runtime_error("client does not own connection");
+        SE_THROW("client does not own connection");
     }
 
     // any kind of error from now on terminates the connection
@@ -142,7 +149,7 @@ void Connection::process(const Caller_t &caller,
                     // whether it is a SAN package or a normal sync pacakge
                     if (message_type == TransportAgent::m_contentTypeServerAlertedNotificationDS) {
                         config = "default";
-                        SE_LOG_DEBUG(NULL, NULL, "SAN parsing failed, falling back to 'default' config");
+                        SE_LOG_DEBUG(NULL, "SAN parsing failed, falling back to 'default' config");
                     }
                 } else { //Server alerted notification case
                     // Extract server ID and match it against a server
@@ -178,7 +185,7 @@ void Connection::process(const Caller_t &caller,
                                 vector<string> urls = conf.getSyncURL();
                                 BOOST_FOREACH (string &url, urls){
                                     url = url.substr (0, url.find("+"));
-                                    SE_LOG_DEBUG (NULL, NULL, "matching against %s",url.c_str());
+                                    SE_LOG_DEBUG(NULL, "matching against %s",url.c_str());
                                     if (url.find ("obex-bt://") ==0 && url.substr(strlen("obex-bt://"), url.npos) == m_peerBtAddr) {
                                         config = server.first;
                                         break;
@@ -204,14 +211,12 @@ void Connection::process(const Caller_t &caller,
                     // create a default configuration name if none matched
                     if (config.empty()) {
                         config = serverID+"_"+getCurrentTime();
-                        SE_LOG_DEBUG(NULL,
-                                     NULL,
-                                     "SAN Server ID '%s' unknown, falling back to automatically created '%s' config",
+                        SE_LOG_DEBUG(NULL, "SAN Server ID '%s' unknown, falling back to automatically created '%s' config",
                                      serverID.c_str(), config.c_str());
                     }
 
 
-                    SE_LOG_DEBUG(NULL, NULL, "SAN sync with config %s", config.c_str());
+                    SE_LOG_DEBUG(NULL, "SAN sync with config %s", config.c_str());
 
                     m_SANContent.reset (new SANContent ());
                     // extract number of sources
@@ -220,22 +225,22 @@ void Connection::process(const Caller_t &caller,
                     uint32_t contentType;
                     std::string serverURI;
                     if (!numSources) {
-                        SE_LOG_DEBUG(NULL, NULL, "SAN message with no sources, using selected modes");
+                        SE_LOG_DEBUG(NULL, "SAN message with no sources, using selected modes");
                         // Synchronize all known sources with the default mode.
                         if (san.GetNthSync(0, syncType, contentType, serverURI)) {
-                            SE_LOG_DEBUG(NULL, NULL, "SAN invalid header, using default modes");
+                            SE_LOG_DEBUG(NULL, "SAN invalid header, using default modes");
                         } else if (syncType < SYNC_FIRST || syncType > SYNC_LAST) {
-                            SE_LOG_DEBUG(NULL, NULL, "SAN invalid sync type %d, using default modes", syncType);
+                            SE_LOG_DEBUG(NULL, "SAN invalid sync type %d, using default modes", syncType);
                         } else {
                             m_syncMode = PrettyPrintSyncMode(SyncMode(syncType), true);
-                            SE_LOG_DEBUG(NULL, NULL, "SAN sync mode for all configured sources: %s", m_syncMode.c_str());
+                            SE_LOG_DEBUG(NULL, "SAN sync mode for all configured sources: %s", m_syncMode.c_str());
                         }
                     } else {
                         for (int sync = 1; sync <= numSources; sync++) {
                             if (san.GetNthSync(sync, syncType, contentType, serverURI)) {
-                                SE_LOG_DEBUG(NULL, NULL, "SAN invalid sync entry #%d", sync);
+                                SE_LOG_DEBUG(NULL, "SAN invalid sync entry #%d", sync);
                             } else if (syncType < SYNC_FIRST || syncType > SYNC_LAST) {
-                                SE_LOG_DEBUG(NULL, NULL, "SAN invalid sync type %d for entry #%d, ignoring entry", syncType, sync);
+                                SE_LOG_DEBUG(NULL, "SAN invalid sync type %d for entry #%d, ignoring entry", syncType, sync);
                             } else {
                                 std::string syncMode = PrettyPrintSyncMode(SyncMode(syncType), true);
                                 m_SANContent->m_syncType.push_back (syncMode);
@@ -247,13 +252,12 @@ void Connection::process(const Caller_t &caller,
                 }
                 // TODO: use the session ID set by the server if non-null
             } else if (// relaxed checking for XML: ignore stuff like "; CHARSET=UTF-8"
-                       message_type.substr(0, message_type.find(';')) == TransportAgent::m_contentTypeSyncML ||
-                       message_type == TransportAgent::m_contentTypeSyncWBXML) {
+                       IsSyncML(message_type.substr(0, message_type.find(';')))) {
                 // run a new SyncML session as server
                 serverMode = true;
                 if (m_peer.find("config") == m_peer.end() &&
                     !m_peer["config"].empty()) {
-                    SE_LOG_DEBUG(NULL, NULL, "ignoring pre-chosen config '%s'",
+                    SE_LOG_DEBUG(NULL, "ignoring pre-chosen config '%s'",
                                  m_peer["config"].c_str());
                 }
 
@@ -265,14 +269,14 @@ void Connection::process(const Caller_t &caller,
                                                          message_type);
                 if (info.m_deviceID.empty()) {
                     // TODO: proper exception
-                    throw runtime_error("could not extract LocURI=deviceID from initial message");
+                    SE_THROW("could not extract LocURI=deviceID from initial message");
                 }
                 BOOST_FOREACH(const SyncConfig::ConfigList::value_type &entry,
                               SyncConfig::getConfigs()) {
                     SyncConfig peer(entry.first);
                     if (info.m_deviceID == peer.getRemoteDevID()) {
                         config = entry.first;
-                        SE_LOG_INFO(NULL, NULL, "matched %s against config %s (%s)",
+                        SE_LOG_INFO(NULL, "matched %s against config %s (%s)",
                                     info.toString().c_str(),
                                     entry.first.c_str(),
                                     entry.second.c_str());
@@ -284,14 +288,13 @@ void Connection::process(const Caller_t &caller,
                 }
                 if (config.empty()) {
                     // TODO: proper exception
-                    throw runtime_error(string("no configuration found for ") +
-                                        info.toString());
+                    SE_THROW(string("no configuration found for ") + info.toString());
                 }
 
                 // identified peer, still need to abort previous sessions below
                 peerDeviceID = info.m_deviceID;
             } else {
-                throw runtime_error(StringPrintf("message type '%s' not supported for starting a sync", message_type.c_str()));
+                SE_THROW(StringPrintf("message type '%s' not supported for starting a sync", message_type.c_str()));
             }
 
             // run session as client or server
@@ -300,6 +303,7 @@ void Connection::process(const Caller_t &caller,
                                                peerDeviceID,
                                                config,
                                                m_sessionID);
+            m_session->activate();
             if (serverMode) {
                 m_session->initServer(SharedBuffer(reinterpret_cast<const char *>(message.second),
                                                    message.first),
@@ -335,7 +339,7 @@ void Connection::process(const Caller_t &caller,
             break;
         }
         case SessionCommon::PROCESSING:
-            throw std::runtime_error("protocol error: already processing a message");
+            SE_THROW("protocol error: already processing a message");
             break;
         case SessionCommon::WAITING:
             m_incomingMsg = SharedBuffer(reinterpret_cast<const char *>(message.second),
@@ -348,15 +352,15 @@ void Connection::process(const Caller_t &caller,
             m_timeout.deactivate();
             break;
         case SessionCommon::FINAL:
-            throw std::runtime_error("protocol error: final reply sent, no further message processing possible");
+            SE_THROW("protocol error: final reply sent, no further message processing possible");
         case SessionCommon::DONE:
-            throw std::runtime_error("protocol error: connection closed, no further message processing possible");
+            SE_THROW("protocol error: connection closed, no further message processing possible");
             break;
         case SessionCommon::FAILED:
-            throw std::runtime_error(m_failure);
+            SE_THROW(m_failure);
             break;
         default:
-            throw std::runtime_error("protocol error: unknown internal state");
+            SE_THROW("protocol error: unknown internal state");
             break;
         }
     } catch (const std::exception &error) {
@@ -372,7 +376,7 @@ void Connection::send(const DBusArray<uint8_t> buffer,
                       const std::string &type,
                       const std::string &url)
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: send %lu bytes, %s, %s (old state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: send %lu bytes, %s, %s (old state %s)",
                  m_sessionID.c_str(),
                  (unsigned long)buffer.first,
                  type.c_str(),
@@ -398,7 +402,7 @@ void Connection::send(const DBusArray<uint8_t> buffer,
 
 void Connection::sendFinalMsg()
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: shut down (old state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: shut down (old state %s)",
                  m_sessionID.c_str(),
                  SessionCommon::ConnectionStateToString(m_state).c_str());
     if (m_state == SessionCommon::PROCESSING) {
@@ -414,7 +418,7 @@ void Connection::close(const Caller_t &caller,
                        bool normal,
                        const std::string &error)
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: client %s closes connection %s %s%s%s (old state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: client %s closes connection %s %s%s%s (old state %s)",
                  m_sessionID.c_str(),
                  caller.c_str(),
                  getPath(),
@@ -425,7 +429,7 @@ void Connection::close(const Caller_t &caller,
 
     boost::shared_ptr<Client> client(m_server.findClient(caller));
     if (!client) {
-        throw runtime_error("unknown client");
+        SE_THROW("unknown client");
     }
 
     // Remove reference to us from client, will destruct *this*
@@ -464,13 +468,13 @@ void Connection::close(const Caller_t &caller,
 void Connection::abort()
 {
     if (!m_abortSent) {
-        SE_LOG_DEBUG(NULL, NULL, "Connection %s: send abort to client (state %s)",
+        SE_LOG_DEBUG(NULL, "Connection %s: send abort to client (state %s)",
                      m_sessionID.c_str(),
                      SessionCommon::ConnectionStateToString(m_state).c_str());
         sendAbort();
         m_abortSent = true;
     } else {
-        SE_LOG_DEBUG(NULL, NULL, "Connection %s: not sending abort to client, already done (state %s)",
+        SE_LOG_DEBUG(NULL, "Connection %s: not sending abort to client, already done (state %s)",
                      m_sessionID.c_str(),
                      SessionCommon::ConnectionStateToString(m_state).c_str());
     }
@@ -479,7 +483,7 @@ void Connection::abort()
 
 void Connection::shutdown()
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: self-destructing (state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: self-destructing (state %s)",
                  m_sessionID.c_str(),
                  SessionCommon::ConnectionStateToString(m_state).c_str());
     // trigger removal of this connection by removing all
@@ -513,7 +517,7 @@ Connection::Connection(Server &server,
     add(reply);
     m_server.autoTermRef();
 
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: created",
+    SE_LOG_DEBUG(NULL, "Connection %s: created",
                  m_sessionID.c_str());
 }
 
@@ -530,7 +534,7 @@ boost::shared_ptr<Connection> Connection::createConnection(Server &server,
 
 Connection::~Connection()
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: done with '%s'%s%s%s (old state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: done with '%s'%s%s%s (old state %s)",
                  m_sessionID.c_str(),
                  m_description.c_str(),
                  m_state == SessionCommon::DONE ? ", normal shutdown" : " unexpectedly",
@@ -555,7 +559,7 @@ Connection::~Connection()
 
 void Connection::ready()
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: ready to run (old state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: ready to run (old state %s)",
                  m_sessionID.c_str(),
                  SessionCommon::ConnectionStateToString(m_state).c_str());
 
@@ -563,7 +567,7 @@ void Connection::ready()
     std::string configName = m_session->getConfigName();
     SyncConfig config (configName);
     if (!config.exists() && m_SANContent) {
-        SE_LOG_DEBUG (NULL, NULL, "Configuration %s not exists for a runnable session in a SAN context, create it automatically", configName.c_str());
+        SE_LOG_DEBUG(NULL, "Configuration %s not exists for a runnable session in a SAN context, create it automatically", configName.c_str());
         ReadOperations::Config_t from;
         const std::string templateName = "SyncEvolution";
         // TODO: support SAN from other well known servers
@@ -599,7 +603,7 @@ void Connection::ready()
                 // additional parameters (like date
                 // range selection for events)
                 if (boost::starts_with(sourceConfig->getURINonEmpty(), serverURI)) {
-                    SE_LOG_DEBUG(NULL, NULL,
+                    SE_LOG_DEBUG(NULL,
                                  "SAN entry #%d = source %s with mode %s",
                                  (int)sync, source.c_str(), syncMode.c_str());
                     m_sourceModes[source] = syncMode;
@@ -608,13 +612,13 @@ void Connection::ready()
                 }
             }
             if (!found) {
-                SE_LOG_DEBUG(NULL, NULL,
+                SE_LOG_DEBUG(NULL,
                              "SAN entry #%d with mode %s ignored because Server URI %s is unknown",
                              (int)sync, syncMode.c_str(), serverURI.c_str());
             }
         }
         if (m_sourceModes.empty()) {
-            SE_LOG_DEBUG(NULL, NULL,
+            SE_LOG_DEBUG(NULL,
                     "SAN message with no known entries, falling back to default");
             m_syncMode = "";
         }
@@ -640,7 +644,7 @@ void Connection::activateTimeout()
 
 void Connection::timeoutCb()
 {
-    SE_LOG_DEBUG(NULL, NULL, "Connection %s: timed out after %ds (state %s)",
+    SE_LOG_DEBUG(NULL, "Connection %s: timed out after %ds (state %s)",
                  m_sessionID.c_str(), m_timeoutSeconds,
                  SessionCommon::ConnectionStateToString(m_state).c_str());
     failed(StringPrintf("timed out after %ds", m_timeoutSeconds));

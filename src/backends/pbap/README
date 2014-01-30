@@ -1,0 +1,127 @@
+Usage
+=====
+
+The "pbap" backend provides access to an addressbook stored in a
+remote device using the Bluetooth PBAP protocol. This is achieved
+using the D-Bus services from obex-client (obexd), which needs to
+be running.
+
+The "database" property specifies the Bluetooth address of the
+device to be connected.
+
+The "databaseFormat" can be used as follows:
+
+      [(2.1|3.0)][:][^]propname,propname,...
+
+      3.0 = download in vCard 3.0 instead of the default 2.1
+      3.0:^PHOTO = download in vCard 3.0 format, excluding PHOTO
+      PHOTO = download in vCard 2.1 format, only the PHOTO
+
+Valid property names are the ones listed by obexd in
+ListFilterFields(). These fields may include:
+     VERSION
+     FN
+     N
+     PHOTO
+     BDAY
+     ADR
+     LABEL
+     TEL
+     EMAIL
+     MAILER
+     TZ
+     GEO
+     TITLE
+     ROLE
+     LOGO
+     AGENT
+     ORG
+     NOTE
+     REV
+     SOUND
+     URL
+     UID
+     KEY
+     NICKNAME
+     CATEGORIES
+     CLASS
+     BITxy (for different values of xy)
+
+Set "SYNCEVOLUTION_DEBUG=1" as environment variable when using the
+backend to see a list of filter fields supported by obexd.
+
+Syncing
+=======
+
+The backend itself is not able to detect changes since the last
+sync, mostly because PBAP as a protocol makes that hard. For example,
+it makes no guarantee that an item has the same ID in two different
+sessions.
+
+The intended use for the PBAP backend therefore is in the "slow local
+cache" sync mode: always pull all data and let the sync engine update
+a local database. The local database is not allowed to be modified
+outside of the sync. Any such change may get lost at any time.
+
+
+# configure backend
+#
+#
+# Preventing a slow sync is possible in local-cache mode. It
+# makes no sense for PBAP and thus has to be turned off.
+syncevolution --configure \
+                syncURL= \
+                addressbook/backend=pbap \
+		addressbook/database=obex-bt://XX:XX:XX:XX:XX:XX \
+                preventSlowSync=false \
+                target-config@pbap addressbook
+
+# print items
+syncevolution --print-items \
+ 	        target-config@pbap addressbook
+
+# Configure synchronization.
+#
+# 'local-cache' expands to 'local-cache-incremental', which will try
+# to do an incremental sync but be turned into a slow sync by
+# the PBAP backend.
+syncevolution --configure \
+                --template SyncEvolution_Client \
+                syncURL=local://@pbap \
+                sync=local-cache \
+                pbap addressbook
+
+# run synchronization
+syncevolution pbap
+
+
+It may or may not be desirable to sync only the text properties of a
+contact. This can be considerably faster, because the PHOTO property
+is large and increases the download and processing time. SyncEvolution
+supports that in three different ways, chosen via the
+SYNCEVOLUTION_PBAP_SYNC env variable:
+
+SYNCEVOLUTION_PBAP_SYNC=text syncevolution pbap
+  Synchronize only the text properties by excluding the PHOTO property,
+  keep all photos already stored locally.
+
+SYNCEVOLUTION_PBAP_SYNC=all syncevolution pbap
+  Synchronize all properties according to the databaseFormat in one go,
+  adding/updating/removing photos locally to match the phone.
+
+SYNCEVOLUTION_PBAP_SYNC=incremental syncevolution pbap
+  Synchronize first text, then all data. Conceptually this is the same
+  as two invocations with "text" and then "all". Because the implementation
+  reuses the same PBAP session and sync session, it is slightly faster.
+  It is slower than a single "all" sync because the entire set of contacts
+  must be downloaded and synced twice, once without photo, then with.
+
+SYNCEVOLUTION_PBAP_SYNC has side effect on the entire sync and thus
+may only be used in a sync config which synchronizes contacts via
+PBAP.
+
+The PIM Manager defaults to SYNCEVOLUTION_PBAP_SYNC=incremental. This
+can be overriden by setting the env variable when starting
+syncevo-dbus-server, for example by patching
+src/dbus/server/syncevo-dbus-server-startup.sh.in =
+/usr/libexec/syncevo-dbus-server-startup.sh.

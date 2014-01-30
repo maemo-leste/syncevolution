@@ -17,6 +17,14 @@ endif
 lib_LTLIBRARIES += src/syncevo/libsyncevolution.la
 
 src_syncevo_sources = \
+  src/syncevo/GeeSupport.h \
+  src/syncevo/GValueSupport.h \
+  src/syncevo/EDSClient.h \
+  src/syncevo/EDSClient.cpp \
+  \
+  src/syncevo/IdentityProvider.h \
+  src/syncevo/IdentityProvider.cpp \
+  \
   src/syncevo/ConfigTree.h \
   src/syncevo/ConfigFilter.h \
   src/syncevo/ConfigFilter.cpp \
@@ -31,6 +39,7 @@ src_syncevo_sources = \
   src/syncevo/eds_abi_wrapper.cpp \
   src/syncevo/GLibSupport.h \
   src/syncevo/GLibSupport.cpp \
+  src/syncevo/ThreadSupport.h \
   \
   src/syncevo/SyncML.h \
   src/syncevo/SyncML.cpp \
@@ -40,6 +49,8 @@ src_syncevo_sources = \
   \
   src/syncevo/Logging.h \
   src/syncevo/Logging.cpp \
+  src/syncevo/LogDLT.h \
+  src/syncevo/LogDLT.cpp \
   src/syncevo/LogStdout.h \
   src/syncevo/LogStdout.cpp \
   src/syncevo/LogRedirect.h \
@@ -61,6 +72,9 @@ src_syncevo_sources = \
   src/syncevo/util.cpp \
   src/syncevo/util.h \
   src/syncevo/BoostHelper.h \
+  \
+  src/syncevo/TmpFile.cpp \
+  src/syncevo/TmpFile.h \
   \
   src/syncevo/Timespec.h \
   \
@@ -141,6 +155,7 @@ src_syncevo_libsyncevolution_include_HEADERS = \
   src/syncevo/Cmdline.h \
   src/syncevo/ConfigFilter.h \
   src/syncevo/GLibSupport.h \
+  src/syncevo/ThreadSupport.h \
   src/syncevo/TrackingSyncSource.h  \
   src/syncevo/MapSyncSource.h \
   src/syncevo/LogRedirect.h \
@@ -152,6 +167,7 @@ src_syncevo_libsyncevolution_include_HEADERS = \
   src/syncevo/SafeConfigNode.h \
   src/syncevo/SyncConfig.h \
   src/syncevo/SyncSource.h \
+  src/syncevo/IdentityProvider.h \
   src/syncevo/util.h \
   src/syncevo/BoostHelper.h \
   src/syncevo/SuspendFlags.h \
@@ -189,7 +205,6 @@ src_syncevo_libsyncevolution_la_SOURCES = $(src_syncevo_sources)
 nodist_src_syncevo_libsyncevolution_la_SOURCES = src/syncevo/SyncEvolutionXML.c
 CLEANFILES += src/syncevo/SyncEvolutionXML.c
 src_syncevo_libsyncevolution_la_LIBADD = \
-  @EPACKAGE_LIBS@ \
   @GIO_LIBS@ \
   @GTHREAD_LIBS@ \
   @GLIB_LIBS@ \
@@ -198,6 +213,7 @@ src_syncevo_libsyncevolution_la_LIBADD = \
   $(TRANSPORT_LIBS) \
   @LIBS@ \
   $(src_syncevo_ldadd) \
+  $(DLT_LIBS) \
   $(DBUS_LIBS) \
   $(NSS_LIBS)
 if ENABLE_MODULES
@@ -214,12 +230,13 @@ src_syncevo_libsyncevolution_la_CFLAGS = \
   $(SYNCEVO_WFLAGS)
 src_syncevo_libsyncevolution_la_CPPFLAGS = \
   $(src_syncevo_cppflags) \
+  $(DLT_CFLAGS) \
   $(DBUS_CFLAGS) \
   -DDATA_DIR=\""$(pkgdatadir)"\" \
   -DXML_CONFIG_DIR=\""$(datadir)/syncevolution/xml"\" \
   -DTEMPLATE_DIR=\""$(datadir)/syncevolution/templates"\" \
   -DLIBDIR=\""$(libdir)"\"
-src_syncevo_libsyncevolution_la_DEPENDENCIES = $(SYNTHESIS_DEP) $(src_syncevo_ldadd)
+src_syncevo_libsyncevolution_la_DEPENDENCIES = $(SYNTHESIS_DEP) $(filter %.la, $(src_syncevo_ldadd))
 
 # rule which is only relevant when compiling Synthesis in subdirectory
 src/build-synthesis/libsynthesissdk.la: $(SYNTHESIS_SUBDIR)/all

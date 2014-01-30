@@ -25,10 +25,15 @@
 #include "info-req.h"
 #include "session-common.h"
 #include "dbus-callbacks.h"
+#include "presence-status.h"
 
 #include <syncevo/ForkExec.h>
 #include <syncevo/SyncContext.h>
 #include <syncevo/BoostHelper.h>
+
+#ifdef USE_DLT
+#include <syncevo/LogDLT.h>
+#endif
 
 #include <memory>
 
@@ -42,9 +47,9 @@ SE_BEGIN_CXX
 class SessionProxy : public GDBusCXX::DBusRemoteObject
 {
 public:
-  SessionProxy(const GDBusCXX::DBusConnectionPtr &conn) :
+    SessionProxy(const GDBusCXX::DBusConnectionPtr &conn, const std::string &instance) :
     GDBusCXX::DBusRemoteObject(conn.get(),
-                               SessionCommon::HELPER_PATH,
+                               std::string(SessionCommon::HELPER_PATH) + "/" + instance,
                                SessionCommon::HELPER_IFACE,
                                SessionCommon::HELPER_DESTINATION,
                                true), // This is a one-to-one connection. Close it.
@@ -73,6 +78,7 @@ public:
     m_logOutput(*this, "LogOutput", false),
     m_syncProgress(*this, "SyncProgress", false),
     m_sourceProgress(*this, "SourceProgress", false),
+    m_sourceSynced(*this, "SourceSynced", false),
     m_waiting(*this, "Waiting", false),
     m_syncSuccessStart(*this, "SyncSuccessStart", false),
     m_configChanged(*this, "ConfigChanged", false),
@@ -86,7 +92,7 @@ public:
     /* GDBusCXX::DBusClientCall1<std::vector<StringMap> >           m_getReports; */
     /* GDBusCXX::DBusClientCall0                                    m_checkSource; */
     /* GDBusCXX::DBusClientCall1<ReadOperations::SourceDatabases_t> m_getDatabases; */
-    GDBusCXX::DBusClientCall1<bool> m_sync;
+    GDBusCXX::DBusClientCall2<bool, SyncReport> m_sync;
     GDBusCXX::DBusClientCall1<bool> m_restore;
     GDBusCXX::DBusClientCall1<bool> m_execute;
     /* GDBusCXX::DBusClientCall0                                    m_serverShutdown; */
@@ -102,6 +108,7 @@ public:
     GDBusCXX::SignalWatch6<sysync::TProgressEventEnum,
                            std::string, SyncMode,
                            int32_t, int32_t, int32_t> m_sourceProgress;
+    GDBusCXX::SignalWatch2<std::string, SyncSourceReport> m_sourceSynced;
     GDBusCXX::SignalWatch1<bool> m_waiting;
     GDBusCXX::SignalWatch0 m_syncSuccessStart;
     GDBusCXX::SignalWatch0 m_configChanged;
@@ -157,12 +164,12 @@ static void copyProperty(const StringPair &keyvalue,
 static void setSyncFilters(const ReadOperations::Config_t &config,FilterConfigNode::ConfigFilter &syncFilter,std::map<std::string, FilterConfigNode::ConfigFilter> &sourceFilters)
 {
     ReadOperations::Config_t::const_iterator it;
-    for (it = config.begin(); it != config.end(); it++) {
+    for (it = config.begin(); it != config.end(); ++it) {
         map<string, string>::const_iterator sit;
         string name = it->first;
         if (name.empty()) {
             ConfigPropertyRegistry &registry = SyncConfig::getRegistry();
-            for (sit = it->second.begin(); sit != it->second.end(); sit++) {
+            for (sit = it->second.begin(); sit != it->second.end(); ++sit) {
                 // read-only properties can (and have to be) ignored
                 static const char *init[] = {
                     "configName",
@@ -184,7 +191,7 @@ static void setSyncFilters(const ReadOperations::Config_t &config,FilterConfigNo
             name = name.substr(strlen("source/"));
             FilterConfigNode::ConfigFilter &sourceFilter = sourceFilters[name];
             ConfigPropertyRegistry &registry = SyncSourceConfig::getRegistry();
-            for (sit = it->second.begin(); sit != it->second.end(); sit++) {
+            for (sit = it->second.begin(); sit != it->second.end(); ++sit) {
                 copyProperty(*sit, registry, sourceFilter);
             }
         } else {
@@ -203,7 +210,7 @@ void Session::setNamedConfig(const std::string &configName,
                              bool update, bool temporary,
                              const ReadOperations::Config_t &config)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (m_runOperation != SessionCommon::OP_NULL) {
         string msg = StringPrintf("%s started, cannot change configuration at this time", runOpToString(m_runOperation).c_str());
         SE_THROW_EXCEPTION(InvalidCall, msg);
@@ -305,16 +312,41 @@ void Session::setNamedConfig(const std::string &configName,
         /* apply user settings */
         from->setConfigFilter(true, "", syncFilter);
         map<string, FilterConfigNode::ConfigFilter>::iterator it;
-        for ( it = sourceFilters.begin(); it != sourceFilters.end(); it++ ) {
+        for (it = sourceFilters.begin(); it != sourceFilters.end(); ++it) {
             from->setConfigFilter(false, it->first, it->second);
         }
-        // run without dedicated user interface and thus without
-        // interactive password requests here (not needed)
+
+        // We need no interactive user interface, but we do need to handle
+        // storing passwords in a keyring here.
         boost::shared_ptr<SyncContext> syncConfig(new SyncContext(configName));
         syncConfig->prepareConfigForWrite();
         syncConfig->copy(*from, NULL);
 
-        syncConfig->preFlush(syncConfig->getUserInterfaceNonNull());
+        class KeyringUI : public UserInterface {
+            InitStateString m_keyring;
+        public:
+            KeyringUI(const InitStateString &keyring) :
+                m_keyring(keyring)
+            {}
+
+            // Implement UserInterface.
+            virtual bool savePassword(const std::string &passwordName,
+                                      const std::string &password,
+                                      const ConfigPasswordKey &key)
+            {
+                return GetSavePasswordSignal()(m_keyring, passwordName, password, key);
+            }
+            virtual void readStdin(std::string &content) { SE_THROW("not implemented"); }
+            virtual std::string askPassword(const std::string &passwordName,
+                                            const std::string &descr,
+                                            const ConfigPasswordKey &key)
+            {
+                SE_THROW("not implemented");
+                return "";
+            }
+
+        } ui(syncConfig->getKeyring());
+        syncConfig->preFlush(ui);
         syncConfig->flush();
         m_setConfig = true;
     }
@@ -322,7 +354,7 @@ void Session::setNamedConfig(const std::string &configName,
 
 void Session::initServer(SharedBuffer data, const std::string &messageType)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     m_serverMode = true;
     m_initialMessage = data;
     m_initialMessageType = messageType;
@@ -330,7 +362,7 @@ void Session::initServer(SharedBuffer data, const std::string &messageType)
 
 void Session::sync(const std::string &mode, const SessionCommon::SourceModes_t &sourceModes)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (m_runOperation == SessionCommon::OP_SYNC) {
         string msg = StringPrintf("%s started, cannot start again", runOpToString(m_runOperation).c_str());
         SE_THROW_EXCEPTION(InvalidCall, msg);
@@ -351,7 +383,7 @@ void Session::sync(const std::string &mode, const SessionCommon::SourceModes_t &
 
 void Session::sync2(const std::string &mode, const SessionCommon::SourceModes_t &sourceModes)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (!m_forkExecParent || !m_helper) {
         SE_THROW("syncing cannot continue, helper died");
     }
@@ -409,12 +441,12 @@ void Session::sync2(const std::string &mode, const SessionCommon::SourceModes_t 
     // the error is recorded before ending the session. Premature
     // exits by the helper are handled by D-Bus, which then will abort
     // the pending method call.
-    m_helper->m_sync.start(params, boost::bind(&Session::dbusResultCb, m_me, "sync()", _1, _2));
+    m_helper->m_sync.start(params, boost::bind(&Session::dbusResultCb, m_me, "sync()", _1, _2, _3));
 }
 
 void Session::abort()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (m_runOperation != SessionCommon::OP_SYNC && m_runOperation != SessionCommon::OP_CMDLINE) {
         SE_THROW_EXCEPTION(InvalidCall, "sync not started, cannot abort at this time");
     }
@@ -435,7 +467,7 @@ void Session::abort()
 
 void Session::suspend()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (m_runOperation != SessionCommon::OP_SYNC && m_runOperation != SessionCommon::OP_CMDLINE) {
         SE_THROW_EXCEPTION(InvalidCall, "sync not started, cannot suspend at this time");
     }
@@ -452,7 +484,7 @@ void Session::suspend()
 
 void Session::abortAsync(const SimpleResult &result)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (!m_forkExecParent) {
         result.done();
     } else {
@@ -469,7 +501,7 @@ void Session::getStatus(std::string &status,
                         uint32_t &error,
                         SourceStatuses_t &sources)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     status = syncStatusToString(m_syncStatus);
     if (m_stepIsWaiting) {
         status += ";waiting";
@@ -482,14 +514,14 @@ void Session::getStatus(std::string &status,
 void Session::getProgress(int32_t &progress,
                           SourceProgresses_t &sources)
 {
-    Session::LoggingGuard guard(this);
-    progress = m_progress;
+    PushLogger<Logger> guard(m_me);
+    progress = m_progData.getProgress();
     sources = m_sourceProgress;
 }
 
 void Session::fireStatus(bool flush)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     std::string status;
     uint32_t error;
     SourceStatuses_t sources;
@@ -506,7 +538,7 @@ void Session::fireStatus(bool flush)
 
 void Session::fireProgress(bool flush)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     int32_t progress;
     SourceProgresses_t sources;
 
@@ -556,8 +588,6 @@ Session::Session(Server &server,
     m_syncStatus(SYNC_QUEUEING),
     m_stepIsWaiting(false),
     m_priority(PRI_DEFAULT),
-    m_progress(0),
-    m_progData(m_progress),
     m_error(0),
     m_statusTimer(100),
     m_progressTimer(50),
@@ -591,26 +621,26 @@ Session::Session(Server &server,
     add(emitStatus);
     add(emitProgress);
 
-    SE_LOG_DEBUG(NULL, NULL, "session %s created", getPath());
+    SE_LOG_DEBUG(NULL, "session %s created", getPath());
 }
 
 void Session::passwordRequest(const std::string &descr, const ConfigPasswordKey &key)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     m_passwordRequest = m_server.passwordRequest(descr, key, m_me);
 }
 
-void Session::dbusResultCb(const std::string &operation, bool success, const std::string &error) throw()
+void Session::dbusResultCb(const std::string &operation, bool success, const SyncReport &report, const std::string &error) throw()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
-        SE_LOG_DEBUG(NULL, NULL, "%s helper call completed, %s",
+        SE_LOG_DEBUG(NULL, "%s helper call completed, %s",
                      operation.c_str(),
                      !error.empty() ? error.c_str() :
                      success ? "<<successfully>>" :
                      "<<unsuccessfully>>");
         if (error.empty()) {
-            doneCb(success);
+            doneCb(success, report);
         } else {
             // Translate back into local exception, will be handled by
             // catch clause and (eventually) failureCb().
@@ -626,7 +656,7 @@ void Session::dbusResultCb(const std::string &operation, bool success, const std
 
 void Session::failureCb() throw()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
         if (m_status == SESSION_DONE) {
             // ignore errors that happen after session already closed,
@@ -634,7 +664,7 @@ void Session::failureCb() throw()
             std::string explanation;
             Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
             m_server.logOutput(getPath(),
-                               Logger::levelToStr(Logger::ERROR),
+                               Logger::ERROR,
                                explanation,
                                "");
         } else {
@@ -647,17 +677,17 @@ void Session::failureCb() throw()
                 std::string explanation;
                 error = Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
                 m_server.logOutput(getPath(),
-                                   Logger::levelToStr(Logger::ERROR),
+                                   Logger::ERROR,
                                    explanation,
                                    "");
             }
             // set error, but don't overwrite older one
             if (!m_error) {
-                SE_LOG_DEBUG(NULL, NULL, "session failed: remember %d error", error);
+                SE_LOG_DEBUG(NULL, "session failed: remember %d error", error);
                 m_error = error;
             }
             // will fire status signal, including the error
-            doneCb();
+            doneCb(false);
         }
     } catch (...) {
         // fatal problem, log it and terminate
@@ -665,9 +695,9 @@ void Session::failureCb() throw()
     }
 }
 
-void Session::doneCb(bool success) throw()
+void Session::doneCb(bool success, const SyncReport &report) throw()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
         if (m_status == SESSION_DONE) {
             return;
@@ -691,17 +721,21 @@ void Session::doneCb(bool success) throw()
             m_server.m_configChangedSignal(m_configName);
         }
 
-        SE_LOG_DEBUG(NULL, NULL, "session %s done, config %s, %s, result %d",
+        SE_LOG_DEBUG(NULL, "session %s done, config %s, %s, result %d",
                      getPath(),
                      m_configName.c_str(),
                      m_setConfig ? "modified" : "not modified",
                      m_error);
-        m_doneSignal((SyncMLStatus)m_error);
+        m_doneSignal((SyncMLStatus)m_error, report);
 
         // now also kill helper
         m_helper.reset();
         if (m_forkExecParent) {
+            // Abort (just in case, helper should already be waiting
+            // for SIGURG).
             m_forkExecParent->stop(SIGTERM);
+            // Quit.
+            m_forkExecParent->stop(SIGURG);
         }
 
         m_server.removeSyncSession(this);
@@ -714,8 +748,9 @@ void Session::doneCb(bool success) throw()
 
 Session::~Session()
 {
-    SE_LOG_DEBUG(NULL, NULL, "session %s deconstructing", getPath());
-    doneCb();
+    SE_LOG_DEBUG(NULL, "session %s deconstructing", getPath());
+    // If we are not done yet, then something went wrong.
+    doneCb(false);
 }
 
 /** child has quit before connecting, invoke result.failed() with suitable exception pending */
@@ -731,7 +766,7 @@ static void raiseChildTermError(int status, const SimpleResult &result)
 void Session::runOperationAsync(SessionCommon::RunOperation op,
                                 const SuccessCb_t &helperReady)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     m_server.addSyncSession(this);
     m_runOperation = op;
     m_status = SESSION_RUNNING;
@@ -744,7 +779,7 @@ void Session::runOperationAsync(SessionCommon::RunOperation op,
 
 void Session::useHelperAsync(const SimpleResult &result)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
         if (m_helper) {
             // exists already, invoke callback directly
@@ -758,7 +793,15 @@ void Session::useHelperAsync(const SimpleResult &result)
         // helper process for both operations.
         if (!m_forkExecParent ||
             m_forkExecParent->getState() != ForkExecParent::STARTING) {
-            m_forkExecParent = SyncEvo::ForkExecParent::create("syncevo-dbus-helper");
+            std::vector<std::string> args;
+            args.push_back("--dbus-verbosity");
+            args.push_back(StringPrintf("%d", m_server.getDBusLogLevel()));
+            m_forkExecParent = SyncEvo::ForkExecParent::create("syncevo-dbus-helper", args);
+#ifdef USE_DLT
+            if (getenv("SYNCEVOLUTION_USE_DLT")) {
+                m_forkExecParent->addEnvVar("SYNCEVOLUTION_USE_DLT", StringPrintf("%d", LoggerDLT::getCurrentDLTLogLevel()));
+            }
+#endif
             // We own m_forkExecParent, so the "this" pointer for
             // onConnect will live longer than the signal in
             // m_forkExecParent -> no need for resource
@@ -805,25 +848,59 @@ void Session::useHelperAsync(const SimpleResult &result)
     }
 }
 
-void Session::messagev(Level level,
-                       const char *prefix,
-                       const char *file,
-                       int line,
-                       const char *function,
+void Session::messagev(const MessageOptions &options,
                        const char *format,
                        va_list args)
 {
     // log with session path and empty process name,
     // just like the syncevo-dbus-helper does
-    string strLevel = Logger::levelToStr(level);
-    m_server.messagev(level, NULL, NULL, 0, NULL,
-                      format, args,
-                      getPath(), "");
+    m_server.message2DBus(options,
+                          format, args,
+                          getPath(), "");
+}
+
+static void Logging2ServerAndStdout(Server &server,
+                                    const GDBusCXX::DBusObject_t &path,
+                                    const Logger::MessageOptions &options,
+                                    const char *format,
+                                    ...)
+{
+    va_list args;
+    va_start(args, format);
+    server.message2DBus(options, format, args, path, options.m_processName ? *options.m_processName : "");
+    va_end(args);
+}
+
+static void Logging2Server(Server &server,
+                           const GDBusCXX::DBusObject_t &path,
+                           const std::string &strLevel,
+                           const std::string &explanation,
+                           const std::string &procname)
+{
+    static bool dbg = getenv("SYNCEVOLUTION_DEBUG");
+
+    if (dbg) {
+        // Print to D-Bus directly. The helper handles its own
+        // printing to the console.
+        server.logOutput(path,
+                         Logger::strToLevel(strLevel.c_str()),
+                         explanation,
+                         procname);
+    } else {
+        // Print to D-Bus and console, because the helper
+        // relies on us to do that. Its own stdout/stderr
+        // was redirected into our pipe and any output
+        // there is considered an error.
+        Logger::MessageOptions options(Logger::strToLevel(strLevel.c_str()));
+        options.m_processName = &procname;
+        options.m_flags = Logger::MessageOptions::ALREADY_LOGGED;
+        Logging2ServerAndStdout(server, path, options, "%s", explanation.c_str());
+    }
 }
 
 void Session::useHelper2(const SimpleResult &result, const boost::signals2::connection &c)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
         // helper is running, don't call result.failed() when it quits
         // sometime in the future
@@ -846,7 +923,8 @@ void Session::useHelper2(const SimpleResult &result, const boost::signals2::conn
             // The downside is that unrelated output (like
             // book-keeping messages about other clients) will also be
             // captured.
-            m_helper->m_logOutput.activate(boost::bind(boost::ref(m_server.logOutput),
+            m_helper->m_logOutput.activate(boost::bind(Logging2Server,
+                                                       boost::ref(m_server),
                                                        getPath(),
                                                        _1,
                                                        _2,
@@ -865,14 +943,16 @@ void Session::useHelper2(const SimpleResult &result, const boost::signals2::conn
 
 void Session::onConnect(const GDBusCXX::DBusConnectionPtr &conn) throw ()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
-        SE_LOG_DEBUG(NULL, NULL, "helper has connected");
-        m_helper.reset(new SessionProxy(conn));
+        std::string instance = m_forkExecParent->getInstance();
+        SE_LOG_DEBUG(NULL, "helper %s has connected", instance.c_str());
+        m_helper.reset(new SessionProxy(conn, instance));
 
         // Activate signal watch on helper signals.
         m_helper->m_syncProgress.activate(boost::bind(&Session::syncProgress, this, _1, _2, _3, _4));
         m_helper->m_sourceProgress.activate(boost::bind(&Session::sourceProgress, this, _1, _2, _3, _4, _5, _6));
+        m_helper->m_sourceSynced.activate(boost::bind(boost::ref(m_sourceSynced), _1, _2));
         m_helper->m_waiting.activate(boost::bind(&Session::setWaiting, this, _1));
         m_helper->m_syncSuccessStart.activate(boost::bind(boost::ref(Session::m_syncSuccessStartSignal)));
         m_helper->m_configChanged.activate(boost::bind(boost::ref(m_server.m_configChangedSignal), ""));
@@ -884,21 +964,21 @@ void Session::onConnect(const GDBusCXX::DBusConnectionPtr &conn) throw ()
 
 void Session::onQuit(int status) throw ()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
-        SE_LOG_DEBUG(NULL, NULL, "helper quit with return code %d, was %s",
+        SE_LOG_DEBUG(NULL, "helper quit with return code %d, was %s",
                      status,
                      m_wasAborted ? "aborted" : "not aborted");
         if (m_status == SESSION_DONE) {
             // don't care anymore whether the helper goes down, not an error
-            SE_LOG_DEBUG(NULL, NULL, "session already completed, ignore helper");
+            SE_LOG_DEBUG(NULL, "session already completed, ignore helper");
         } else if (m_wasAborted  &&
                    ((WIFEXITED(status) && WEXITSTATUS(status) == 0) ||
                     (WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM))) {
-            SE_LOG_DEBUG(NULL, NULL, "helper terminated via SIGTERM, as expected");
+            SE_LOG_DEBUG(NULL, "helper terminated via SIGTERM, as expected");
             if (!m_error) {
                 m_error = sysync::LOCERR_USERABORT;
-                SE_LOG_DEBUG(NULL, NULL, "helper was asked to quit -> error %d = LOCERR_USERABORT",
+                SE_LOG_DEBUG(NULL, "helper was asked to quit -> error %d = LOCERR_USERABORT",
                              m_error);
             }
         } else {
@@ -920,7 +1000,8 @@ void Session::onQuit(int status) throw ()
         }
         m_server.addTimeout(boost::bind(&Session::doneCb,
                                         m_me,
-                                        false),
+                                        false,
+                                        SyncReport()),
                             0.1 /* seconds */);
     } catch (...) {
         Exception::handle();
@@ -929,9 +1010,9 @@ void Session::onQuit(int status) throw ()
 
 void Session::onFailure(SyncMLStatus status, const std::string &explanation) throw ()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
-        SE_LOG_DEBUG(NULL, NULL, "helper failed, status code %d = %s, %s",
+        SE_LOG_DEBUG(NULL, "helper failed, status code %d = %s, %s",
                      status,
                      Status2String(status).c_str(),
                      explanation.c_str());
@@ -942,18 +1023,18 @@ void Session::onFailure(SyncMLStatus status, const std::string &explanation) thr
 
 void Session::onOutput(const char *buffer, size_t length)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     // treat null-bytes inside the buffer like line breaks
     size_t off = 0;
     do {
-        SE_LOG_ERROR(NULL, "session-helper", "%s", buffer + off);
+        SE_LOG_ERROR("session-helper", "%s", buffer + off);
         off += strlen(buffer + off) + 1;
     } while (off < length);
 }
 
 void Session::activateSession()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (m_status != SESSION_IDLE) {
         SE_THROW("internal error, session changing from non-idle to active");
     }
@@ -974,7 +1055,7 @@ void Session::activateSession()
 
 void Session::passwordResponse(bool timedOut, bool aborted, const std::string &password)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (m_helper) {
         // Ignore communicaton failures with helper here,
         // we'll notice that elsewhere
@@ -987,7 +1068,7 @@ void Session::passwordResponse(bool timedOut, bool aborted, const std::string &p
 void Session::syncProgress(sysync::TProgressEventEnum type,
                            int32_t extra1, int32_t extra2, int32_t extra3)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     switch(type) {
     case sysync::PEV_CUSTOM_START:
         m_cmdlineOp = (RunOperation)extra1;
@@ -1006,7 +1087,7 @@ void Session::syncProgress(sysync::TProgressEventEnum type,
         // result of the sync method invocation.
         //
         // if((uint32_t)extra1 != m_error) {
-        //     SE_LOG_DEBUG(NULL, NULL, "session sync progress: failed with code %d", extra1);
+        //     SE_LOG_DEBUG(NULL, "session sync progress: failed with code %d", extra1);
         //     m_error = extra1;
         //     fireStatus(true);
         // }
@@ -1040,7 +1121,7 @@ void Session::sourceProgress(sysync::TProgressEventEnum type,
                              SyncMode sourceSyncMode,
                              int32_t extra1, int32_t extra2, int32_t extra3)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     // a command line operation can be many things, helper must have told us
     SessionCommon::RunOperation op = m_runOperation == SessionCommon::OP_CMDLINE ?
         m_cmdlineOp :
@@ -1140,7 +1221,7 @@ void Session::sourceProgress(sysync::TProgressEventEnum type,
                 m_restoreSrcEnd++;
                 SourceStatus &status = m_sourceStatus[sourceName];
                 status.set(PrettyPrintSyncMode(sourceSyncMode), "done", 0);
-                m_progress = 100 * m_restoreSrcEnd / m_restoreSrcTotal;
+                m_progData.setProgress(100 * m_restoreSrcEnd / m_restoreSrcTotal);
                 fireStatus(true);
                 fireProgress(true);
             }
@@ -1158,7 +1239,7 @@ void Session::sourceProgress(sysync::TProgressEventEnum type,
 
 bool Session::setFilters(SyncConfig &config)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     /** apply temporary configs to config */
     config.setConfigFilter(true, "", m_syncFilter);
     // set all sources in the filter to config
@@ -1170,7 +1251,7 @@ bool Session::setFilters(SyncConfig &config)
 
 void Session::setWaiting(bool isWaiting)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     // if stepInfo doesn't change, then ignore it to avoid duplicate status info
     if(m_stepIsWaiting != isWaiting) {
         m_stepIsWaiting = isWaiting;
@@ -1180,7 +1261,7 @@ void Session::setWaiting(bool isWaiting)
 
 void Session::restore(const string &dir, bool before, const std::vector<std::string> &sources)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (m_runOperation == SessionCommon::OP_RESTORE) {
         string msg = StringPrintf("restore started, cannot restore again");
         SE_THROW_EXCEPTION(InvalidCall, msg);
@@ -1200,19 +1281,19 @@ void Session::restore(const string &dir, bool before, const std::vector<std::str
 
 void Session::restore2(const string &dir, bool before, const std::vector<std::string> &sources)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (!m_forkExecParent || !m_helper) {
         SE_THROW("syncing cannot continue, helper died");
     }
 
     // helper is ready, tell it what to do
     m_helper->m_restore.start(m_configName, dir, before, sources,
-                              boost::bind(&Session::dbusResultCb, m_me, "restore()", _1, _2));
+                              boost::bind(&Session::dbusResultCb, m_me, "restore()", _1, SyncReport(), _2));
 }
 
 void Session::execute(const vector<string> &args, const map<string, string> &vars)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (m_runOperation == SessionCommon::OP_CMDLINE) {
         SE_THROW_EXCEPTION(InvalidCall, "cmdline started, cannot start again");
     } else if (m_runOperation != SessionCommon::OP_NULL) {
@@ -1231,20 +1312,20 @@ void Session::execute(const vector<string> &args, const map<string, string> &var
 
 void Session::execute2(const vector<string> &args, const map<string, string> &vars)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     if (!m_forkExecParent || !m_helper) {
         SE_THROW("syncing cannot continue, helper died");
     }
 
     // helper is ready, tell it what to do
     m_helper->m_execute.start(args, vars,
-                              boost::bind(&Session::dbusResultCb, m_me, "execute()", _1, _2));
+                              boost::bind(&Session::dbusResultCb, m_me, "execute()", _1, SyncReport(), _2));
 }
 
 /*Implementation of Session.CheckPresence */
 void Session::checkPresence (string &status)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     vector<string> transport;
     m_server.checkPresence(m_configName, status, transport);
 }
@@ -1253,7 +1334,7 @@ void Session::sendViaConnection(const DBusArray<uint8_t> buffer,
                                 const std::string &type,
                                 const std::string &url)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
         boost::shared_ptr<Connection> connection = m_connection.lock();
 
@@ -1272,7 +1353,7 @@ void Session::sendViaConnection(const DBusArray<uint8_t> buffer,
 
 void Session::shutdownConnection()
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     try {
         boost::shared_ptr<Connection> connection = m_connection.lock();
 
@@ -1292,7 +1373,7 @@ void Session::shutdownConnection()
 void Session::storeMessage(const DBusArray<uint8_t> &message,
                            const std::string &type)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     // ignore errors
     if (m_helper) {
         m_helper->m_storeMessage.start(message, type,
@@ -1302,7 +1383,7 @@ void Session::storeMessage(const DBusArray<uint8_t> &message,
 
 void Session::connectionState(const std::string &error)
 {
-    Session::LoggingGuard guard(this);
+    PushLogger<Logger> guard(m_me);
     // ignore errors
     if (m_helper) {
         m_helper->m_connectionState.start(error,

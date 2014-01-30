@@ -62,11 +62,29 @@ class InfoReq;
  * for simple sessions).
  */
 class Session : public GDBusCXX::DBusObjectHelper,
-                public LoggerBase,
+                public Logger,
                 public Resource,
                 private ReadOperations,
                 private boost::noncopyable
 {
+ public:
+    /**
+     * the sync status for session
+     */
+    enum SyncStatus {
+        SYNC_QUEUEING,  ///< waiting to become ready for use
+        SYNC_IDLE,      ///< ready, session is initiated but sync not started
+        SYNC_RUNNING,   ///< sync is running
+        SYNC_ABORT,     ///< sync is aborting
+        SYNC_SUSPEND,   ///< sync is suspending
+        SYNC_DONE,      ///< sync is done
+        SYNC_ILLEGAL
+    };
+
+    typedef std::map<std::string, SourceStatus> SourceStatuses_t;
+    typedef std::map<std::string, SourceProgress> SourceProgresses_t;
+
+ private:
     Server &m_server;
     std::vector<std::string> m_flags;
     const std::string m_sessionID;
@@ -155,22 +173,10 @@ class Session : public GDBusCXX::DBusObjectHelper,
     bool m_wasAborted;
 
     /**
-     * Indicates whether this session was initiated by the peer or locally.
+     * True iff we initiated the sync.
      */
     bool m_remoteInitiated;
-
-    /**
-     * the sync status for session
-     */
-    enum SyncStatus {
-        SYNC_QUEUEING,  ///< waiting to become ready for use
-        SYNC_IDLE,      ///< ready, session is initiated but sync not started
-        SYNC_RUNNING,   ///< sync is running
-        SYNC_ABORT,     ///< sync is aborting
-        SYNC_SUSPEND,   ///< sync is suspending
-        SYNC_DONE,      ///< sync is done
-        SYNC_ILLEGAL
-    } m_syncStatus;
+    SyncStatus m_syncStatus;
 
     /** maps to names as used in D-Bus API */
     inline std::string static syncStatusToString(SyncStatus state)
@@ -197,16 +203,12 @@ class Session : public GDBusCXX::DBusObjectHelper,
      */
     int m_priority;
 
-    int32_t m_progress;
-
     /** progress data, holding progress calculation related info */
     ProgressData m_progData;
 
-    typedef std::map<std::string, SourceStatus> SourceStatuses_t;
     SourceStatuses_t m_sourceStatus;
 
     uint32_t m_error;
-    typedef std::map<std::string, SourceProgress> SourceProgresses_t;
     SourceProgresses_t m_sourceProgress;
 
     // syncProgress() and sourceProgress() turn raw data from helper
@@ -290,6 +292,7 @@ class Session : public GDBusCXX::DBusObjectHelper,
     /** like fireStatus() for progress information */
     void fireProgress(bool flush = false);
 
+public:
     /** Session.StatusChanged */
     GDBusCXX::EmitSignal3<const std::string &,
                           uint32_t,
@@ -298,7 +301,6 @@ class Session : public GDBusCXX::DBusObjectHelper,
     GDBusCXX::EmitSignal2<int32_t,
                           const SourceProgresses_t &> emitProgress;
 
-public:
     /**
      * Sessions must always be held in a shared pointer
      * because some operations depend on that. This
@@ -322,7 +324,7 @@ public:
      * explicitly mark an idle session as completed, even if it doesn't
      * get deleted yet (exceptions not expected by caller)
      */
-    void done() throw () { doneCb(); }
+    void done(bool success) throw () { doneCb(success); }
 
 private:
     Session(Server &server,
@@ -346,24 +348,9 @@ private:
      * helper. To be activated only temporarily while executing code
      * in the server which is related to the session.
      */
-    virtual void messagev(Level level,
-                          const char *prefix,
-                          const char *file,
-                          int line,
-                          const char *function,
+    virtual void messagev(const MessageOptions &options,
                           const char *format,
                           va_list args);
-    virtual bool isProcessSafe() const { return false; }
-
-    class LoggingGuard {
-    public:
-        LoggingGuard(Session *session) {
-            LoggerBase::pushLogger(session);
-        }
-        ~LoggingGuard() {
-            LoggerBase::popLogger();
-        }
-    };
 
 public:
     enum {
@@ -399,7 +386,7 @@ public:
      * the sync starts and overwriting it when the connection
      * closes.
      */
-    void setStubConnectionError(const std::string error) { m_connectionError = error; }
+    void setStubConnectionError(const std::string &error) { m_connectionError = error; }
     std::string getStubConnectionError() { return m_connectionError; }
 
     Server &getServer() { return m_server; }
@@ -447,6 +434,8 @@ public:
      */
     void setWaiting(bool isWaiting);
 
+    SyncStatus getSyncStatus() const { return m_syncStatus; }
+
     /** session was just activated */
     typedef boost::signals2::signal<void ()> SessionActiveSignal_t;
     SessionActiveSignal_t m_sessionActiveSignal;
@@ -456,8 +445,12 @@ public:
     SyncSuccessStartSignal_t m_syncSuccessStartSignal;
 
     /** sync completed (may have failed) */
-    typedef boost::signals2::signal<void (SyncMLStatus)> DoneSignal_t;
+    typedef boost::signals2::signal<void (SyncMLStatus, SyncReport)> DoneSignal_t;
     DoneSignal_t m_doneSignal;
+
+    /** a source was synced, emitted multiple times during a multi-cycle sync */
+    typedef boost::signals2::signal<void (const std::string &, const SyncSourceReport &)> SourceSyncedSignal_t;
+    SourceSyncedSignal_t m_sourceSynced;
 
     /**
      * Called by server when the session is ready to run.
@@ -478,7 +471,7 @@ private:
     /** set m_syncFilter and m_sourceFilters to config */
     virtual bool setFilters(SyncConfig &config);
 
-    void dbusResultCb(const std::string &operation, bool success, const std::string &error) throw();
+    void dbusResultCb(const std::string &operation, bool success, const SyncReport &report, const std::string &error) throw();
 
     /**
      * to be called inside a catch() clause: returns error for any
@@ -493,8 +486,9 @@ private:
      *
      * @param success    if false, then ensure that m_error is set
      *                   before finalizing the session
+     * @param report     valid only in case of success
      */
-    void doneCb(bool success = true) throw();
+    void doneCb(bool success, const SyncReport &report = SyncReport()) throw();
 };
 
 SE_END_CXX

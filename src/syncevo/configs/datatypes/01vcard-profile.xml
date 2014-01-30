@@ -29,9 +29,9 @@
           <value field="FN"/>
         </property>
 
-        <!-- FILE-AS not supported by KDE natively, let's use X-EVOLUTION-FILE-AS as extension -->
+        <!-- FILE_AS not supported by KDE natively, let's use X-EVOLUTION-FILE-AS as extension -->
         <property name="X-EVOLUTION-FILE-AS">
-          <value field="FILE-AS"/>
+          <value field="FILE_AS"/>
         </property>
 
         <property name="X-GENDER">
@@ -420,6 +420,11 @@
           <parameter name="VALUE" default="no" show="yes">
             <value field="PHOTO_VALUE"/>
           </parameter>
+        </property>
+
+        <property name="GEO" values="2">
+          <value index="0" field="GEO_LAT"/>
+          <value index="1" field="GEO_LONG"/>
         </property>
 
         <property name="X-*" suppressempty="yes" show="false">

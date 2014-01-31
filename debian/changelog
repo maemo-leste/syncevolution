@@ -1,3 +1,16 @@
+syncevolution (1.3.99.7-1) unstable; urgency=high
+
+  * New upstream release candidate
+  * Add 0001-Fix-incorrect-mktemp-usage-reported-by-Helmut-Grohne.patch,
+    which fixes CVE-2014-1639
+    (Closes: #736357)
+  * Enable Akonadi support, separate Evolution (GNOME) and Akonadi (KDE) support
+    (Closes: #682520)
+  * Update standards version to 3.9.5, no changes needed
+  * Add NEWS item to describe changes regarding KDE and GNOME support
+
+ -- Tino Keitel <tino+debian@tikei.de>  Fri, 31 Jan 2014 12:44:35 +0100
+
 syncevolution (1.3.2-1) unstable; urgency=low
 
   * Install syncevo-local-sync helper, required for CardDAV/CalDAV.

@@ -1,3 +1,19 @@
+syncevolution (1.4-1) unstable; urgency=high
+
+  * New upstream release
+  * Allow parallel builds
+  * Adjust Maintainer: field to new surname
+  * Fix FTBFS due to erroneously hardcoded x86_64 path in an install file
+    (Closes: #739665)
+  * Fix upgrade from versions before 1.3.99.7 due to file conflicts.
+    Thanks to Simon McVittie (Closes: #739662)
+  * Add sections for files previously missing in copyright information
+    (Closes: #739616)
+  * Remove 0001-Fix-incorrect-mktemp-usage-reported-by-Helmut-Grohne.patch,
+    fixed upstream in a different way
+
+ -- Tino Mettler <tino+debian@tikei.de>  Fri, 21 Feb 2014 11:44:04 +0100
+
 syncevolution (1.3.99.7-1) unstable; urgency=high
 
   * New upstream release candidate

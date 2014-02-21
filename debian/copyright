@@ -136,8 +136,39 @@ Files: debian/*
 Copyright: © 2009 David Bremner
 License: same as upstream, LGPL2.1 or LGPL3
 
-On Debian systems, you can find the full license text for the LGPL3,
-GPL3 and Artistic Licenses at 
-     /usr/share/common-licenses/{LGPL-3,GPL3, Artistic}
 
+Files: src/gdbus/test/example.cpp
+Copyright: © 2009 Intel Corporation
+License: GPL-2
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License version 2 as
+    published by the Free Software Foundation.
 
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+Files: src/gdbusxx/test/example.cpp
+Copyright: © 2009 Intel Corporation
+License: GPL-2
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License version 2 as
+    published by the Free Software Foundation.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+On Debian systems, you can find the full license text for the LGPL2.1, LGPL3,
+GPL-2, GPL3 and Artistic Licenses at 
+     /usr/share/common-licenses/{LGPL-2.1,LGPL-3,GPL-2,GPL-3,Artistic}

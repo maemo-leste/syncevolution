@@ -81,6 +81,8 @@ Package: syncevolution-libs-gnome
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Recommends: evolution-data-server
+Replaces: syncevolution-libs (<< 1.3.99.7)
+Breaks: syncevolution-libs (<< 1.3.99.7)
 Description: Sync personal information data using SyncML and CalDAV/CardDAV (libraries)
  SyncEvolution synchronizes contact, calendar and task items via SyncML and
  CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server
@@ -94,6 +96,8 @@ Description: Sync personal information data using SyncML and CalDAV/CardDAV (lib
 Package: syncevolution-libs-kde
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
+Replaces: syncevolution-libs (<< 1.3.99.7)
+Breaks: syncevolution-libs (<< 1.3.99.7)
 Description: Sync personal information data using SyncML and CalDAV/CardDAV (libraries)
  SyncEvolution synchronizes contact, calendar and task items via SyncML and
  CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server

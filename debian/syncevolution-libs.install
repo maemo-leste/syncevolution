@@ -1,4 +1,3 @@
-usr/lib/*/syncevolution/backends/syncaddressbook.so
 usr/lib/*/syncevolution/backends/syncfile.so
 usr/lib/*/syncevolution/backends/syncdav.so
 usr/lib/*/syncevolution/backends/syncxmlrpc.so

@@ -26,6 +26,7 @@
 #include <syncevo/SyncSource.h>
 #include <syncevo/SyncContext.h>
 #include <syncevo/util.h>
+#include <syncevo/SuspendFlags.h>
 
 #include <syncevo/SynthesisEngine.h>
 #include <synthesis/SDK_util.h>
@@ -52,27 +53,27 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-void SyncSourceBase::throwError(const string &action, int error)
+void SyncSourceBase::throwError(const SourceLocation &where, const string &action, int error)
 {
     std::string what = action + ": " + strerror(error);
     // be as specific if we can be: relevant for the file backend,
     // which is expected to return STATUS_NOT_FOUND == 404 for "file
     // not found"
     if (error == ENOENT) {
-        throwError(STATUS_NOT_FOUND, what);
+        throwError(where, STATUS_NOT_FOUND, what);
     } else {
-        throwError(what);
+        throwError(where, what);
     }
 }
 
-void SyncSourceBase::throwError(const string &failure)
+void SyncSourceBase::throwError(const SourceLocation &where, const string &failure)
 {
-    SyncContext::throwError(string(getDisplayName()) + ": " + failure);
+    Exception::throwError(where, string(getDisplayName()) + ": " + failure);
 }
 
-void SyncSourceBase::throwError(SyncMLStatus status, const string &failure)
+void SyncSourceBase::throwError(const SourceLocation &where, SyncMLStatus status, const string &failure)
 {
-    SyncContext::throwError(status, getDisplayName() + ": " + failure);
+    Exception::throwError(where, status, getDisplayName() + ": " + failure);
 }
 
 SyncMLStatus SyncSourceBase::handleException(HandleExceptionFlags flags)
@@ -164,7 +165,7 @@ void SyncSourceBase::getDatastoreXML(string &xml, XMLConfigFragments &fragments)
         }
         xmlstream <<
             "        ]]></afterreadscript>\n"
-            "        <map name='data' references='itemdata' type='string'/>\n";
+            "        <map name='itemdata' references='itemdata' type='string'/>\n";
     }
     xmlstream << 
         "        <automap/>\n"
@@ -191,14 +192,47 @@ string SyncSourceBase::getNativeDatatypeName()
     return info.m_native;
 }
 
+SyncSourceBase::Operations::Operations(SyncSourceName &source) :
+    m_startDataRead(source),
+    m_endDataRead(source),
+    m_startDataWrite(source),
+    m_finalizeLocalID(source),
+    m_endDataWrite(source),
+    m_readNextItem(source),
+    m_readItemAsKey(source),
+    m_insertItemAsKey(source),
+    m_updateItemAsKey(source),
+    m_deleteItem(source),
+    m_loadAdminData(source),
+    m_saveAdminData(source),
+    m_insertMapItem(source),
+    m_updateMapItem(source),
+    m_deleteMapItem(source),
+    m_deleteBlob(source)
+{
+}
+
+static SyncMLStatus BumpCounter(int32_t &counter)
+{
+    counter++;
+    return STATUS_OK;
+}
+
 SyncSource::SyncSource(const SyncSourceParams &params) :
     SyncSourceConfig(params.m_name, params.m_nodes),
+    m_operations(*this),
     m_numDeleted(0),
+    m_added(0),
+    m_updated(0),
+    m_deleted(0),
     m_forceSlowSync(false),
     m_database("", ""),
     m_name(params.getDisplayName()),
     m_needChanges(true)
 {
+    m_operations.m_insertItemAsKey.getPreSignal().connect(boost::bind(BumpCounter, boost::ref(m_added)));
+    m_operations.m_updateItemAsKey.getPreSignal().connect(boost::bind(BumpCounter, boost::ref(m_updated)));
+    m_operations.m_deleteItem.getPreSignal().connect(boost::bind(BumpCounter, boost::ref(m_deleted)));
 }
 
 SDKInterface *SyncSource::getSynthesisAPI() const
@@ -216,6 +250,26 @@ void SyncSource::pushSynthesisAPI(sysync::SDK_InterfaceType *synthesisAPI)
 void SyncSource::popSynthesisAPI() {
     m_synthesisAPI.pop_back();
 }
+
+bool SyncSource::isUsable()
+{
+    if (getOperations().m_isEmpty) {
+        try {
+            SE_LOG_INFO(getDisplayName(), "checking usability...");
+            getOperations().m_isEmpty();
+            return true;
+        } catch (...) {
+            std::string explanation;
+            Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
+            SE_LOG_INFO(getDisplayName(), "%s", explanation.c_str());
+            return false;
+        }
+    } else {
+        // Cannot check, assume it is usable.
+        return true;
+    }
+}
+
 
 SourceRegistry &SyncSource::getSourceRegistry()
 {
@@ -248,19 +302,14 @@ RegisterSyncSource::RegisterSyncSource(const string &shortDescr,
     registry.push_back(this);
 }
 
-class InactiveSyncSource : public SyncSource
+class InactiveSyncSource : public DummySyncSource
 {
 public:
-    InactiveSyncSource(const SyncSourceParams &params) : SyncSource(params) {}
+    InactiveSyncSource(const SyncSourceParams &params) : DummySyncSource(params) {}
 
     virtual bool isInactive() const { return true; }
-    virtual void enableServerMode() {}
-    virtual bool serverModeEnabled() const { return false; }
-    virtual void getSynthesisInfo(SyncEvo::SyncSourceBase::SynthesisInfo&, SyncEvo::XMLConfigFragments&) { throwError("inactive"); }
-    virtual Databases getDatabases() { throwError("inactive"); return Databases(); }
-    virtual void open() { throwError("inactive"); }
-    virtual void close() { throwError("inactive"); }
-    virtual std::string getPeerMimeType() const { return ""; }
+    virtual Databases getDatabases() { throwError(SE_HERE, "inactive"); return Databases(); }
+    virtual void open() { throwError(SE_HERE, "inactive"); }
 };
 
 SyncSource *RegisterSyncSource::InactiveSource(const SyncSourceParams &params)
@@ -343,7 +392,7 @@ public:
             std::string modname;
             size_t offset = basename.rfind('-');
             if (offset != basename.npos) {
-                modname = basename.substr(offset);
+                modname = basename.substr(0, offset);
             } else {
                 modname = basename;
             }
@@ -406,7 +455,7 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
         SyncSource *source = NULL;
         source = new VirtualSyncSource(params, config);
         if (error && !source) {
-            SyncContext::throwError(params.getDisplayName() + ": virtual source cannot be instantiated");
+            Exception::throwError(SE_HERE, params.getDisplayName() + ": virtual datastore cannot be instantiated");
         }
         return source;
     }
@@ -417,7 +466,7 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
         auto_ptr<SyncSource> nextSource(sourceInfos->m_create(params));
         if (nextSource.get()) {
             if (source.get()) {
-                SyncContext::throwError(params.getDisplayName() + ": backend " + sourceType.m_backend +
+                Exception::throwError(SE_HERE, params.getDisplayName() + ": backend " + sourceType.m_backend +
                                         " is ambiguous, avoid the alias and pick a specific backend instead directly");
             }
             source = nextSource;
@@ -442,7 +491,7 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
                          sourceType.m_backend.c_str(),
                          sourceType.m_localFormat.c_str(),
                          sourceType.m_format.c_str());
-        SyncContext::throwError(SyncMLStatus(sysync::LOCERR_CFGPARSE), problem);
+        Exception::throwError(SE_HERE, SyncMLStatus(sysync::LOCERR_CFGPARSE), problem);
     }
 
     return NULL;
@@ -475,8 +524,8 @@ VirtualSyncSource::VirtualSyncSource(const SyncSourceParams &params, SyncConfig 
         std::string evoSyncSource = getDatabaseID();
         BOOST_FOREACH(std::string name, getMappedSources()) {
             if (name.empty()) {
-                throwError(StringPrintf("configuration of underlying sources contains empty source name: database = '%s'",
-                                        evoSyncSource.c_str()));
+                throwError(SE_HERE, StringPrintf("configuration of underlying datastores contains empty datastore name: database = '%s'",
+                                                 evoSyncSource.c_str()));
             }
             SyncSourceNodes source = config->getSyncSourceNodes(name);
             SyncSourceParams params(name, source, boost::shared_ptr<SyncConfig>(config, SyncConfigNOP()));
@@ -484,10 +533,12 @@ VirtualSyncSource::VirtualSyncSource(const SyncSourceParams &params, SyncConfig 
             m_sources.push_back(syncSource);
         }
         if (m_sources.size() != 2) {
-            throwError(StringPrintf("configuration of underlying sources must contain exactly one calendar and one todo source (like calendar+todo): database = '%s'",
-                                    evoSyncSource.c_str()));
+            throwError(SE_HERE, StringPrintf("configuration of underlying datastores must contain exactly one calendar and one todo datastore (like calendar+todo): database = '%s'",
+                                             evoSyncSource.c_str()));
         }
     }
+
+    m_operations.m_isEmpty = boost::bind(&VirtualSyncSource::isEmpty, this);
 }
 
 void VirtualSyncSource::open()
@@ -497,6 +548,27 @@ void VirtualSyncSource::open()
         source->open();
     }
 }
+
+bool VirtualSyncSource::isEmpty()
+{
+    bool empty = true;
+    SuspendFlags &s = SuspendFlags::getSuspendFlags();
+
+    BOOST_FOREACH(boost::shared_ptr<SyncSource> &source, m_sources) {
+        // Operation might not be implemented, in which case we have to
+        // assume "not empty".
+        if (!source->getOperations().m_isEmpty ||
+            !source->getOperations().m_isEmpty()) {
+            empty = false;
+            // Keep checking, because isEmpty() is also used for
+            // isUsable() and we have to touch all sources for that.
+        }
+        // Operation might have been aborted by user, need to check.
+        s.checkForNormal();
+    }
+    return empty;
+}
+
 
 void VirtualSyncSource::close()
 {
@@ -672,10 +744,10 @@ void SyncSourceSerialize::getSynthesisInfo(SynthesisInfo &info,
         // include $VCARD_OUTGOING_PHOTO_VALUE_SCRIPT in its own script,
         // otherwise it will be sent invalid, empty PHOTO;TYPE=unknown;VALUE=binary:
         // properties.
-        info.m_beforeWriteScript = "$VCARD_OUTGOING_PHOTO_VALUE_SCRIPT;\n";
+        info.m_beforeWriteScript = "$VCARD_BEFOREWRITE_SCRIPT;\n";
         // Likewise for reading. This is needed to ensure proper merging
         // of contact data.
-        info.m_afterReadScript = "$VCARD_INCOMING_PHOTO_VALUE_SCRIPT;\n";
+        info.m_afterReadScript = "$VCARD_AFTERREAD_SCRIPT;\n";
     } else if (type == "text/x-calendar" || type == "text/x-vcalendar") {
         info.m_native = "vCalendar10";
         info.m_fieldlist = "calendar";
@@ -704,8 +776,18 @@ void SyncSourceSerialize::getSynthesisInfo(SynthesisInfo &info,
     } else if (type == "text/plain") {
         info.m_fieldlist = "Note";
         info.m_profile = "\"Note\", 2";
+    } else if (type == "raw/text/vcard") {
+        info.m_native = "vCard30";
+        info.m_fieldlist = "Raw";
+        info.m_datatypes =
+            "        <use datatype='raw-vcard' mode='rw' preferred='yes'/>\n";
+    } else if (type == "raw/text/calendar") {
+        info.m_native = "iCalendar20";
+        info.m_fieldlist = "Raw";
+        info.m_datatypes =
+            "        <use datatype='raw-calendar' mode='rw' preferred='yes'/>\n";
     } else {
-        throwError(string("default MIME type not supported: ") + type);
+        throwError(SE_HERE, string("default MIME type not supported: ") + type);
     }
 
     SourceType sourceType = getSourceType();
@@ -759,10 +841,16 @@ std::string SyncSourceBase::getDataTypeSupport(const std::string &type,
         datatypes =
             "        <use datatype='note10' mode='rw' preferred='yes'/>\n"
             "        <use datatype='note11' mode='rw'/>\n";
+    } else if (type == "raw/text/vcard") {
+        datatypes =
+            "        <use datatype='raw-vcard' mode='rw' preferred='yes'/>\n";
+    } else if (type == "raw/text/calendar") {
+        datatypes =
+            "        <use datatype='raw-calendar' mode='rw' preferred='yes'/>\n";
     } else if (type.empty()) {
-        throwError("no MIME type configured");
+        throwError(SE_HERE, "no MIME type configured");
     } else {
-        throwError(string("configured MIME type not supported: ") + type);
+        throwError(SE_HERE, string("configured MIME type not supported: ") + type);
     }
 
     return datatypes;
@@ -773,14 +861,14 @@ sysync::TSyError SyncSourceSerialize::readItemAsKey(sysync::cItemID aID, sysync:
     std::string item;
 
     readItem(aID->item, item);
-    TSyError res = getSynthesisAPI()->setValue(aItemKey, "data", item.c_str(), item.size());
+    TSyError res = getSynthesisAPI()->setValue(aItemKey, "itemdata", item.c_str(), item.size());
     return res;
 }
 
 SyncSource::Operations::InsertItemAsKeyResult_t SyncSourceSerialize::insertItemAsKey(sysync::KeyH aItemKey, sysync::ItemID newID)
 {
     SharedBuffer data;
-    TSyError res = getSynthesisAPI()->getValue(aItemKey, "data", data);
+    TSyError res = getSynthesisAPI()->getValue(aItemKey, "itemdata", data);
 
     if (!res) {
         InsertItemResult inserted = insertItem("", data.get());
@@ -810,7 +898,7 @@ SyncSource::Operations::InsertItemAsKeyResult_t SyncSourceSerialize::insertItemA
 SyncSource::Operations::UpdateItemAsKeyResult_t SyncSourceSerialize::updateItemAsKey(sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID newID)
 {
     SharedBuffer data;
-    TSyError res = getSynthesisAPI()->getValue(aItemKey, "data", data);
+    TSyError res = getSynthesisAPI()->getValue(aItemKey, "itemdata", data);
 
     if (!res) {
         InsertItemResult inserted = insertItem(aID->item, data.get());
@@ -1116,7 +1204,7 @@ void SyncSourceRevisions::restoreData(const SyncSource::Operations::ConstBackupI
             filename << oldBackup.m_dirname << "/" << counter;
             string data;
             if (!ReadFile(filename.str(), data)) {
-                throwError(StringPrintf("restoring %s from %s failed: could not read file",
+                throwError(SE_HERE, StringPrintf("restoring %s from %s failed: could not read file",
                                         uid.c_str(),
                                         filename.str().c_str()));
             }
@@ -1328,7 +1416,7 @@ void SyncSourceRevisions::updateRevision(ConfigNode &trackingNode,
         trackingNode.removeProperty(old_luid);
     }
     if (new_luid.empty() || revision.empty()) {
-        throwError("need non-empty LUID and revision string");
+        throwError(SE_HERE, "need non-empty LUID and revision string");
     }
     trackingNode.setProperty(new_luid, revision);
 }
@@ -1343,7 +1431,7 @@ void SyncSourceRevisions::deleteRevision(ConfigNode &trackingNode,
     trackingNode.removeProperty(luid);
 }
 
-void SyncSourceRevisions::sleepSinceModification()
+SyncMLStatus SyncSourceRevisions::sleepSinceModification()
 {
     Timespec current = Timespec::monotonic();
     // Don't let this get interrupted by user abort.
@@ -1352,6 +1440,7 @@ void SyncSourceRevisions::sleepSinceModification()
         Sleep(m_revisionAccuracySeconds - (current - m_modTimeStamp).duration());
         current = Timespec::monotonic();
     }
+    return STATUS_OK;
 }
 
 void SyncSourceRevisions::databaseModified()
@@ -1411,31 +1500,34 @@ std::string SyncSourceLogging::getDescription(const string &luid)
     return "";
 }
 
-void SyncSourceLogging::insertItemAsKey(sysync::KeyH aItemKey, sysync::ItemID newID)
+SyncMLStatus SyncSourceLogging::insertItemAsKey(sysync::KeyH aItemKey, sysync::ItemID newID)
 {
     std::string description = getDescription(aItemKey);
     SE_LOG_INFO(getDisplayName(),
                 description.empty() ? "%s <%s>" : "%s \"%s\"",
                 "adding",
                 !description.empty() ? description.c_str() : "???");
+    return STATUS_OK;
 }
 
-void SyncSourceLogging::updateItemAsKey(sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID newID)
+SyncMLStatus SyncSourceLogging::updateItemAsKey(sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID newID)
 {
     std::string description = getDescription(aItemKey);
     SE_LOG_INFO(getDisplayName(),
                 description.empty() ? "%s <%s>" : "%s \"%s\"",
                 "updating",
                 !description.empty() ? description.c_str() : aID ? aID->item : "???");
+    return STATUS_OK;
 }
 
-void SyncSourceLogging::deleteItem(sysync::cItemID aID)
+SyncMLStatus SyncSourceLogging::deleteItem(sysync::cItemID aID)
 {
     std::string description = getDescription(aID->item);
     SE_LOG_INFO(getDisplayName(),
                 description.empty() ? "%s <%s>" : "%s \"%s\"",
                 "deleting",
                 !description.empty() ? description.c_str() : aID->item);
+    return STATUS_OK;
 }
 
 void SyncSourceLogging::init(const std::list<std::string> &fields,
@@ -1468,9 +1560,11 @@ sysync::TSyError SyncSourceAdmin::saveAdminData(const char *adminData)
     m_configNode->setProperty(m_adminPropertyName,
                               StringEscape::escape(adminData, '!', StringEscape::INI_VALUE));
 
-    // Flush here, because some calls to saveAdminData() happend
-    // after SyncSourceAdmin::flush() (= session end).
-    m_configNode->flush();
+    // The exact ordering of API calls is not defined. In practice, EndDataWrite is
+    // followed by Insert/Update/DeleteMapItem, finished by saveAdminData. Therefore
+    // we flush here.
+    flush();
+
     return sysync::LOCERR_OK;
 }
 
@@ -1504,9 +1598,6 @@ sysync::TSyError SyncSourceAdmin::insertMapItem(sysync::cMapID mID)
     }
 #else
     m_mapping[key] = value;
-    m_mappingNode->clear();
-    m_mappingNode->writeProperties(m_mapping);
-    m_mappingNode->flush();
     return sysync::LOCERR_OK;
 #endif
 }
@@ -1522,9 +1613,6 @@ sysync::TSyError SyncSourceAdmin::updateMapItem(sysync::cMapID mID)
         return sysync::DB_Forbidden;
     } else {
         m_mapping[key] = value;
-        m_mappingNode->clear();
-        m_mappingNode->writeProperties(m_mapping);
-        m_mappingNode->flush();
         return sysync::LOCERR_OK;
     }
 }
@@ -1540,14 +1628,11 @@ sysync::TSyError SyncSourceAdmin::deleteMapItem(sysync::cMapID mID)
         return sysync::DB_Forbidden;
     } else {
         m_mapping.erase(it);
-        m_mappingNode->clear();
-        m_mappingNode->writeProperties(m_mapping);
-        m_mappingNode->flush();
         return sysync::LOCERR_OK;
     }
 }
 
-void SyncSourceAdmin::flush()
+SyncMLStatus SyncSourceAdmin::flush()
 {
     m_configNode->flush();
     if (m_mappingLoaded) {
@@ -1555,6 +1640,7 @@ void SyncSourceAdmin::flush()
         m_mappingNode->writeProperties(m_mapping);
         m_mappingNode->flush();
     }
+    return STATUS_OK;
 }
 
 void SyncSourceAdmin::resetMap()
@@ -1636,7 +1722,6 @@ void SyncSourceAdmin::init(SyncSource::Operations &ops,
         ops.m_deleteMapItem = boost::bind(&SyncSourceAdmin::deleteMapItem,
                                           this, _1);
     }
-    ops.m_endDataWrite.getPostSignal().connect(boost::bind(&SyncSourceAdmin::flush, this));
 }
 
 void SyncSourceAdmin::init(SyncSource::Operations &ops,

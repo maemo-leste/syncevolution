@@ -143,10 +143,16 @@ class Manager : public GDBusCXX::DBusObjectHelper
                       const std::string &uid);
 
  public:
-    typedef std::map<std::string, boost::variant<bool, int> > SyncResult;
+    typedef std::map<std::string, boost::variant<bool, int, double, std::string> > SyncResult;
     /** Manager.SyncPeer() */
     void syncPeer(const boost::shared_ptr<GDBusCXX::Result1<SyncResult> > &result,
                   const std::string &uid);
+
+    typedef std::map<std::string, boost::variant<std::string, double, int32_t> > SyncFlags;
+    /** Manager.SyncPeerWithFlags() */
+    void syncPeerWithFlags(const boost::shared_ptr<GDBusCXX::Result1<SyncResult> > &result,
+                           const std::string &uid,
+                           const SyncFlags &flags);
 
     /** Manager.SyncProgress */
     GDBusCXX::EmitSignal3<const std::string &,
@@ -157,16 +163,42 @@ class Manager : public GDBusCXX::DBusObjectHelper
  private:
     void doSyncPeer(const boost::shared_ptr<Session> &session,
                     const boost::shared_ptr<GDBusCXX::Result1<SyncResult> > &result,
-                    const std::string &uid);
+                    const std::string &uid,
+                    const SyncFlags &flags);
 
     void report2SyncProgress(const std::string &uid,
                              const std::string &sourceName,
                              const SyncSourceReport &source);
-
+    void progress2SyncProgress(const std::string &uid,
+                               Session *session,
+                               int32_t percent,
+                               const Session::SourceProgresses_t &progress);
  public:
     /** Manager.StopSync() */
     void stopSync(const boost::shared_ptr<GDBusCXX::Result0> &result,
                   const std::string &uid);
+
+
+    typedef std::map<std::string, boost::variant<std::string, SyncResult, double> > PeerStatus;
+    /** Manager.GetPeerStatus() */
+    PeerStatus getPeerStatus(const std::string &uid);
+
+    /** Manager.SuspendSync() */
+    void suspendSync(const boost::shared_ptr< GDBusCXX::Result1<bool> > &result,
+                     const std::string &uid) {
+        setFreeze(result, uid, true);
+    }
+
+    /** Manager.ResumeSync() */
+    void resumeSync(const boost::shared_ptr< GDBusCXX::Result1<bool> > &result,
+                    const std::string &uid) {
+        setFreeze(result, uid, false);
+    }
+
+    /** internal */
+    void setFreeze(const boost::shared_ptr< GDBusCXX::Result1<bool> > &result,
+                   const std::string &uid,
+                   bool freeze);
 
     typedef std::map<std::string, StringMap> PeersMap;
     /** Manager.GetAllPeers() */

@@ -3,8 +3,12 @@
 # Wrapper script which starts a new D-Bus session before
 # running a program and kills the D-Bus daemon when done.
 
+unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID XDG_RUNTIME_DIR
+
+# Ensure that we have a unique, empty XDG_RUNTIME_DIR.
+export XDG_RUNTIME_DIR=`mktemp -d`
+
 # start D-Bus session
-unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
 eval `dbus-launch`
 export DBUS_SESSION_BUS_ADDRESS
 
@@ -40,10 +44,10 @@ fi
 
 # kill all programs started by us
 atexit() {
-    set -x
     [ ! "$KEYRING_PID" ] || ( echo >&2 "dbus-session.sh $$: killing keyring pid $KEYRING_PID"; kill -9 $KEYRING_PID )
     [ ! "$DBUS_SESSION_SH_SYSTEM_BUS" ] || [ ! "$DBUS_SYSTEM_BUS_PID" ] || ( echo >&2 "dbus-session.sh $$: killing system bus daemon $DBUS_SYSTEM_BUS_PID"; kill -9 $DBUS_SYSTEM_BUS_PID )
-    [ ! $DBUS_SESSION_BUS_PID ] || ( echo >&2 "dbus-session.sh $$: killing session bus daemon $DBUS_SESSION_BUS_PID"; kill -9 $DBUS_SESSION_BUS_PID )
+    [ ! "$DBUS_SESSION_BUS_PID" ] || ( echo >&2 "dbus-session.sh $$: killing session bus daemon $DBUS_SESSION_BUS_PID"; kill -9 $DBUS_SESSION_BUS_PID )
+    [ ! "$XDG_RUNTIME_DIR" ] || ( echo >&2 "dbus-session.sh $$: removing XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"; rm -rf $XDG_RUNTIME_DIR )
 }
 trap atexit EXIT
 
@@ -74,6 +78,9 @@ case "$@" in *test-dbus.py\ *) akonadi=;;
 esac
 
 if [ "$DBUS_SESSION_SH_AKONADI" ] && [ "$akonadi" ]; then
+    # Prevents running unnecessary daemons which do not necessarily
+    # work (see "[Kde-pim] configuring Akonadi server").
+    export AKONADI_DISABLE_AGENT_AUTOSTART=1
     akonadictl start 1>&2
     SLEEP=5
 else

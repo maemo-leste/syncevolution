@@ -18,13 +18,14 @@
  */
 
 #include <syncevo/GLibSupport.h>
-#include <syncevo/util.h>
+#include <syncevo/Exception.h>
 #include <syncevo/SmartPtr.h>
 #ifdef ENABLE_UNIT_TESTS
 #include "test.h"
 #endif
 
 #include <boost/bind.hpp>
+#include <boost/lambda/bind.hpp>
 #include <set>
 
 #include <string.h>
@@ -154,12 +155,12 @@ GLibSelectResult GLibSelect(GMainLoop *loop, int fd, int direction, Timespec *ti
     return instance.run();
 }
 
-void GErrorCXX::throwError(const string &action)
+void GErrorCXX::throwError(const SourceLocation &where, const string &action)
 {
-    throwError(action, m_gerror);
+    throwError(where, action, m_gerror);
 }
 
-void GErrorCXX::throwError(const string &action, const GError *err)
+void GErrorCXX::throwError(const SourceLocation &where, const string &action, const GError *err)
 {
     string gerrorstr = action;
     if (!gerrorstr.empty()) {
@@ -173,7 +174,7 @@ void GErrorCXX::throwError(const string &action, const GError *err)
         gerrorstr = "failure";
     }
 
-    SE_THROW(gerrorstr);
+    throw Exception(where.m_file, where.m_line, gerrorstr);
 }
 
 static void changed(GFileMonitor *monitor,
@@ -197,7 +198,7 @@ GLibNotify::GLibNotify(const char *file,
     GFileMonitorCXX monitor(g_file_monitor_file(filecxx.get(), G_FILE_MONITOR_NONE, NULL, gerror), TRANSFER_REF);
     m_monitor.swap(monitor);
     if (!m_monitor) {
-        gerror.throwError(std::string("monitoring ") + file);
+        gerror.throwError(SE_HERE, std::string("monitoring ") + file);
     }
     g_signal_connect_after(m_monitor.get(),
                            "changed",
@@ -224,7 +225,7 @@ public:
      * Called by additional threads. Returns when check()
      * returned false.
      */
-    void blockOnCheck(const boost::function<bool ()> &check);
+    void blockOnCheck(const boost::function<bool ()> &check, bool checkFirst);
 };
 
 void PendingChecks::runChecks()
@@ -259,22 +260,26 @@ void PendingChecks::runChecks()
     }
 }
 
-void PendingChecks::blockOnCheck(const boost::function<bool ()> &check)
+void PendingChecks::blockOnCheck(const boost::function<bool ()> &check, bool checkFirst)
 {
     DynMutex::Guard guard = m_mutex.lock();
     // When we get here, the conditions for returning may already have
     // been met.  Check before sleeping. If we need to continue, then
     // holding the mutex ensures that the main thread will run the
     // check on the next iteration.
-    if (check()) {
+    if (!checkFirst || check()) {
         m_checks.insert(&check);
+        if (!checkFirst) {
+            // Must wake up the main thread from its g_main_context_iteration.
+            g_main_context_wakeup(g_main_context_default());
+        }
         do {
              m_cond.wait(m_mutex);
         } while (m_checks.find(&check) != m_checks.end());
     }
 }
 
-void GRunWhile(const boost::function<bool ()> &check)
+void GRunWhile(const boost::function<bool ()> &check, bool checkFirst)
 {
     static PendingChecks checks;
     if (g_main_context_is_owner(g_main_context_default())) {
@@ -288,8 +293,39 @@ void GRunWhile(const boost::function<bool ()> &check)
         }
     } else {
         // Transfer check into main thread.
-        checks.blockOnCheck(check);
+        checks.blockOnCheck(check, checkFirst);
     }
+}
+
+static std::string NoThrow(const boost::function<void ()> &action) throw ()
+{
+    try {
+        action();
+    } catch (...) {
+        // 
+        std::string explanation;
+        Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
+        return explanation;
+    }
+    return "";
+}
+
+void GRunInMain(const boost::function<void ()> &action)
+{
+    std::string explanation;
+
+    // Wrap in NoThrow, then rethrow exception in current thread if there was a problem.
+    GRunWhile((boost::lambda::var(explanation) = boost::lambda::bind(NoThrow, action), false), false);
+    if (!explanation.empty()) {
+        Exception::tryRethrow(explanation, true);
+    }
+}
+
+bool GRunIsMain()
+{
+    // This works because SyncContext::initMain() permanently acquires
+    // the main context in the main thread.
+    return g_main_context_is_owner(g_main_context_default());
 }
 
 #ifdef ENABLE_UNIT_TESTS

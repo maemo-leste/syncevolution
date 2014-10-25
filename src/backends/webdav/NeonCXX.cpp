@@ -346,6 +346,12 @@ void Session::preSend(ne_request *req, ne_buffer *header)
         SE_THROW("internal error: startOperation() not called");
     }
 
+    bool haveUserAgentHeader = boost::starts_with(header->data, "User-Agent:") ||
+        strstr(header->data, "\nUser-Agent:");
+    if (!haveUserAgentHeader) {
+        ne_buffer_concat(header, "User-Agent: SyncEvolution\r\n", (const char *)NULL);
+    }
+
     // Only do this once when using normal username/password.
     // Always do it when using OAuth2.
     bool useOAuth2 = m_authProvider && m_authProvider->methodIsSupported(AuthProvider::AUTH_METHOD_OAUTH2);
@@ -362,14 +368,14 @@ void Session::preSend(ne_request *req, ne_buffer *header)
             SE_LOG_DEBUG(NULL, "using OAuth2 token '%s' to authenticate", m_oauth2Bearer.c_str());
             m_credentialsSent = true;
             // SmartPtr<char *> blob(ne_base64((const unsigned char *)m_oauth2Bearer.c_str(), m_oauth2Bearer.size()));
-            ne_buffer_concat(header, "Authorization: Bearer ", m_oauth2Bearer.c_str() /* blob.get() */, "\r\n", NULL);
+            ne_buffer_concat(header, "Authorization: Bearer ", m_oauth2Bearer.c_str() /* blob.get() */, "\r\n", (const char *)NULL);
         } else if (m_uri.m_scheme == "https") {
             // append "Authorization: Basic" header if not present already
             if (!haveAuthorizationHeader) {
                 Credentials creds = m_authProvider->getCredentials();
                 std::string credentials = creds.m_username + ":" + creds.m_password;
                 SmartPtr<char *> blob(ne_base64((const unsigned char *)credentials.c_str(), credentials.size()));
-                ne_buffer_concat(header, "Authorization: Basic ", blob.get(), "\r\n", NULL);
+                ne_buffer_concat(header, "Authorization: Basic ", blob.get(), "\r\n", (const char *)NULL);
             }
 
             // check for acceptance of credentials later
@@ -458,7 +464,7 @@ void Session::propfindURI(const std::string &path, int depth,
     const char *tmp = ne_get_response_header(req, "Location");
     std::string location(tmp ? tmp : "");
 
-    if (!checkError(error, status->code, status, location)) {
+    if (!checkError(error, status->code, status, location, path)) {
         goto retry;
     }
 }
@@ -541,7 +547,9 @@ void Session::flush()
     }
 }
 
-bool Session::checkError(int error, int code, const ne_status *status, const string &location,
+bool Session::checkError(int error, int code, const ne_status *status,
+                         const std::string &newLocation,
+                         const std::string &oldLocation,
                          const std::set<int> *expectedCodes)
 {
     flush();
@@ -571,20 +579,25 @@ bool Session::checkError(int error, int code, const ne_status *status, const str
     // detect redirect
     if ((error == NE_ERROR || error == NE_OK) &&
         (code >= 300 && code <= 399)) {
-        // special case Google: detect redirect to temporary error page
-        // and retry; same for redirect to login page
-        if (boost::starts_with(location, "http://www.google.com/googlecalendar/unavailable.html") ||
-            boost::starts_with(location, "https://www.google.com/googlecalendar/unavailable.html") ||
-            boost::starts_with(location, "https://accounts.google.com/ServiceLogin")) {
+        // Special case Google: detect redirect to temporary error page
+        // and retry; same for redirect to login page. Only do that for
+        // "real" URLs, not for the root or /calendar/ that we run into
+        // when scanning, because the login there will always fail.
+        if (oldLocation != "/" &&
+            oldLocation != "/calendar/" &&
+            (boost::starts_with(newLocation, "http://www.google.com/googlecalendar/unavailable.html") ||
+             boost::starts_with(newLocation, "https://www.google.com/googlecalendar/unavailable.html") ||
+             boost::starts_with(newLocation, "https://accounts.google.com/ServiceLogin"))) {
             retry = true;
         } else {
             SE_THROW_EXCEPTION_2(RedirectException,
-                                 StringPrintf("%s: %d status: redirected to %s",
+                                 StringPrintf("%s: %d status: %s redirected to %s",
                                               operation.c_str(),
                                               code,
-                                              location.c_str()),
+                                              oldLocation.c_str(),
+                                              newLocation.c_str()),
                                  code,
-                                 location);
+                                 newLocation);
         }
     }
 
@@ -608,7 +621,11 @@ bool Session::checkError(int error, int code, const ne_status *status, const str
                                      operation.c_str(),
                                      code);
             }
-            if (code >= 500 && code <= 599) {
+            if (code >= 500 && code <= 599 &&
+                 // not implemented
+                code != 501 &&
+                // HTTP version not supported
+                code != 505) {
                 // potentially temporary server failure, may try again
                 retry = true;
             }
@@ -663,7 +680,11 @@ bool Session::checkError(int error, int code, const ne_status *status, const str
                                  operation.c_str(),
                                  error,
                                  ne_get_error(m_session));
-            if (code >= 500 && code <= 599) {
+            if (code >= 500 && code <= 599 &&
+                // not implemented
+                code != 501 &&
+                // HTTP version not supported
+                code != 505) {
                 // potentially temporary server failure, may try again
                 retry = true;
             }
@@ -888,6 +909,7 @@ Request::Request(Session &session,
                  const std::string &body,
                  std::string &result) :
     m_method(method),
+    m_path(path),
     m_session(session),
     m_result(&result),
     m_parser(NULL)
@@ -902,6 +924,7 @@ Request::Request(Session &session,
                  const std::string &body,
                  XMLParser &parser) :
     m_method(method),
+    m_path(path),
     m_session(session),
     m_result(NULL),
     m_parser(&parser)
@@ -934,7 +957,8 @@ void Session::checkAuthorization()
         // Count the number of times we asked for new tokens. This helps
         // the provider determine whether the token that it returns are valid.
         try {
-            m_oauth2Bearer = m_authProvider->getOAuth2Bearer(m_oauthTokenRejections);
+            m_oauth2Bearer = m_authProvider->getOAuth2Bearer(m_oauthTokenRejections,
+                                                             boost::bind(&Settings::updatePassword, m_settings, _1));
             SE_LOG_DEBUG(NULL, "got new OAuth2 token '%s' for next request", m_oauth2Bearer.c_str());
         } catch (...) {
             std::string explanation;
@@ -968,6 +992,7 @@ bool Session::run(Request &request, const std::set<int> *expectedCodes)
 
     return checkError(error, request.getStatus()->code, request.getStatus(),
                       request.getResponseHeader("Location"),
+                      request.getPath(),
                       expectedCodes);
 }
 

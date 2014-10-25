@@ -64,10 +64,6 @@ DBusSync::DBusSync(const SessionCommon::SyncParams &params,
         if (params.m_mode == "ephemeral") {
             makeEphemeral();
         } else if (params.m_mode == "pbap") {
-            // Batched writing is off by default, explicitly enable it for PBAP.
-            SE_LOG_DEBUG(NULL, "enabling SYNCEVOLUTION_EDS_ACCESS_MODE=batched");
-            setenv("SYNCEVOLUTION_EDS_ACCESS_MODE", "batched", true);
-
             // "pbap" may only be used by caller when it knows that
             // the mode is safe to use.
             makeEphemeral();
@@ -164,6 +160,16 @@ bool DBusSync::displaySourceProgress(SyncSource &source,
 {
     bool cached = SyncContext::displaySourceProgress(source, event, flush);
     if (!cached) {
+        // Tell parent about current source statistics directly before
+        // PEV_ITEMRECEIVED. The PIM Manager relies on that extra
+        // information.
+        if (event.m_type == sysync::PEV_ITEMRECEIVED) {
+            m_helper.emitSourceProgress(sysync::PEV_ITEMPROCESSED, source.getName(),
+                                        source.getFinalSyncMode(),
+                                        source.getAdded(),
+                                        source.getUpdated(),
+                                        source.getDeleted());
+        }
         m_helper.emitSourceProgress(event.m_type, source.getName(), source.getFinalSyncMode(),
                                     event.m_extra1, event.m_extra2, event.m_extra3);
     }

@@ -8,7 +8,7 @@ dnl Invoke autogen.sh to produce a configure script.
 #
 # Starting with the 1.1 release cycle, the rpm-style
 # .99 pseudo-version number is used to mark a pre-release.
-AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.4])])
+AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.4.99.4])])
 # STABLE_VERSION=1.0.1+
 AC_SUBST(STABLE_VERSION)
 
@@ -25,7 +25,7 @@ SE_CHECK_FOR_STABLE_RELEASE
 
 # Minimum version of libsynthesis as defined in its
 # configure script and thus .pc files:
-define([SYNTHESIS_MIN_VERSION], [3.4.0.47.1])
+define([SYNTHESIS_MIN_VERSION], [3.4.0.47.4])
 
 # Line above is patched by gen-autotools.sh. Handle
 # both "yes" and "no".
@@ -145,6 +145,18 @@ AC_ARG_ENABLE(evolution-compatibility,
                              [build executables which only call Evolution via dlopen/dlsym: this avoids all hard dependencies on EDS shared objects, but might lead to crashes when their ABI changes; use --enable-evolution-compatibility=ical to enable a weaker mode where linking is done normally and only libical.so.0/1 enum differences are worked around (allows patching resulting executables to use either of these two)]),
               enable_evolution_compatibility="$enableval", enable_evolution_compatibility="no")
 
+AC_ARG_ENABLE(internal-icaltz,
+              AS_HELP_STRING([--disable-internal-icaltz],
+                             [libical 1.0 updated its system zone data parsing code so that it produces VTIMEZONEs which are unsuitable for syncing. SyncEvolution ships with a copy of the older code and uses it by default.]),
+              [enable_icaltz_util="$enableval"
+               test "$enable_icaltz_util" = "yes" || test "$enable_icaltz_util" = "no" || AC_ERROR([invalid value of --disable-internal-icaltz: $enableval])],
+              enable_icaltz_util="yes")
+if test "$enable_icaltz_util" = "yes"; then
+   AC_DEFINE(ENABLE_ICALTZ_UTIL, [1], [use internal icaltz-util.c])
+   AC_DEFINE(DISABLE_ICALTZUTIL_GET_ZONE_DIRECTORY, [1], [use libical's icaltzutil_get_zone_directory()])
+fi
+AM_CONDITIONAL([ENABLE_ICALTZ_UTIL], [test "$enable_icaltz_util" = "yes"])
+
 AC_ARG_ENABLE(developer-mode,
               AS_HELP_STRING([--enable-developer-mode],
                              [The dynamic loadble backend libraries is loaded from current build directory instead of the standard library path]),
@@ -162,6 +174,9 @@ AC_ARG_ENABLE(maemo,
 AC_SUBST(MODIFY_SYNCCOMPARE)
 
 AC_CHECK_HEADERS(signal.h dlfcn.h)
+
+# For icaltz-util.c
+AC_CHECK_HEADERS(byteswap.h endian.h sys/endian.h unistd.h stdint.h)
 
 # cppunit-config is used even when both unit tests and integration tests are disabled.
 AC_PATH_PROG([CPPUNIT_CONFIG], [cppunit-config], [no])
@@ -591,7 +606,7 @@ if test "$enable_dbus_service" != "no"; then
                         DBUS_PIM_PLUGIN_LIBS='$(BOOST_LDFLAGS) $(BOOST_LOCALE_LIB)'
                         DBUS_PIM_PLUGIN_LDFLAGS=
                         # We need to call ICU directly for the Han->Latin transformation.
-                        PKG_CHECK_MODULES(ICU, [icu-uc])
+                        PKG_CHECK_MODULES(ICU, [icu-uc icu-i18n])
                         ;;
                 esac
                 AC_SUBST(DBUS_PIM_PLUGIN_CFLAGS)
@@ -601,6 +616,9 @@ if test "$enable_dbus_service" != "no"; then
                 # http://code.google.com/p/libphonenumber/
                 AC_LANG(C++)
                 SAVED_CPPFLAGS=$CPPFLAGS
+                if test ! "$PHONENUMBERS_CFLAGS"; then
+                      PHONENUMBERS_CFLAGS=-DI18N_PHONENUMBERS_USE_BOOST
+                fi
                 CPPFLAGS="$CPPFLAGS ${PHONENUMBERS_CFLAGS}"
                 AC_CHECK_HEADERS([phonenumbers/phonenumberutil.h])
                 SAVED_LIBS=$LIBS
@@ -975,6 +993,7 @@ if test "$need_glib" = "yes"; then
         PKG_CHECK_MODULES(GTHREAD, "gthread-2.0", , GLIBFOUND=no)
         PKG_CHECK_MODULES(GOBJECT, "gobject-2.0", , GLIBFOUND=no)
         PKG_CHECK_MODULES(GIO, "gio-2.0", , GLIBFOUND=no)
+        PKG_CHECK_MODULES(GIOUNIX, "gio-unix-2.0", , GLIBFOUND=no)
 
         if  test "x${GLIBFOUND}" = "xyes"; then
             AC_DEFINE(HAVE_GLIB, 1, [glib found])
@@ -984,15 +1003,18 @@ if test "$need_glib" = "yes"; then
         BACKEND_CPPFLAGS="$BACKEND_CPPFLAGS $GLIB_CFLAGS $GTHREAD_CFLAGS $GOBJECT_CFLAGS"
 fi
 
-dnl use libical if and only if required by some backend
-if test "$need_ical" = "yes"; then
+dnl check for libical if needed by backend or icaltz-util.
+if test "$need_ical" = "yes" || test "$enable_icaltz_util" = "yes"; then
    PKG_CHECK_MODULES(LIBICAL, libical,
                      [true],
                      [PKG_CHECK_MODULES(LIBICAL, libecal-1.2)])
+fi
+
+dnl Use libical in eds_abi_wrapper if and only if required by some backend.
+if test "$need_ical" = "yes"; then
    AC_DEFINE(ENABLE_ICAL, 1, [libical in use])
 fi
 AM_CONDITIONAL([ENABLE_ICAL], [test "$need_ical" = "yes"])
-
 
 # Check for Qt if some backend needs it.
 if test "$need_qt_modules"; then

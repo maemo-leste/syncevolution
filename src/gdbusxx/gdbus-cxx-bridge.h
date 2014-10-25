@@ -58,6 +58,7 @@
 #define INCL_GDBUS_CXX_BRIDGE
 #include "gdbus-cxx.h"
 
+#include <stdint.h>
 #include <gio/gio.h>
 
 #include <map>
@@ -190,6 +191,11 @@ class DBusConnectionPtr : public boost::intrusive_ptr<GDBusConnection>
       boost::intrusive_ptr<GDBusConnection>(conn, add_ref)
       {}
 
+    DBusConnectionPtr(const DBusConnectionPtr &other) :
+      boost::intrusive_ptr<GDBusConnection>(other),
+      m_name(other.m_name)
+      {}
+
     GDBusConnection *reference(void) throw()
     {
         GDBusConnection *conn = get();
@@ -313,8 +319,7 @@ DBusConnectionPtr dbus_get_bus_connection(const char *busType,
                                           DBusErrorCXX *err);
 
 DBusConnectionPtr dbus_get_bus_connection(const std::string &address,
-                                          DBusErrorCXX *err,
-                                          bool delayed = false);
+                                          DBusErrorCXX *err);
 
 inline void dbus_bus_connection_undelay(const DBusConnectionPtr &conn) { conn.undelay(); }
 
@@ -332,18 +337,22 @@ class DBusServerCXX : private boost::noncopyable
      * Called for each new connection. Callback must store the DBusConnectionPtr,
      * otherwise it will be unref'ed after the callback returns.
      * If the new connection is not wanted, then it is good style to close it
-     * explicitly in the callback.
+     * explicitly in the callback. Message processing is delayed on the new
+     * connection, so the callback can set up objects and then must undelay
+     * the connection.
      */
     typedef boost::function<void (DBusServerCXX &, DBusConnectionPtr &)> NewConnection_t;
 
-    void setNewConnectionCallback(const NewConnection_t &newConnection) { m_newConnection = newConnection; }
-    NewConnection_t getNewConnectionCallback() const { return m_newConnection; }
-
     /**
-     * Start listening for new connections on the given address, like unix:abstract=myaddr.
-     * Address may be empty, in which case a new, unused address will chosen.
+     * Start listening for new connections. Mimics the libdbus DBusServer API, but
+     * underneath sets up a single connection via pipes. The caller must fork
+     * the process which calls dbus_get_bus_connection() before entering the main
+     * event loop again because that is when the DBusServerCXX will finish
+     * the connection setup (close child fd, call newConnection).
+     *
+     * All errors are reported via exceptions, not "err".
      */
-    static boost::shared_ptr<DBusServerCXX> listen(const std::string &address, DBusErrorCXX *err);
+    static boost::shared_ptr<DBusServerCXX> listen(const NewConnection_t &newConnection, DBusErrorCXX *err);
 
     /**
      * address used by the server
@@ -351,12 +360,14 @@ class DBusServerCXX : private boost::noncopyable
     std::string getAddress() const { return m_address; }
 
  private:
-    DBusServerCXX(GDBusServer *server, const std::string &address);
-    static gboolean newConnection(GDBusServer *server, GDBusConnection *newConn, void *data) throw();
-
+    DBusServerCXX(const std::string &address);
+    DBusConnectionPtr m_connection;
     NewConnection_t m_newConnection;
-    boost::intrusive_ptr<GDBusServer> m_server;
+    guint m_connectionIdle;
+    int m_childfd;
     std::string m_address;
+
+    static gboolean onIdleOnce(gpointer custom);
 };
 
 /**
@@ -2025,12 +2036,27 @@ struct append_visitor : public boost::static_visitor<>
  * application is interested on only a sub set of possible value types
  * in variant.
  */
-template <class V> struct dbus_traits <boost::variant <V> > : public dbus_traits_base
+template<class BV> struct dbus_variant_base : public dbus_traits_base
 {
     static std::string getType() { return "v"; }
     static std::string getSignature() { return getType(); }
     static std::string getReply() { return ""; }
 
+    typedef BV host_type;
+    typedef const BV &arg_type;
+
+    static void append(GVariantBuilder &builder, const BV &value)
+    {
+        g_variant_builder_open(&builder, G_VARIANT_TYPE(getType().c_str()));
+        boost::apply_visitor(append_visitor(builder), value);
+        g_variant_builder_close(&builder);
+    }
+};
+
+
+template <class V> struct dbus_traits <boost::variant <V> > :
+    public dbus_variant_base< boost::variant <V> >
+{
     static void get(ExtractArgs &context,
                     GVariantIter &iter, boost::variant <V> &value)
     {
@@ -2054,30 +2080,11 @@ template <class V> struct dbus_traits <boost::variant <V> > : public dbus_traits
         dbus_traits<V>::get(context, varIter, val);
         value = val;
     }
-
-    static void append(GVariantBuilder &builder, const boost::variant<V> &value)
-    {
-        g_variant_builder_open(&builder, G_VARIANT_TYPE(getType().c_str()));
-        boost::apply_visitor(append_visitor(builder), value);
-        g_variant_builder_close(&builder);
-    }
-
-    typedef boost::variant<V> host_type;
-    typedef const boost::variant<V> &arg_type;
 };
 
-/**
- * A boost::variant <V1, V2> maps to a dbus variant, only care about values of
- * type V1, V2 but will not throw error if type is not matched, this is useful if
- * application is interested on only a sub set of possible value types
- * in variant.
- */
-template <class V1, class V2> struct dbus_traits <boost::variant <V1, V2> > : public dbus_traits_base
+template <class V1, class V2> struct dbus_traits <boost::variant <V1, V2> > :
+    public dbus_variant_base< boost::variant <V1, V2> >
 {
-    static std::string getType() { return "v"; }
-    static std::string getSignature() { return getType(); }
-    static std::string getReply() { return ""; }
-
     static void get(ExtractArgs &context,
                     GVariantIter &iter, boost::variant <V1, V2> &value)
     {
@@ -2090,36 +2097,153 @@ template <class V1, class V2> struct dbus_traits <boost::variant <V1, V2> > : pu
         g_variant_iter_init(&varIter, var);
         GVariantCXX varVar(g_variant_iter_next_value(&varIter));
         const char *type = g_variant_get_type_string(varVar);
-        if ((dbus_traits<V2>::getSignature() != type) &&
-            (dbus_traits<V1>::getSignature() != type)) {
-            // ignore unrecognized sub type in variant
-            return;
-        }
-        else if (dbus_traits<V1>::getSignature() == type) {
+        if (dbus_traits<V1>::getSignature() == type) {
             V1 val;
             // Note: Reset the iterator so that the call to dbus_traits<V>::get() will get the right variant;
             g_variant_iter_init(&varIter, var);
             dbus_traits<V1>::get(context, varIter, val);
             value = val;
-        } else {
+        } else if (dbus_traits<V2>::getSignature() == type) {
             V2 val;
-            // Note: Reset the iterator so that the call to dbus_traits<V>::get() will get the right variant;
             g_variant_iter_init(&varIter, var);
             dbus_traits<V2>::get(context, varIter, val);
             value = val;
+        } else {
+            // ignore unrecognized sub type in variant
+            return;
         }
     }
-
-    static void append(GVariantBuilder &builder, const boost::variant<V1, V2> &value)
-    {
-        g_variant_builder_open(&builder, G_VARIANT_TYPE(getType().c_str()));
-        boost::apply_visitor(append_visitor(builder), value);
-        g_variant_builder_close(&builder);
-    }
-
-    typedef boost::variant<V1, V2> host_type;
-    typedef const boost::variant<V1, V2> &arg_type;
 };
+
+template <class V1, class V2, class V3> struct dbus_traits <boost::variant <V1, V2, V3> > :
+    public dbus_variant_base< boost::variant <V1, V2, V3> >
+{
+    static void get(ExtractArgs &context,
+                    GVariantIter &iter, boost::variant <V1, V2, V3> &value)
+    {
+        GVariantCXX var(g_variant_iter_next_value(&iter));
+        if (var == NULL || !g_variant_type_equal(g_variant_get_type(var), G_VARIANT_TYPE_VARIANT)) {
+            throw std::runtime_error("g_variant failure " GDBUS_CXX_SOURCE_INFO);
+        }
+
+        GVariantIter varIter;
+        g_variant_iter_init(&varIter, var);
+        GVariantCXX varVar(g_variant_iter_next_value(&varIter));
+        const char *type = g_variant_get_type_string(varVar);
+        if (dbus_traits<V1>::getSignature() == type) {
+            V1 val;
+            // Note: Reset the iterator so that the call to dbus_traits<V>::get() will get the right variant;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V1>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V2>::getSignature() == type) {
+            V2 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V2>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V3>::getSignature() == type) {
+            V3 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V3>::get(context, varIter, val);
+            value = val;
+        } else {
+            // ignore unrecognized sub type in variant
+            return;
+        }
+    }
+};
+
+template <class V1, class V2, class V3, class V4> struct dbus_traits <boost::variant <V1, V2, V3, V4> > :
+    public dbus_variant_base< boost::variant <V1, V2, V3, V4> >
+{
+    static void get(ExtractArgs &context,
+                    GVariantIter &iter, boost::variant <V1, V2, V3> &value)
+    {
+        GVariantCXX var(g_variant_iter_next_value(&iter));
+        if (var == NULL || !g_variant_type_equal(g_variant_get_type(var), G_VARIANT_TYPE_VARIANT)) {
+            throw std::runtime_error("g_variant failure " GDBUS_CXX_SOURCE_INFO);
+        }
+
+        GVariantIter varIter;
+        g_variant_iter_init(&varIter, var);
+        GVariantCXX varVar(g_variant_iter_next_value(&varIter));
+        const char *type = g_variant_get_type_string(varVar);
+        if (dbus_traits<V1>::getSignature() == type) {
+            V1 val;
+            // Note: Reset the iterator so that the call to dbus_traits<V>::get() will get the right variant;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V1>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V2>::getSignature() == type) {
+            V2 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V2>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V3>::getSignature() == type) {
+            V3 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V3>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V4>::getSignature() == type) {
+            V4 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V4>::get(context, varIter, val);
+            value = val;
+        } else {
+            // ignore unrecognized sub type in variant
+            return;
+        }
+    }
+};
+
+template <class V1, class V2, class V3, class V4, class V5> struct dbus_traits <boost::variant <V1, V2, V3, V4, V5> > :
+    public dbus_variant_base< boost::variant <V1, V2, V3, V4, V5> >
+{
+    static void get(ExtractArgs &context,
+                    GVariantIter &iter, boost::variant <V1, V2, V3> &value)
+    {
+        GVariantCXX var(g_variant_iter_next_value(&iter));
+        if (var == NULL || !g_variant_type_equal(g_variant_get_type(var), G_VARIANT_TYPE_VARIANT)) {
+            throw std::runtime_error("g_variant failure " GDBUS_CXX_SOURCE_INFO);
+        }
+
+        GVariantIter varIter;
+        g_variant_iter_init(&varIter, var);
+        GVariantCXX varVar(g_variant_iter_next_value(&varIter));
+        const char *type = g_variant_get_type_string(varVar);
+        if (dbus_traits<V1>::getSignature() == type) {
+            V1 val;
+            // Note: Reset the iterator so that the call to dbus_traits<V>::get() will get the right variant;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V1>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V2>::getSignature() == type) {
+            V2 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V2>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V3>::getSignature() == type) {
+            V3 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V3>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V4>::getSignature() == type) {
+            V4 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V4>::get(context, varIter, val);
+            value = val;
+        } else if (dbus_traits<V5>::getSignature() == type) {
+            V5 val;
+            g_variant_iter_init(&varIter, var);
+            dbus_traits<V5>::get(context, varIter, val);
+            value = val;
+        } else {
+            // ignore unrecognized sub type in variant
+            return;
+        }
+    }
+};
+
 
 /**
  * A recursive variant. Can represent values of a certain type V and
@@ -2254,6 +2378,32 @@ template<class K, class V, V K::*m, class M> struct dbus_member
     static void append(GVariantBuilder &builder, const K &val)
     {
         dbus_traits<V>::append(builder, val.*m);
+        M::append(builder, val);
+    }
+};
+
+/**
+ * The base class of type V of a struct K, followed by another dbus_member
+ * or dbus_member_single to end the chain
+ */
+template<class K, class V, class M> struct dbus_base
+{
+    static std::string getType()
+    {
+        return dbus_traits<V>::getType() + M::getType();
+    }
+    typedef V host_type;
+
+    static void get(ExtractArgs &context,
+                    GVariantIter &iter, K &val)
+    {
+        dbus_traits<V>::get(context, iter, val);
+        M::get(context, iter, val);
+    }
+
+    static void append(GVariantBuilder &builder, const K &val)
+    {
+        dbus_traits<V>::append(builder, val);
         M::append(builder, val);
     }
 };

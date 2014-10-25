@@ -77,11 +77,11 @@ fi
 
 ( set +x; echo >&2 "*** killing and waiting for ${BACKGROUND[0]}" )
 kill -INT $BACKGROUND_PID && kill -TERM $BACKGROUND_PID || true
-( sleep 60; kill -KILL $BACKGROUND_PID ) &
+perl -e "sleep(60); kill(9, $BACKGROUND_PID);" &
 KILL_PID=$!
 set +e
 wait $BACKGROUND_PID
-msg=$(kill -KILL $KILL_PID 2>&1)
+msg=$(LC_ALL=C kill -KILL $KILL_PID 2>&1)
 SUBRET=$?
 if echo "$msg" | grep -q 'No such process'; then
     # Consider this a success.

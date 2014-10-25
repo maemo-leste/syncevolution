@@ -21,9 +21,7 @@
 
 #include <syncevo/IdentityProvider.h>
 
-#define USE_SIGNON (defined USE_GSSO || defined USE_UOA)
-
-#if USE_SIGNON
+#ifdef USE_SIGNON
 #ifdef USE_GSSO
 #include "libgsignon-glib/signon-auth-service.h"
 #include "libgsignon-glib/signon-identity.h"
@@ -31,13 +29,16 @@
 #include "libsignon-glib/signon-auth-service.h"
 #include "libsignon-glib/signon-identity.h"
 #endif // USE_GSSO
+#ifdef USE_ACCOUNTS
 #include "libaccounts-glib/ag-account.h"
 #include "libaccounts-glib/ag-account-service.h"
 #include <libaccounts-glib/ag-auth-data.h>
 #include <libaccounts-glib/ag-service.h>
 #include <libaccounts-glib/ag-manager.h>
+#endif
 
 #include <syncevo/GLibSupport.h>
+#include <syncevo/GVariantSupport.h>
 #include <pcrecpp.h>
 
 #include <boost/lambda/core.hpp>
@@ -45,12 +46,14 @@
 SE_GOBJECT_TYPE(SignonAuthService)
 SE_GOBJECT_TYPE(SignonAuthSession)
 SE_GOBJECT_TYPE(SignonIdentity)
+
+#ifdef USE_ACCOUNTS
 SE_GOBJECT_TYPE(AgAccount)
 SE_GOBJECT_TYPE(AgAccountService)
 SE_GOBJECT_TYPE(AgManager)
 SE_GLIB_TYPE(AgService, ag_service)
 SE_GLIB_TYPE(AgAuthData, ag_auth_data)
-SE_GLIB_TYPE(GHashTable, g_hash_table)
+#endif
 
 #endif // USE_SIGNON
 
@@ -59,79 +62,9 @@ SE_BEGIN_CXX
 
 #ifdef USE_SIGNON
 
+#ifdef USE_ACCOUNTS
 typedef GListCXX<AgService, GList, ag_service_unref> ServiceListCXX;
-
-/**
- * Simple auto_ptr for GVariant.
- */
-class GVariantCXX : boost::noncopyable
-{
-    GVariant *m_var;
- public:
-    /** takes over ownership */
-    GVariantCXX(GVariant *var = NULL) : m_var(var) {}
-    ~GVariantCXX() { if (m_var) { g_variant_unref(m_var); } }
-
-    operator GVariant * () { return m_var; }
-    GVariantCXX &operator = (GVariant *var) {
-        if (m_var != var) {
-            if (m_var) {
-                g_variant_unref(m_var);
-            }
-            m_var = var;
-        }
-        return *this;
-    }
-};
-
-
-// Originally from google-oauth2-example.c, which is also under LGPL
-// 2.1, or any later version.
-static GVariant *HashTable2Variant(const GHashTable *hashTable) throw ()
-{
-    GVariantBuilder builder;
-    GHashTableIter iter;
-    const gchar *key;
-    GVariant *value;
-
-    if (!hashTable) {
-        return NULL;
-    }
-
-    g_variant_builder_init(&builder, G_VARIANT_TYPE_VARDICT);
-
-    g_hash_table_iter_init(&iter, (GHashTable *)hashTable);
-    while (g_hash_table_iter_next(&iter, (gpointer *)&key, (gpointer *)&value)) {
-        g_variant_builder_add(&builder, "{sv}", key, g_variant_ref(value));
-    }
-    return g_variant_builder_end(&builder);
-}
-
-/**
- * The created GHashTable maps strings to GVariants which are
- * reference counted, so when adding or setting values, use g_variant_ref_sink(g_variant_new_...()).
- */
-static GHashTable *Variant2HashTable(GVariant *variant) throw ()
-{
-    if (!variant) {
-        return NULL;
-    }
-
-    GHashTable *hashTable;
-    GVariantIter iter;
-    GVariant *value;
-    gchar *key;
-
-    hashTable = g_hash_table_new_full(g_str_hash,
-                                      g_str_equal,
-                                      g_free,
-                                      (GDestroyNotify)g_variant_unref);
-    g_variant_iter_init(&iter, variant);
-    while (g_variant_iter_next(&iter, "{sv}", &key, &value)) {
-        g_hash_table_insert(hashTable, g_strdup(key), g_variant_ref(value));
-    }
-    return hashTable;
-}
+#endif
 
 class SignonAuthProvider : public AuthProvider
 {
@@ -152,17 +85,21 @@ public:
 
     virtual Credentials getCredentials() const { SE_THROW("only OAuth2 is supported"); }
 
-    virtual std::string getOAuth2Bearer(int failedTokens) const
+    virtual std::string getOAuth2Bearer(int failedTokens,
+                                        const PasswordUpdateCallback &passwordUpdateCallback) const
     {
         SE_LOG_DEBUG(NULL, "retrieving OAuth2 token, attempt %d", failedTokens);
 
         // Retry login if even the refreshed token failed.
         g_hash_table_insert(m_sessionData, g_strdup("UiPolicy"),
                             g_variant_ref_sink(g_variant_new_uint32(failedTokens >= 2 ? SIGNON_POLICY_REQUEST_PASSWORD : 0)));
-        GVariantCXX resultDataVar;
+        // We get assigned a plain pointer to an instance that we'll own,
+        // so we have to use the "steal" variant to enable that assignment.
+        GVariantStealCXX resultDataVar;
         GErrorCXX gerror;
         // Enforce normal reference counting via _ref_sink.
-        GVariantCXX sessionDataVar(g_variant_ref_sink(HashTable2Variant(m_sessionData)));
+        GVariantCXX sessionDataVar(g_variant_ref_sink(HashTable2Variant(m_sessionData)),
+                                   TRANSFER_REF);
         PlainGStr buffer(g_variant_print(sessionDataVar, true));
         SE_LOG_DEBUG(NULL, "asking for OAuth2 token with method %s, mechanism %s and parameters %s",
                      signon_auth_session_get_method(m_authSession),
@@ -181,7 +118,7 @@ public:
                                       StringPrintf("could not obtain OAuth2 token: %s", gerror ? gerror->message : "???"),
                                       STATUS_FORBIDDEN);
         }
-        GHashTableCXX resultData(Variant2HashTable(resultDataVar), TRANSFER_REF);
+        GHashTableCXX resultData(Variant2HashTable(resultDataVar));
         GVariant *tokenVar = static_cast<GVariant *>(g_hash_table_lookup(resultData, (gpointer)"AccessToken"));
         if (!tokenVar) {
             SE_THROW("no AccessToken in OAuth2 response");
@@ -196,6 +133,7 @@ public:
     virtual std::string getUsername() const { return ""; }
 };
 
+#ifdef USE_ACCOUNTS
 class StoreIdentityData
 {
 public:
@@ -239,7 +177,7 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
     GErrorCXX gerror;
     AgAccountCXX account(ag_manager_load_account(manager, accountID, gerror), TRANSFER_REF);
     if (!account) {
-        gerror.throwError(StringPrintf("loading account with ID %d from %s failed",
+        gerror.throwError(SE_HERE, StringPrintf("loading account with ID %d from %s failed",
                                        accountID,
                                        username.c_str()));
     }
@@ -279,15 +217,18 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
     const char *method = ag_auth_data_get_method(authData);
     const char *mechanism = ag_auth_data_get_mechanism(authData);
 
+    GVariantCXX sessionDataVar(ag_auth_data_get_login_parameters(authData, NULL), TRANSFER_REF);
+    GHashTableCXX sessionData(Variant2HashTable(sessionDataVar));
+#ifdef USE_GSSO
+    GVariant *realmsVariant = (GVariant *)g_hash_table_lookup(sessionData, "Realms");
+    PlainGStrArray realms(g_variant_dup_strv(realmsVariant, NULL));
+#endif
+
     // Check that the service has a credentials ID. If not, create it and
     // store its ID permanently.
     if (!signonID) {
         SE_LOG_DEBUG(NULL, "have to create signon identity");
-        SignonIdentityCXX identity(signon_identity_new(
-#ifdef USE_GSSO
-                                                       NULL
-#endif
-                                                       ), TRANSFER_REF);
+        SignonIdentityCXX identity(signon_identity_new(), TRANSFER_REF);
         boost::shared_ptr<SignonIdentityInfo> identityInfo(signon_identity_info_new(), signon_identity_info_free);
         signon_identity_info_set_caption(identityInfo.get(),
                                          StringPrintf("created by SyncEvolution for account #%d and service %s",
@@ -295,6 +236,11 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
                                                       serviceName.empty() ? "<<none>>" : serviceName.c_str()).c_str());
         const gchar *mechanisms[] = { mechanism ? mechanism : "*", NULL };
         signon_identity_info_set_method(identityInfo.get(), method, mechanisms);
+#ifdef USE_GSSO
+        if (realms) {
+            signon_identity_info_set_realms(identityInfo.get(), realms);
+        }
+#endif
         StoreIdentityData data;
         signon_identity_store_credentials_with_info(identity, identityInfo.get(),
                                                     StoreIdentityCB, &data);
@@ -312,7 +258,7 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
         SYNCEVO_GLIB_CALL_SYNC(res, gerror, ag_account_store_async,
                                account, NULL);
         if (!res) {
-            gerror.throwError("failed to store account");
+            gerror.throwError(SE_HERE, "failed to store account");
         }
 
         authData = AgAuthDataCXX::steal(ag_account_service_get_auth_data(accountService));
@@ -324,13 +270,7 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
         mechanism = ag_auth_data_get_mechanism(authData);
     }
 
-    GVariantCXX sessionDataVar(ag_auth_data_get_login_parameters(authData, NULL));
-    GHashTableCXX sessionData(Variant2HashTable(sessionDataVar), TRANSFER_REF);
-    SignonIdentityCXX identity(signon_identity_new_from_db(signonID
-#ifdef USE_GSSO
-                                                           , NULL
-#endif
-                                                           ), TRANSFER_REF);
+    SignonIdentityCXX identity(signon_identity_new_from_db(signonID), TRANSFER_REF);
     SE_LOG_DEBUG(NULL, "using signond identity %d", signonID);
     SignonAuthSessionCXX authSession(signon_identity_create_session(identity, method, gerror), TRANSFER_REF);
 
@@ -340,6 +280,70 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
 
     return provider;
 }
+
+#else // USE_ACCOUNTS
+
+boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &username,
+                                                         const InitStateString &password)
+{
+    // Expected content of parameter GVariant.
+    boost::shared_ptr<GVariantType> hashtype(g_variant_type_new("a{sv}"), g_variant_type_free);
+
+    // 'username' is the part after signon: which we can parse directly.
+    GErrorCXX gerror;
+    GVariantCXX parametersVar(g_variant_parse(hashtype.get(), username.c_str(), NULL, NULL, gerror),
+                              TRANSFER_REF);
+    if (!parametersVar) {
+        gerror.throwError(SE_HERE, "parsing 'signon:' username");
+    }
+    GHashTableCXX parameters(Variant2HashTable(parametersVar));
+
+    // Extract the values that we expect in the parameters hash.
+    guint32 signonID;
+    const char *method;
+    const char *mechanism;
+
+    GVariant *value;
+    value = (GVariant *)g_hash_table_lookup(parameters, "identity");
+    if (!value ||
+        !g_variant_type_equal(G_VARIANT_TYPE_UINT32, g_variant_get_type(value))) {
+        SE_THROW("need 'identity: <numeric ID>' in 'signon:' parameters");
+    }
+    signonID = g_variant_get_uint32(value);
+
+    value = (GVariant *)g_hash_table_lookup(parameters, "method");
+    if (!value ||
+        !g_variant_type_equal(G_VARIANT_TYPE_STRING, g_variant_get_type(value))) {
+        SE_THROW("need 'method: <string>' in 'signon:' parameters");
+    }
+    method = g_variant_get_string(value, NULL);
+
+    value = (GVariant *)g_hash_table_lookup(parameters, "mechanism");
+    if (!value ||
+        !g_variant_type_equal(G_VARIANT_TYPE_STRING, g_variant_get_type(value))) {
+        SE_THROW("need 'mechanism: <string>' in 'signon:' parameters");
+    }
+    mechanism = g_variant_get_string(value, NULL);
+
+    value = (GVariant *)g_hash_table_lookup(parameters, "session");
+    if (!value ||
+        !g_variant_type_equal(hashtype.get(), g_variant_get_type(value))) {
+        SE_THROW("need 'session: <hash>' in 'signon:' parameters");
+    }
+    GHashTableCXX sessionData(Variant2HashTable(value));
+
+    SE_LOG_DEBUG(NULL, "using identity %u, method %s, mechanism %s",
+                 signonID, method, mechanism);
+    SignonIdentityCXX identity(signon_identity_new_from_db(signonID), TRANSFER_REF);
+    SE_LOG_DEBUG(NULL, "using signond identity %d", signonID);
+    SignonAuthSessionCXX authSession(signon_identity_create_session(identity, method, gerror), TRANSFER_REF);
+
+    boost::shared_ptr<AuthProvider> provider(new SignonAuthProvider(authSession, sessionData, mechanism));
+    return provider;
+}
+
+#endif // USE_ACCOUNTS
+
 
 #endif // USE_SIGNON
 

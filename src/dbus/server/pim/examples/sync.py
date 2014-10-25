@@ -36,9 +36,24 @@ import functools
 import sys
 import traceback
 import itertools
+import json
+import time
 from optparse import OptionParser
 
+# Needed for --poll-progress.
+glib = None
+try:
+    import glib
+except ImportError:
+    try:
+         from gi.repository import GLib as glib
+    except ImportError:
+         pass
+
 parser = OptionParser()
+parser.add_option("", "--peer",
+                  default=None,
+                  help="Set the peer name. Derived from --bt-mac if unset.")
 parser.add_option("-b", "--bt-mac", dest="mac",
                   default=None,
                   help="Set the Bluetooth MAC address and thus UID of the phone peer.",
@@ -46,6 +61,24 @@ parser.add_option("-b", "--bt-mac", dest="mac",
 parser.add_option("-d", "--debug",
                   action="store_true", default=False,
                   help="Print debug output coming from SyncEvolution server.")
+parser.add_option("-p", "--progress",
+                  action="store_true", default=False,
+                  help="Print progress information during a sync, triggered by PIM Manager signals.")
+parser.add_option("", "--poll-progress",
+                  action="store", type="float", default=None,
+                  help="Print progress information during a sync, pulled via polling at the given frequency.")
+parser.add_option("-m", "--mode",
+                  action="store", default='',
+                  help="Override default PBAP sync mode. One of 'all', 'text', 'incremental' (default).")
+parser.add_option("", "--sync-flags",
+                  action="store", default='{}',
+                  help="""Additionall SyncPeerWithFlags() flags in JSON notation. For example: '--sync-flags={ "pbap-chunk-transfer-time": 20, "pbap-chunk-time-lambda": 0.5, "pbap-chunk-max-count-photo": 100 }'""")
+parser.add_option("", "--peer-config",
+                  action="store", default='{}',
+                  help="""ConfigurePeer() properties in JSON notation. Not needed when --bt-mac is set, the default configuration then will be for PBAP with that phone. Can be used to sync via CardDAV: '--peer-config={"protocol": "CardDAV", "address": "google", "username": "goa:john.doe@gmail.com", "syncmode": "two-way"}'""")
+parser.add_option("-f", "--progress-frequency",
+                  action="store", type="float", default=0.0,
+                  help="Override default progress event frequency.")
 parser.add_option("-c", "--configure",
                   action="store_true", default=False,
                   help="Enable configuring the peer.")
@@ -57,12 +90,13 @@ parser.add_option("-r", "--remove",
                   help="Remove peer configuration and data.")
 (options, args) = parser.parse_args()
 if options.configure or options.sync or options.remove:
-    if not options.mac:
-        sys.exit('--bt-mac parameter must be given')
+    peername = options.peer or options.mac
+    if not peername:
+        sys.exit('--peer or --bt-mac parameter must be given')
 
-    # Use MAC address as UID of peer, but with underscores instead of colons
+    # Use MAC address as UID of peer, but without colons
     # and all in lower case. See https://bugs.freedesktop.org/show_bug.cgi?id=56436
-    peername = options.mac.replace(':', '').lower()
+    peername = peername.replace(':', '').lower()
 
 DBusGMainLoop(set_as_default=True)
 bus = dbus.SessionBus()
@@ -76,11 +110,46 @@ manager = dbus.Interface(bus.get_object('org._01.pim.contacts',
 # Capture and print debug output.
 def log_output(path, level, output, component):
     print '%s %s: %s' % (level, (component or 'sync'), output)
+
+# Format seconds as mm:ss[.mmm].
+def format_seconds(seconds, with_milli):
+    if with_milli:
+        format = '%02d:%06.3f'
+    else:
+        format = '%02d:%02d'
+    return format % (seconds / 60, seconds % 60)
+
+# Keep track of time when progress messages were received.
+last = time.time()
+start = last
+BAR_LENGTH = 20
+def log_progress(uid, event, data):
+    global last, start
+    now = time.time()
+    prefix = '%s/+%s:' % (format_seconds(now - start, False),
+                          format_seconds(now - last, True))
+    if event == 'progress':
+        percent = data['percent']
+        del data['percent']
+        bar = int(percent * BAR_LENGTH) * '-'
+        if len(bar) > 0 and len(bar) < BAR_LENGTH:
+            bar = bar[0:-1] + '>'
+        print prefix, '|%s%s| %.1f%% %s' % (bar, (BAR_LENGTH - len(bar)) * ' ', percent * 100, strip_dbus(data))
+    else:
+        print prefix, '%s = %s' % (event, strip_dbus(data))
+    last = now
+
 if options.debug:
     bus.add_signal_receiver(log_output,
                             "LogOutput",
                             "org.syncevolution.Server",
                             "org.syncevolution",
+                            None)
+if options.progress:
+    bus.add_signal_receiver(log_progress,
+                            "SyncProgress",
+                            "org._01.pim.contacts.Manager",
+                            "org._01.pim.contacts",
                             None)
 
 # Simplify the output of values returned via D-Bus by replacing
@@ -141,10 +210,37 @@ def done(*args):
         result = args[0]
     elif len(args) > 1:
         result = args
-def run():
+def run(syncing=False):
     global result
     result = None
-    loop.run()
+    if syncing:
+        print 'Running a sync, press CTRL-C to control it interactively.'
+        while result is None and error is None:
+            try:
+                loop.run()
+            except KeyboardInterrupt:
+                while True:
+                    print '[a]bort, [s]uspend, [r]esume, continue? ',
+                    response = sys.stdin.readline()
+                    try:
+                        if response == 'a\n':
+                            manager.StopSync(peername)
+                            break
+                        elif response == 's\n':
+                            manager.SuspendSync(peername)
+                            break
+                        elif response == 'r\n':
+                            manager.ResumeSync(peername)
+                            break
+                        elif response == '\n':
+                            break
+                        else:
+                            print 'Unknown response, try again.'
+                    except dbus.exceptions.DBusException, ex:
+                        print 'operation %s failed: %s' % (response, ex)
+    else:
+        loop.run()
+
     if error:
         print
         print error
@@ -162,16 +258,50 @@ print 'peers: %s' % peers
 print 'available databases: %s' % ([''] + ['peer-' + uid for uid in peers.keys()])
 
 if not error and options.configure:
-    peer = {'protocol': 'PBAP',
-            'address': options.mac}
+    peer = json.loads(options.peer_config)
+    if options.mac:
+        if not 'protocol' in peer:
+            peer['protocol'] = 'PBAP'
+        if not 'address' in peer:
+            peer['address'] = options.mac
     print 'adding peer config %s = %s' % (peername, peer)
     manager.SetPeer(peername, peer, **async_args)
     run()
 
+def pull_progress():
+    status = manager.GetPeerStatus(peername)
+    print 'Poll status:', strip_dbus(status)
+    return True
+
 if not error and options.sync:
+    # Do it once before starting the sync.
+    if options.poll_progress is not None:
+        pull_progress()
+
     print 'syncing peer %s' % peername
-    manager.SyncPeer(peername, **async_args)
-    run()
+    flags = json.loads(options.sync_flags)
+    if options.progress_frequency != 0.0:
+        flags['progress-frequency'] = options.progress_frequency
+    if options.mode:
+        flags['pbap-sync'] = options.mode
+    if flags:
+        manager.SyncPeerWithFlags(peername, flags, **async_args)
+    else:
+        manager.SyncPeer(peername, **async_args)
+
+    # Start regular polling of status.
+    timeout = None
+    if options.poll_progress is not None:
+        timeout = glib.Timeout(int(1 / options.poll_progress * 1000))
+        timeout.set_callback(pull_progress)
+        timeout.attach(loop.get_context())
+
+    # Wait for completion of sync.
+    run(syncing=True)
+
+    # Stop polling, in case that we remove the peer.
+    if timeout:
+        timeout.destroy()
 
 if not error and options.remove:
     print 'removing peer %s' % peername

@@ -65,6 +65,12 @@ class SyncContext : public SyncConfig {
     bool m_quiet;
     bool m_dryrun;
 
+    enum SyncFreeze {
+        SYNC_FREEZE_NONE,
+        SYNC_FREEZE_RUNNING,
+        SYNC_FREEZE_FROZEN
+    } m_syncFreeze;
+    static const char *SyncFreezeName(SyncFreeze syncFreeze);
     bool m_localSync;
     string m_localPeerContext; /**< context name (including @) if doing local sync */
     string m_localClientRootPath;
@@ -82,8 +88,7 @@ class SyncContext : public SyncConfig {
     boost::shared_ptr<UserInterface> m_userInterface;
 
     /**
-     * a pointer to the active SourceList instance for this context if one exists;
-     * used for error handling in throwError() on the iPhone
+     * a pointer to the active SourceList instance for this context if one exists
      */
     SourceList *m_sourceListPtr;
 
@@ -115,6 +120,9 @@ class SyncContext : public SyncConfig {
      * Synthesis session handle. Only valid while sync is running.
      */
     SharedSession m_session;
+
+    /** Set to true in displaySourceProgress() when doSync() is expected to stop the sync early. */
+    bool m_quitSync;
 
     /**
      * installs session in SyncContext and removes it again
@@ -367,51 +375,6 @@ class SyncContext : public SyncConfig {
     void checkStatus(SyncReport &report);
 
     /**
-     * throws a StatusException with a local, fatal error with the given string
-     * or (on the iPhone, where exception handling is not
-     * supported by the toolchain) prints an error directly
-     * and aborts
-     *
-     * output format: <error>
-     *
-     * @param error     a string describing the error
-     */
-    static void throwError(const string &error) SE_NORETURN;
-
-    /**
-     * throw an exception with a specific status code after an operation failed and
-     * remember that this instance has failed
-     *
-     * output format: <failure>
-     *
-     * @param status     a more specific status code; other throwError() variants
-     *                   use STATUS_FATAL + sysync::LOCAL_STATUS_CODE, which is interpreted
-     *                   as a fatal local error
-     * @param action     a string describing what was attempted *and* how it failed
-     */
-    static void throwError(SyncMLStatus status, const string &failure) SE_NORETURN;
-
-    /**
-     * throw an exception after an operation failed and
-     * remember that this instance has failed
-     *
-     * output format: <action>: <error string>
-     *
-     * @Param action   a string describing the operation or object involved
-     * @param error    the errno error code for the failure
-     */
-    static void throwError(const string &action, int error) SE_NORETURN;
-
-    /**
-     * An error handler which prints the error message and then
-     * stops the program. Never returns.
-     *
-     * The API was chosen so that it can be used as libebook/libecal
-     * "backend-dies" signal handler.
-     */
-    static void fatalError(void *object, const char *error) SE_NORETURN;
-
-    /**
      * When using Evolution this function starts a background thread
      * which drives the default event loop. Without that loop
      * "backend-died" signals are not delivered. The problem with
@@ -484,6 +447,15 @@ class SyncContext : public SyncConfig {
      * possible.
      */
     static void requestAnotherSync();
+
+    /**
+     * If called while a sync runs, it will change the state of that
+     * sync. A frozen sync can only be unfrozen (via setFreeze(false))
+     * or suspended/aborted (via signals).
+     *
+     * @return true if there was a running sync, false otherwise
+     */
+    bool setFreeze(bool freeze);
 
     /**
      * access to current set of sync sources, NULL if not instantiated yet
@@ -564,10 +536,11 @@ class SyncContext : public SyncConfig {
      * Calls getConfigTemplateXML(), then fills in
      * sync source XML fragments if necessary.
      *
+     * @param isSync       the XML config will be used for the final engine used for syncing, not just logging
      * @retval xml         is filled with complete Synthesis client config
      * @retval configname  a string describing where the config came from
      */
-    virtual void getConfigXML(string &xml, string &configname);
+    virtual void getConfigXML(bool isSync, string &xml, string &configname);
 
     /**
      * Callback for derived classes: called after initializing the
@@ -677,8 +650,10 @@ class SyncContext : public SyncConfig {
 
     /**
      * generate XML configuration and (re)initialize engine with it
+     *
+     * @param isSync       the XML config will be used for the final engine used for syncing, not just logging
      */
-    void initEngine(bool logXML);
+    void initEngine(bool isSync);
 
     /**
      * the code common to init() and status():
@@ -693,9 +668,14 @@ class SyncContext : public SyncConfig {
     void initLocalSync(const string &config);
 
     /**
+     * called via pre-signal of m_saveAdminData
+     */
+    SyncMLStatus preSaveAdminData(SyncSource &source);
+
+    /**
      * called via pre-signal of m_startDataRead
      */
-    void startSourceAccess(SyncSource *source);
+    SyncMLStatus startSourceAccess(SyncSource *source);
 
     /**
      * utility function for status() and getChanges():
@@ -742,6 +722,7 @@ class SyncContext : public SyncConfig {
     // Cache for use in displaySourceProgress().
     SyncSource *m_sourceProgress;
     SyncSourceEvent m_sourceEvent;
+    std::set<std::string> m_sourceStarted;
 
 public:
     /**

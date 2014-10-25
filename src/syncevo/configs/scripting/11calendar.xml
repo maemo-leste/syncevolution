@@ -163,8 +163,8 @@
       if (SUMMARY==EMPTY) SUMMARY="unnamed"; // in case description is empty as well
       // make sure that we have a DESCRIPTION, because some peers only support that;
       // can be avoided for peers where we are certain (from CtCaps) that they can
-      // receive the text as part of the summary
-      if (ISAVAILABLE(SUMMARY)!=TRUE && DESCRIPTION==EMPTY) DESCRIPTION=SUMMARY;
+      // receive the text as part of the summary; don't do this for VJOURNAL
+      if (ISAVAILABLE(SUMMARY)!=TRUE && DESCRIPTION==EMPTY && ISEVENT != 2) DESCRIPTION=SUMMARY;
       // do NOT send duration (some servers crash when doing so)
       DURATION = UNASSIGNED;
       // shape alarm
@@ -248,23 +248,33 @@
     <!-- invoked when reading plain text memo from storage or receiving from peer -->
     <macro name="MEMO_INCOMING_SCRIPT"><![CDATA[
     ISEVENT = 2;
+
+    // Copy summary into description. It is not 100% certain whether that is
+    // necessary (the summary might be completely unrelated to the description text),
+    // but this way it is consistent with the way how the EDS backend used to handle
+    // it and symmetric with MEMO_OUTGOING_SCRIPT.
+    if (SUMMARY != EMPTY && DESCRIPTION != EMPTY) {
+        DESCRIPTION = SUMMARY + "\n" + DESCRIPTION;
+    }
     ]]></macro>
 
     <!-- invoked before writing plain text memo into storage or sending to peer -->
     <macro name="MEMO_OUTGOING_SCRIPT"><![CDATA[
-    // remove SUMMARY from start of DESCRIPTION before writing,
-    // because that will concatenate them again
+    // remove SUMMARY from start of DESCRIPTION before writing if text matches,
+    // because sending as plain text will concatenate them again
     integer lensummary, lendescr;
     lensummary = LENGTH(SUMMARY);
     lendescr = LENGTH(DESCRIPTION);
-    if (lendescr > lensummary &&
+    if (lendescr >= lensummary &&
         SUBSTR(DESCRIPTION, 0, lensummary) == SUMMARY &&
-        SUBSTR(DESCRIPTION, lensummary, 1) == "\n") {
+        (lensummary == lendescr || SUBSTR(DESCRIPTION, lensummary, 1) == "\n")) {
         DESCRIPTION = SUBSTR(DESCRIPTION, lensummary + 1, lendescr - lensummary - 1);
     }
     ]]></macro>
 
     <macro name="CALENDAR_BEFOREWRITE_SCRIPT"><![CDATA[
+      if (UID == EMPTY) { UID = newuid(); }
+
       // set UTC time of generation for iCalendar 2.0 DTSTAMP
       DGENERATED = NOW();
       // ensure that there is a DMODIFIED = LAST-MODIFIED property,

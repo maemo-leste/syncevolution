@@ -316,6 +316,7 @@ SE_GOBJECT_TYPE(GFile)
 SE_GOBJECT_TYPE(GFileMonitor)
 SE_GLIB_TYPE(GMainLoop, g_main_loop)
 SE_GLIB_TYPE(GAsyncQueue, g_async_queue)
+SE_GLIB_TYPE(GHashTable, g_hash_table)
 
 SE_BEGIN_CXX
 
@@ -335,6 +336,8 @@ class GLibNotify : public boost::noncopyable
     GFileMonitorCXX m_monitor;
     callback_t m_callback;
 };
+
+class SourceLocation; // Exception.h
 
 /**
  * Wraps GError. Where a GError** is expected, simply pass
@@ -420,8 +423,8 @@ struct GErrorCXX {
      * always throws an exception, including information from GError if available:
      * <action>: <error message>|failure
      */
-    void throwError(const std::string &action);
-    static void throwError(const std::string &action, const GError *err);
+    void throwError(const SourceLocation &where, const std::string &action);
+    static void throwError(const SourceLocation &where, const std::string &action, const GError *err);
 };
 
 template<class T> void NoopDestructor(T *) {}
@@ -1041,24 +1044,6 @@ template<> class GAsyncReadyDoneCXX<void>
                                 _args); \
         GRunWhile(! boost::lambda::var(done)); \
     } while (false); \
-
-
-/**
- * Process events in the default context while the callback returns
- * true.
- *
- * This must be used instead of g_main_context_iterate() by code which
- * may get called in other threads. In that case the check is
- * transferred to the main thread which does the actual event
- * processing. g_main_context_iterate() would just block because we
- * register the main thread as permanent owner of the default context,
- * or would suffer from race conditions if we didn't.
- *
- * The main thread must also be running GRunWhile().
- *
- * Exceptions in the check code are fatal and should be avoided.
- */
-void GRunWhile(const boost::function<bool ()> &check);
 
 #endif // HAVE_GLIB
 

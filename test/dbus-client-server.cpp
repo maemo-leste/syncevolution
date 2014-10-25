@@ -248,12 +248,14 @@ int main(int argc, char **argv)
             { "forkexec", 'e', 0, G_OPTION_ARG_NONE, &opt_fork_exec, "Use fork+exec to start the client (implies --server)", NULL },
             { "forkfailure", 'f', 0, G_OPTION_ARG_NONE, &opt_fork_exec_failure, "Fork /bin/false to simulate a failure in the child (implies )", NULL },
             { "forkkill", 'a', 0, G_OPTION_ARG_STRING, &opt_kill, "'child/parent' call peer which kills itself before replying (implies --forkexec)", NULL },
-            { "address", 'a', 0, G_OPTION_ARG_STRING, &opt_address, "D-Bus address to use", NULL },
+            { "address", 'a', 0, G_OPTION_ARG_STRING, &opt_address, "D-Bus address to use when connecting to server", NULL },
             // { "allow-anonymous", 'n', 0, G_OPTION_ARG_NONE, &opt_allow_anonymous, "Allow anonymous authentication", NULL },
             { NULL}
         };
 
+#if !GLIB_CHECK_VERSION(2,36,0)
         g_type_init();
+#endif
 
         opt_address = NULL;
         opt_kill = NULL;
@@ -267,7 +269,7 @@ int main(int argc, char **argv)
         bool success = g_option_context_parse(opt_context, &argc, &argv, gerror);
         g_option_context_free(opt_context);
         if (!success) {
-            gerror.throwError("parsing command line options");
+            gerror.throwError(SE_HERE, "parsing command line options");
         }
         // if (!opt_server && opt_allow_anonymous) {
         // throw stdruntime_error("The --allow-anonymous option only makes sense when used with --server.");
@@ -293,16 +295,14 @@ int main(int argc, char **argv)
             forkexec->start();
             g_main_loop_run(loop.get());
         } else if (opt_server) {
+            boost::scoped_ptr<Test> testptr;
             boost::shared_ptr<GDBusCXX::DBusServerCXX> server =
-                GDBusCXX::DBusServerCXX::listen(opt_address ?
-                                                opt_address : "",
+                GDBusCXX::DBusServerCXX::listen(boost::bind(newClientConnection, _1, _2, boost::ref(testptr)),
                                                 &dbusError);
             if (!server) {
                 dbusError.throwFailure("starting server");
             }
             std::cout << "Server is listening at: " << server->getAddress() << std::endl;
-            boost::scoped_ptr<Test> testptr;
-            server->setNewConnectionCallback(boost::bind(newClientConnection, _1, _2, boost::ref(testptr)));
 
             g_main_loop_run(loop.get());
         } else if (SyncEvo::ForkExecChild::wasForked()) {

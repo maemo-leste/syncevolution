@@ -435,6 +435,7 @@ class ClientTest : private boost::noncopyable {
      * registerTests() and remains valid until the client is deleted
      */
     void *factory;
+    void freeFactory();
 };
 
 /**
@@ -552,6 +553,16 @@ public:
     virtual bool compareDatabases(const char *refFile, TestingSyncSource &copy, bool raiseAssert = true);
 
     /**
+     * compares data using synccompare
+     *
+     * @param refFile      existing file with source reference items
+     * @param actualFile   existing file with actual items which are expected to match
+     * @param raiseAssert  raise assertion if comparison yields differences (defaults to true)
+     * @return true if the two databases are equal
+     */
+    bool compareDatabases(const std::string &refFile, const std::string &actualFile, bool raiseAssert = true);
+
+    /**
      * compare data in source with set of items
      */
     void compareDatabasesRef(TestingSyncSource &copy,
@@ -560,7 +571,7 @@ public:
     /**
      * compare data in source with vararg list of std::string pointers, NULL terminated
      */
-    void compareDatabases(TestingSyncSource &copy, ...);
+    void compareDatabases(TestingSyncSource *copy, ...);
 
     /**
      * insert artificial items, number of them determined by TEST_EVOLUTION_NUM_ITEMS
@@ -632,6 +643,7 @@ public:
     virtual void testChanges();
     virtual void testChangesMultiCycles();
     virtual void testLinkedSources();
+    void doImport(const std::string &testcases);
     virtual void testImport();
     virtual void testImportDelete();
     virtual void testRemoveProperties();
@@ -872,6 +884,13 @@ protected:
 
     virtual void testTimeout();
 
+    virtual void testUpload();
+    virtual void testDownload();
+
+    void doUpdateConflict(const std::string &testname, bool localWins);
+    virtual void testUpdateLocalWins();
+    virtual void testUpdateRemoteWins();
+
     /**
      * implements testMaxMsg(), testLargeObject(), testLargeObjectEncoded()
      * using a sequence of items with varying sizes
@@ -892,11 +911,11 @@ protected:
     void doSync(const char *file, int line,
                 const char *logPrefix,
                 const SyncOptions &options) {
-        CT_WRAP_ASSERT(file, line, doSync(logPrefix, options), true);
+        CT_WRAP_ASSERT(file, line, doSync(logPrefix, options), CT_ASSERT_EXE_CLANG_BUILD(doSync(logPrefix, options)));
     }
     void doSync(const char *file, int line,
                 const SyncOptions &options) {
-        CT_WRAP_ASSERT(file, line, doSync(options), true);
+        CT_WRAP_ASSERT(file, line, doSync(options), CT_ASSERT_EXE_CLANG_BUILD(doSync(options)));
     }
     virtual void postSync(int res, const std::string &logname);
 

@@ -32,6 +32,7 @@
 #include "gdbus-cxx-bridge.h"
 #include <string>
 #include <stdint.h>
+#include <pcrecpp.h>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -64,7 +65,7 @@ class LocalTransportAgent : public TransportAgent
 {
  private:
     LocalTransportAgent(SyncContext *server,
-                        const std::string &clientContext,
+                        const std::string &clientConfig,
                         void *loop = NULL);
     boost::weak_ptr<LocalTransportAgent> m_self;
 
@@ -72,13 +73,13 @@ class LocalTransportAgent : public TransportAgent
     /**
      * @param server          the server side of the sync;
      *                        must remain valid while transport exists
-     * @param clientContext   name of the context which contains the client's
-     *                        sources, must start with @ sign
+     * @param clientConfig    name of the target sync config or context (in which case
+     *                        the target-config in that context is used)
      * @param loop            optional glib loop to use when waiting for IO;
      *                        transport will *not* increase the reference count
      */
     static boost::shared_ptr<LocalTransportAgent> create(SyncContext *server,
-                                                         const std::string &clientContext,
+                                                         const std::string &clientConfig,
                                                          void *loop = NULL);
     ~LocalTransportAgent();
 
@@ -98,6 +99,7 @@ class LocalTransportAgent : public TransportAgent
     virtual void setURL(const std::string &url) {}
     virtual void setContentType(const std::string &type);
     virtual void shutdown();
+    virtual void setFreeze(bool freeze);
     virtual void send(const char *data, size_t len);
     virtual void cancel();
     virtual Status wait(bool noReply = false);
@@ -106,14 +108,14 @@ class LocalTransportAgent : public TransportAgent
 
  private:
     SyncContext *m_server;
-    std::string m_clientContext;
+    std::string m_clientConfig;
     Status m_status;
     SyncReport m_clientReport;
     GMainLoopCXX m_loop;
     boost::shared_ptr<ForkExecParent> m_forkexec;
     std::string m_contentType;
     std::string m_replyContentType;
-    std::string m_replyMsg;
+    pcrecpp::StringPiece m_replyMsg;
 
     /**
      * provides the D-Bus API expected by the forked process:
@@ -142,7 +144,7 @@ class LocalTransportAgent : public TransportAgent
                      const boost::shared_ptr< GDBusCXX::Result1<const std::string &> > &reply);
     void storeSyncReport(const std::string &report);
     void storeReplyMsg(const std::string &contentType,
-                       const GDBusCXX::DBusArray<uint8_t> &reply,
+                       size_t offset, size_t len,
                        const std::string &error);
 
     /**

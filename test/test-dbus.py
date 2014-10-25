@@ -38,6 +38,7 @@ import inspect
 import gzip
 import httplib
 import socket
+import stat
 
 import dbus
 from dbus.mainloop.glib import DBusGMainLoop
@@ -103,6 +104,32 @@ def which(program):
             return os.path.abspath(exeFile)
 
     return None
+
+def listall(dirs, exclude=[], includedata=False):
+    '''returns list of all dirs and files in the given dirs, excluding entries matching one
+of the regular expressions'''
+
+    result = {}
+    def append(dirname, entry):
+        fullname = os.path.join(dirname, entry)
+        for pattern in exclude:
+            if re.match(pattern, fullname):
+                return
+        s = os.stat(fullname)
+        if includedata and stat.S_ISREG(s.st_mode):
+            data = open(fullname).read()
+            if filter(lambda x: x not in string.printable, data):
+                data = ' '.join(['%02x'%ord(x) for x in data])
+            result[fullname] = (s.st_mtime, data)
+        else:
+            result[fullname] = s.st_mtime
+    for dir in dirs:
+        for dirname, dirnames, filenames in os.walk(dir):
+            for subdirname in dirnames:
+                append(dirname, subdirname)
+            for filename in filenames:
+                append(dirname, filename)
+    return result
 
 def GrepNotifications(dbuslog):
     '''finds all Notify calls and returns their parameters as list of line lists'''
@@ -268,7 +295,7 @@ def property(key, value):
 
 def timeout(seconds):
     """Function decorator which sets a non-default timeout for a test.
-    The default timeout, enforced by DBusTest.runTest(), are 20 seconds.
+    The default timeout, enforced by DBusTest.runTest(), are 40 seconds.
     Use like this:
         @timeout(60)
         def testMyTest:
@@ -487,7 +514,7 @@ class DBusUtil(Timeout):
         properties = getattr(testMethod, "properties", {})
         return properties.get(key, default)
 
-    def runTest(self, result, own_xdg=True, serverArgs=[], own_home=False, defTimeout=20):
+    def runTest(self, result, own_xdg=True, serverArgs=[], own_home=False, defTimeout=40):
         """Starts the D-Bus server and dbus-monitor before the test
         itself. After the test run, the output of these two commands
         are added to the test's failure, if any. Otherwise the output
@@ -586,7 +613,21 @@ class DBusUtil(Timeout):
         else:
             self.pdlt = None
 
-        if debugger:
+        # Sanity check: must not have running syncevo-dbus-server.
+        # Perhaps the D-Bus daemon has not noticed that the previous owner
+        # is gone. Wait a bit.
+        start = time.time()
+        startServer = True
+        while bus.name_has_owner('org.syncevolution'):
+            if time.time() - start > 60:
+                startServer = False
+                break
+            logging.printf('There is a running syncevo-dbus-server?!')
+            time.sleep(1)
+
+        if not startServer:
+            logging.printf('Not starting syncevo-dbus-server, org.syncevolution is not available.')
+        elif debugger:
             print "\n%s: %s\n" % (self.id(), self.shortDescription())
             if env.get("HOME") != os.environ.get("HOME") and \
                     os.path.exists(os.path.join(os.environ.get("HOME"), ".gdbinit")):
@@ -620,9 +661,10 @@ class DBusUtil(Timeout):
         while self.isServerRunning() and not bus.name_has_owner('org.syncevolution'):
             time.sleep(1)
         # In addition, ensure that it is fully running by calling one method.
-        dbus.Interface(bus.get_object('org.syncevolution',
-                                      '/org/syncevolution/Server'),
-                       'org.syncevolution.Server').GetVersions()
+        if self.isServerRunning():
+            dbus.Interface(bus.get_object('org.syncevolution',
+                                          '/org/syncevolution/Server'),
+                           'org.syncevolution.Server').GetVersions()
 
         # pserver.pid is not necessarily the pid of syncevo-dbus-server.
         # It might be the child of the pserver process.
@@ -641,7 +683,7 @@ class DBusUtil(Timeout):
 
         # Find out what test function we run and look into
         # the function definition to see whether it comes
-        # with a non-default timeout, otherwise use a 20 second
+        # with a non-default timeout, otherwise use a 40 second
         # timeout.
         timeout = self.getTestProperty("timeout", defTimeout)
         timeout_handle = None
@@ -675,19 +717,29 @@ class DBusUtil(Timeout):
             # allow debugger to run as long as it is needed
             DBusUtil.pserver.communicate()
 
+        # Mark the end of the test in the dbus log. Relevant for
+        # checking the dbus log, because killing processes may distort
+        # the result (for example, in testAutoSyncNoNetworkManager, some sync sessions
+        # may still be running now and will cause unexpected notifications to be emitted
+        # when we kill syncevo-dbus-helper).
+        eotest = '---------------- end of test --------------------'
+        logging.log(eotest)
+
         # Find and kill all sub-processes except for dbus-monitor:
         # first try SIGTERM, then if they don't respond, SIGKILL. The
         # latter is an error. How much time we allow them between
         # SIGTERM and SIGTERM depends on how much work still needs to
         # be done after being asked to quit. valgrind leak checking
         # can take a while.
-        unresponsive = self.killChildren(usingValgrind() and 120 or 20)
+        unresponsive = self.killChildren(usingValgrind() and 300 or 20)
         if unresponsive:
             error = "/".join(unresponsive) + " had to be killed with SIGKILL"
             print "   ", error
             result.errors.append((self, error))
 
-        if debugger:
+        if not startServer:
+            serverout = '<not started>'
+        elif debugger:
             serverout = '<see console>'
         else:
             serverout = open(syncevolog).read()
@@ -729,7 +781,9 @@ class DBusUtil(Timeout):
         runTestDBusCheck = getattr(self, 'runTestDBusCheck', None)
         if runTestDBusCheck:
             try:
-                runTestDBusCheck(self, monitorout)
+                # Only pass the output from the test itself to the check.
+                # The rest is only relevant for debugging.
+                runTestDBusCheck(self, monitorout.split(eotest)[0])
             except:
                 # only append report if not part of some other error below
                 result.errors.append((self,
@@ -997,6 +1051,7 @@ Use check=lambda: (expr1, expr2, ...) when more than one check is needed.
     def serverPid(self):
         """PID of syncevo-dbus-server, None if not running. Works regardless whether it is
         started directly or with a wrapper script like valgrindcheck.sh."""
+        self.assertTrue(DBusUtil.pserver)
         res = self.serverExecutableHelper(DBusUtil.pserver.pid)
         self.assertTrue(res)
         return res[1]
@@ -1159,7 +1214,7 @@ Use check=lambda: (expr1, expr2, ...) when more than one check is needed.
 
     def setUpLocalSyncConfigs(self, childPassword=None, enableCalendar=False, preventSlowSync=None):
         # create file<->file configs
-        self.setUpSession("target-config@client")
+        self.setUpSession("remote@client")
         addressbook = { "sync": "two-way",
                         "backend": "file",
                         "databaseFormat": "text/vcard",
@@ -1181,7 +1236,7 @@ Use check=lambda: (expr1, expr2, ...) when more than one check is needed.
         self.session.Detach()
         self.setUpSession("server")
         config = {"" : { "loglevel": "4",
-                         "syncURL": "local://@client",
+                         "syncURL": "local://remote@client",
                          "RetryDuration": self.getTestProperty("resendDuration", "60"),
                          "peerIsClient": "1" },
                   "source/addressbook": { "sync": "two-way",
@@ -1540,8 +1595,7 @@ class TestDBusServer(DBusUtil, unittest.TestCase):
         configs = self.server.GetConfigs(True, utf8_strings=True)
         configs.sort()
         self.assertEqual(configs, ["Funambol",
-                                   "Google_Calendar",
-                                   "Google_Contacts",
+                                   "Google",
                                    "Goosync",
                                    "Memotoo",
                                    "Mobical",
@@ -2272,7 +2326,7 @@ class TestSessionAPIsEmptyName(DBusUtil, unittest.TestCase):
             self.session.CheckSource("", utf8_strings=True)
         except dbus.DBusException, ex:
             self.assertEqual(str(ex),
-                                 "org.syncevolution.NoSuchSource: '' has no '' source")
+                                 "org.syncevolution.NoSuchSource: '' has no '' datastore")
         else:
             self.fail("no exception thrown")
 
@@ -2282,7 +2336,7 @@ class TestSessionAPIsEmptyName(DBusUtil, unittest.TestCase):
             self.session.GetDatabases("", utf8_strings=True)
         except dbus.DBusException, ex:
             self.assertEqual(str(ex),
-                                 "org.syncevolution.NoSuchSource: '' has no '' source")
+                                 "org.syncevolution.NoSuchSource: '' has no '' datastore")
         else:
             self.fail("no exception thrown")
 
@@ -2540,19 +2594,19 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
             self.session.CheckSource("", utf8_strings=True)
         except dbus.DBusException, ex:
             self.assertEqual(str(ex),
-                                 "org.syncevolution.NoSuchSource: 'dummy-test' has no '' source")
+                                 "org.syncevolution.NoSuchSource: 'dummy-test' has no '' datastore")
         else:
             self.fail("no exception thrown")
 
     def testCheckSourceNoSourceName(self):
-        """TestSessionAPIsDummy.testCheckSourceNoSourceName -  test the right error is reported when the source doesn't exist """
+        """TestSessionAPIsDummy.testCheckSourceNoSourceName -  test the right error is reported when the datastore doesn't exist """
         self.setupConfig()
         try:
             self.session.CheckSource("dummy", utf8_strings=True)
         except dbus.DBusException, ex:
             self.assertEqual(str(ex),
                                  "org.syncevolution.NoSuchSource: 'dummy-test' "
-                                 "has no 'dummy' source")
+                                 "has no 'dummy' datastore")
         else:
             self.fail("no exception thrown")
 
@@ -2565,7 +2619,7 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
             self.session.CheckSource("memo", utf8_strings=True)
         except dbus.DBusException, ex:
             self.assertEqual(str(ex),
-                                 "org.syncevolution.SourceUnusable: The source 'memo' is not usable")
+                                 "org.syncevolution.SourceUnusable: The datastore 'memo' is not usable")
         else:
             self.fail("no exception thrown")
 
@@ -2582,7 +2636,7 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
             self.fail("no exception thrown")
 
     def testCheckSourceNoBackend(self):
-        """TestSessionAPIsDummy.testCheckSourceNoBackend -  test the right error is reported when the source is unusable"""
+        """TestSessionAPIsDummy.testCheckSourceNoBackend -  test the right error is reported when the datastore is unusable"""
         self.setupConfig()
         config = { "source/memo" : { "backend" : "file",
                                      "databaseFormat" : "text/calendar",
@@ -2592,12 +2646,12 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
             self.session.CheckSource("memo", utf8_strings=True)
         except dbus.DBusException, ex:
             self.assertEqual(str(ex),
-                                 "org.syncevolution.SourceUnusable: The source 'memo' is not usable")
+                                 "org.syncevolution.SourceUnusable: The datastore 'memo' is not usable")
         else:
             self.fail("no exception thrown")
 
     def testCheckSource(self):
-        """TestSessionAPIsDummy.testCheckSource - testCheckSource - test all sources are okay"""
+        """TestSessionAPIsDummy.testCheckSource - testCheckSource - test all datastores are okay"""
         self.setupConfig()
         try:
             for source in self.sources:
@@ -2619,18 +2673,18 @@ class TestSessionAPIsDummy(DBusUtil, unittest.TestCase):
             self.session.GetDatabases("", utf8_strings=True)
         except dbus.DBusException, ex:
             self.assertEqual(str(ex),
-                                 "org.syncevolution.NoSuchSource: 'dummy-test' has no '' source")
+                                 "org.syncevolution.NoSuchSource: 'dummy-test' has no '' datastore")
         else:
             self.fail("no exception thrown")
 
     def testGetDatabasesEmpty(self):
-        """TestSessionAPIsDummy.testGetDatabasesEmpty -  test the right error is reported for non-existing source"""
+        """TestSessionAPIsDummy.testGetDatabasesEmpty -  test the right error is reported for non-existing datastore"""
         self.setupConfig()
         try:
             databases = self.session.GetDatabases("never_use_this_source_name", utf8_strings=True)
         except dbus.DBusException, ex:
             self.assertEqual(str(ex),
-                                 "org.syncevolution.NoSuchSource: 'dummy-test' has no 'never_use_this_source_name' source")
+                                 "org.syncevolution.NoSuchSource: 'dummy-test' has no 'never_use_this_source_name' datastore")
         else:
             self.fail("no exception thrown")
 
@@ -4394,7 +4448,7 @@ END:VCARD''')
         # Local sync helper cannot tell for sure what happened.
         # A generic error is okay. If the ForkExecChild::m_onQuit signal is
         # triggered first, it'll report the "aborted" error.
-        status, error = self.getSyncStatus('target_+config@client')
+        status, error = self.getSyncStatus('remote@client')
         self.assertTrue(status in (10500, 20017))
         self.assertTrue(error in ('retrieving password failed: The connection is closed',
                                   'sync parent quit unexpectedly'))
@@ -4464,7 +4518,7 @@ END:VCARD''')
         status, error = self.getSyncStatus('server')
         self.assertSyncStatus('server', 20043, ('child process quit because of signal 9',
                                                 'sending message to child failed: The connection is closed'))
-        self.assertSyncStatus('target_+config@client', 22002, 'synchronization process died prematurely')
+        self.assertSyncStatus('remote@client', 22002, 'synchronization process died prematurely')
 
     @timeout(600)
     def testServerFailure(self):
@@ -4528,6 +4582,8 @@ END:VCARD''')
     @property("ENV", "SYNCEVOLUTION_SYNC_DELAY=10") # allow killing syncevo-dbus-server in middle of sync
     def testNoParent(self):
         """TestLocalSync.testNoParent - check that sync helper can continue without parent"""
+        existingProcesses = self.getChildren()
+        logging.printf('Existing processes: %s', str(existingProcesses))
         self.setUpConfigs()
         self.setUpListeners(self.sessionpath)
         pid = self.serverPid()
@@ -4535,7 +4591,8 @@ END:VCARD''')
         self.killTimeout = None
         self.syncProcesses = {}
         def killServer():
-            self.syncProcesses = self.getChildren()
+            self.syncProcesses = dict([ (p, props) for p, props in self.getChildren().iteritems() if not existingProcesses.has_key(p)])
+            logging.printf('Sync processes: %s', str(self.syncProcesses))
             if pid != serverPid:
                 logging.printf('killing syncevo-dbus-server wrapper with pid %d', serverPid)
                 os.kill(serverPid, signal.SIGKILL)
@@ -4552,25 +4609,20 @@ END:VCARD''')
             DBusUtil.pserver.wait()
             DBusUtil.pserver = None
             loop.quit()
-            # Remove timeout by returning false.
-            self.killTimeout = None
-            return False
-        def progressChanged(*args, **keywords):
-            # Now give sync some more time to get started. Less than
-            # the 10 seconds that the child process gets delayed,
-            # enough to get it started.
-            delay = 1
-            logging.printf('killing syncevo-dbus-server in %d seconds', delay)
-            self.killTimeout = Timeout.addTimeout(delay, killServer)
-            # Don't call me again.
-            self.progressChanged = None
-        # Wait for first sign of a running sync.
-        self.progressChanged = progressChanged
-
-        self.session.Sync("slow", {})
-        loop.run()
-        if self.killTimeout is not None:
-            Timeout.removeTimeout(self.killTimeout)
+        def output(path, level, text, procname):
+            if self.running and DBusUtil.pserver and text == 'ready to sync':
+                killServer()
+        receiver = bus.add_signal_receiver(output,
+                                           'LogOutput',
+                                           'org.syncevolution.Server',
+                                           self.server.bus_name,
+                                           byte_arrays=True,
+                                           utf8_strings=True)
+        try:
+            self.session.Sync("slow", {})
+            loop.run()
+        finally:
+            receiver.remove()
 
         # Should have killed server.
         self.assertFalse(DBusUtil.pserver)
@@ -4604,80 +4656,72 @@ FN:John Doe
 N:Doe;John
 ORG:Test Inc.
 END:VCARD'''
-    johnComplexVCard = '''BEGIN:VCARD
+    # The data must be stored exactly as generated by the Synthesis engine.
+    # Otherwise we risk that parsing it directly and comparing against
+    # an item data that first went through a parsing/generating step
+    # will find irrelevant differences, which breaks the tests which assume
+    # that client and server already have the same data.
+    #
+    # Perhaps a better solution would be to not create the data on the client
+    # directly and instead create it via syncing.
+    johnComplexVCard = r'''BEGIN:VCARD
 VERSION:3.0
-URL:http://john.doe.com
-TITLE:Senior Tester
-ORG:Test Inc.;Testing;test#1
-ROLE:professional test case
-X-EVOLUTION-MANAGER:John Doe Senior
-X-EVOLUTION-ASSISTANT:John Doe Junior
-NICKNAME:user1
-BDAY:2006-01-08
-X-FOOBAR-EXTENSION;X-FOOBAR-PARAMETER=foobar:has to be stored internally by engine and preserved in testExtensions test\; never sent to a peer
-X-TEST;PARAMETER1=nonquoted;PARAMETER2="quoted because of spaces":Content with\nMultiple\nText lines\nand national chars: äöü
-X-EVOLUTION-ANNIVERSARY:2006-01-09
-X-EVOLUTION-SPOUSE:Joan Doe
-NOTE:This is a test case which uses almost all Evolution fields.
-FN:John Doe
+PRODID:-//Synthesis AG//NONSGML SyncML Engine V3.4.0.47//EN
+REV:20100328T103410Z
 N:Doe;John;;;
+FN:John Doe
 X-EVOLUTION-FILE-AS:Doe\, John
+X-GENDER:
+NICKNAME:user1
+TITLE:Senior Tester
 CATEGORIES:TEST
-X-EVOLUTION-BLOG-URL:web log
-CALURI:calender
-FBURL:free/busy
-X-EVOLUTION-VIDEO-URL:chat
-X-MOZILLA-HTML:TRUE
-ADR;TYPE=WORK:Test Box #2;;Test Drive 2;Test Town;Upper Test County;12346;O
- ld Testovia
-LABEL;TYPE=WORK:Test Drive 2\nTest Town\, Upper Test County\n12346\nTest Bo
- x #2\nOld Testovia
-ADR;TYPE=HOME:Test Box #1;;Test Drive 1;Test Village;Lower Test County;1234
- 5;Testovia
-LABEL;TYPE=HOME:Test Drive 1\nTest Village\, Lower Test County\n12345\nTest
-  Box #1\nTestovia
-ADR:Test Box #3;;Test Drive 3;Test Megacity;Test County;12347;New Testonia
-LABEL;TYPE=OTHER:Test Drive 3\nTest Megacity\, Test County\n12347\nTest Box
-  #3\nNew Testonia
-UID:pas-id-43C0ED3900000001
-EMAIL;TYPE=WORK;X-EVOLUTION-UI-SLOT=1:john.doe@work.com
-EMAIL;TYPE=HOME;X-EVOLUTION-UI-SLOT=2:john.doe@home.priv
-EMAIL;TYPE=OTHER;X-EVOLUTION-UI-SLOT=3:john.doe@other.world
-EMAIL;TYPE=OTHER;X-EVOLUTION-UI-SLOT=4:john.doe@yet.another.world
-TEL;TYPE=work;TYPE=Voice;X-EVOLUTION-UI-SLOT=1:business 1
-TEL;TYPE=homE;TYPE=VOICE;X-EVOLUTION-UI-SLOT=2:home 2
+ORG:Test Inc.;Testing;test#1;
+ROLE:professional test case
+TEL;TYPE=WORK,VOICE;X-EVOLUTION-UI-SLOT=1:business 1
+TEL;TYPE=HOME,VOICE;X-EVOLUTION-UI-SLOT=2:home 2
 TEL;TYPE=CELL;X-EVOLUTION-UI-SLOT=3:mobile 3
-TEL;TYPE=WORK;TYPE=FAX;X-EVOLUTION-UI-SLOT=4:businessfax 4
-TEL;TYPE=HOME;TYPE=FAX;X-EVOLUTION-UI-SLOT=5:homefax 5
+TEL;TYPE=WORK,FAX;X-EVOLUTION-UI-SLOT=4:businessfax 4
+TEL;TYPE=HOME,FAX;X-EVOLUTION-UI-SLOT=5:homefax 5
 TEL;TYPE=PAGER;X-EVOLUTION-UI-SLOT=6:pager 6
 TEL;TYPE=CAR;X-EVOLUTION-UI-SLOT=7:car 7
 TEL;TYPE=PREF;X-EVOLUTION-UI-SLOT=8:primary 8
+EMAIL;TYPE=WORK;X-EVOLUTION-UI-SLOT=1:john.doe@work.com
+EMAIL;TYPE=HOME;X-EVOLUTION-UI-SLOT=2:john.doe@home.priv
+EMAIL;X-EVOLUTION-UI-SLOT=3:john.doe@other.world
+EMAIL;X-EVOLUTION-UI-SLOT=4:john.doe@yet.another.world
+URL:http://john.doe.com
+CALURI:calender
+FBURL:free/busy
+X-EVOLUTION-BLOG-URL:web log
+X-EVOLUTION-VIDEO-URL:chat
+X-EVOLUTION-MANAGER:John Doe Senior
+X-MANAGER:John Doe Senior
+X-EVOLUTION-ASSISTANT:John Doe Junior
+X-ASSISTANT:John Doe Junior
+X-EVOLUTION-SPOUSE:Joan Doe
+X-SPOUSE:Joan Doe
+X-EVOLUTION-ANNIVERSARY:20060109
+X-ANNIVERSARY:20060109
 X-AIM;X-EVOLUTION-UI-SLOT=1:AIM JOHN
-X-YAHOO;X-EVOLUTION-UI-SLOT=2:YAHOO JDOE
-X-ICQ;X-EVOLUTION-UI-SLOT=3:ICQ JD
-X-GROUPWISE;X-EVOLUTION-UI-SLOT=4:GROUPWISE DOE
 X-GADUGADU:GADUGADU DOE
+X-GROUPWISE;X-EVOLUTION-UI-SLOT=4:GROUPWISE DOE
+X-ICQ;X-EVOLUTION-UI-SLOT=3:ICQ JD
 X-JABBER:JABBER DOE
 X-MSN:MSN DOE
+X-YAHOO;X-EVOLUTION-UI-SLOT=2:YAHOO JDOE
 X-SKYPE:SKYPE DOE
 X-SIP:SIP DOE
-PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQEASABIAAD/4QAWRXhpZgAATU0AKgAA
- AAgAAAAAAAD//gAXQ3JlYXRlZCB3aXRoIFRoZSBHSU1Q/9sAQwAFAwQEBAMFBAQEBQUFBgcM
- CAcHBwcPCwsJDBEPEhIRDxERExYcFxMUGhURERghGBodHR8fHxMXIiQiHiQcHh8e/9sAQwEF
- BQUHBgcOCAgOHhQRFB4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4e
- Hh4eHh4eHh4e/8AAEQgAFwAkAwEiAAIRAQMRAf/EABkAAQADAQEAAAAAAAAAAAAAAAAGBwgE
- Bf/EADIQAAECBQMCAwQLAAAAAAAAAAECBAADBQYRBxIhEzEUFSIIFjNBGCRHUVZ3lqXD0+P/
- xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMR
- AD8AuX6UehP45/aXv9MTPTLVKxNSvMPcqu+a+XdLxf1SfJ6fU37PioTnOxfbOMc/KIZ7U/2V
- fmTR/wCaKlu6+blu/Ui72zxWtUmmUOrTaWwkWDT09FPR4K587OVrUfVsIwElPPPAbAjxr2um
- hWXbDu5rmfeApLPZ4hx0lzNm9aUJ9KAVHKlJHAPf7ozPLqWt9y6Z0EPGmoLNjTq48a1iaybJ
- YV52yEtCms5KJmAT61JXtJyUdyQTEc1WlMql7N1/oZ6jagVZVFfUyZPpFy5lvWcxU7Z03BUk
- GZLWJqVhPYLkIIPBEBtSEUyNAsjI1q1m/VP+UICwL/sqlXp7v+aOHsnyGttq218MtKd8+Ru2
- JXuScoO45Awe2CIi96aKW1cVyubkYVy6rTqz0J8a5t2qqZl0UjAMwYKScfPAJ+cIQHHP0Dth
- VFaMWt0XwxetnM50Ks2rsxL6ZMnJlJmb5hBBBEiVxjA28dznqo+hdksbQuS3Hs6tVtNzdM1Z
- /VH5nO3Bl/CJmYHKDynjv3zCEB5rLQNo0bIbydWNWxKljbLQLoWkISOAkBKAABCEID//2Q==
-END:VCARD
-'''
+X-MOZILLA-HTML:TRUE
+ADR;TYPE=WORK:Test Box #2;;Test Drive 2;Test Town;Upper Test County;12346;Old Testovia
+ADR;TYPE=HOME:Test Box #1;;Test Drive 1;Test Village;Lower Test County;12345;Testovia
+ADR:Test Box #3;;Test Drive 3;Test Megacity;Test County;12347;New Testonia
+BDAY:20060108
+NOTE:This is a test case which uses almost all Evolution fields.
+PHOTO;TYPE=JPEG;ENCODING=B:/9j/4AAQSkZJRgABAQEASABIAAD/4QAWRXhpZgAATU0AKgAAAAgAAAAAAAD//gAXQ3JlYXRlZCB3aXRoIFRoZSBHSU1Q/9sAQwAFAwQEBAMFBAQEBQUFBgcMCAcHBwcPCwsJDBEPEhIRDxERExYcFxMUGhURERghGBodHR8fHxMXIiQiHiQcHh8e/9sAQwEFBQUHBgcOCAgOHhQRFB4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4e/8AAEQgAFwAkAwEiAAIRAQMRAf/EABkAAQADAQEAAAAAAAAAAAAAAAAGBwgEBf/EADIQAAECBQMCAwQLAAAAAAAAAAECBAADBQYRBxIhEzEUFSIIFjNBGCRHUVZ3lqXD0+P/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AuX6UehP45/aXv9MTPTLVKxNSvMPcqu+a+XdLxf1SfJ6fU37PioTnOxfbOMc/KIZ7U/2VfmTR/wCaKlu6+blu/Ui72zxWtUmmUOrTaWwkWDT09FPR4K587OVrUfVsIwElPPPAbAjxr2umhWXbDu5rmfeApLPZ4hx0lzNm9aUJ9KAVHKlJHAPf7ozPLqWt9y6Z0EPGmoLNjTq48a1iaybJYV52yEtCms5KJmAT61JXtJyUdyQTEc1WlMql7N1/oZ6jagVZVFfUyZPpFy5lvWcxU7Z03BUkGZLWJqVhPYLkIIPBEBtSEUyNAsjI1q1m/VP+UICwL/sqlXp7v+aOHsnyGttq218MtKd8+Ru2JXuScoO45Awe2CIi96aKW1cVyubkYVy6rTqz0J8a5t2qqZl0UjAMwYKScfPAJ+cIQHHP0DthVFaMWt0XwxetnM50Ks2rsxL6ZMnJlJmb5hBBBEiVxjA28dznqo+hdksbQuS3Hs6tVtNzdM1Z/VH5nO3Bl/CJmYHKDynjv3zCEB5rLQNo0bIbydWNWxKljbLQLoWkISOAkBKAABCEID//2Q==
+GEO:;
+X-FOOBAR-EXTENSION;X-FOOBAR-PARAMETER=foobar:has to be stored internally by engine and preserved in testExtensions test\; never sent to a peer
+X-TEST;PARAMETER1=nonquoted;PARAMETER2="quoted because of spaces":Content with\nMultiple\nText lines\nand national chars: äöü
+END:VCARD'''
     joanVCard = '''BEGIN:VCARD
 VERSION:3.0
 FN:Joan Doe
@@ -4719,7 +4763,7 @@ END:VCARD'''
         self.assertEqual("0", report.get('source-addressbook-stat-local-removed-total', "0"))
         self.session.Detach()
         DBusUtil.quit_events = []
-        self.sessionpath, self.session = self.createSession("target-config@client", True)
+        self.sessionpath, self.session = self.createSession("remote@client", True)
         reports = self.session.GetReports(0, 100, utf8_strings=True)
         self.assertEqual(numReports, len(reports))
         report = reports[0]
@@ -4759,7 +4803,7 @@ END:VCARD'''
         # check client report
         self.session.Detach()
         DBusUtil.quit_events = []
-        self.sessionpath, self.session = self.createSession("target-config@client", True)
+        self.sessionpath, self.session = self.createSession("remote@client", True)
         reports = self.session.GetReports(0, 100, utf8_strings=True)
         self.assertEqual(1, len(reports))
         report = reports[0]
@@ -4851,7 +4895,7 @@ END:VCARD'''
         # check client report
         self.session.Detach()
         DBusUtil.quit_events = []
-        self.sessionpath, self.session = self.createSession("target-config@client", True)
+        self.sessionpath, self.session = self.createSession("remote@client", True)
         reports = self.session.GetReports(0, 100, utf8_strings=True)
         self.assertEqual(numReports, len(reports))
         report = reports[0]
@@ -4894,7 +4938,7 @@ END:VCARD'''
             clientDBEntries.sort()
             self.assertEqual(entries, clientDBEntries)
             DBusUtil.quit_events = []
-            self.sessionpath, self.session = self.createSession("target-config@client", True)
+            self.sessionpath, self.session = self.createSession("remote@client", True)
             reports = self.session.GetReports(0, 100, utf8_strings=True)
             self.assertEqual(numReports, len(reports))
             report = reports[0]
@@ -4929,7 +4973,7 @@ END:VCARD'''
             entries.remove(self.itemName)
             self.assertEqual(entries, clientDBEntries)
             DBusUtil.quit_events = []
-            self.sessionpath, self.session = self.createSession("target-config@client", True)
+            self.sessionpath, self.session = self.createSession("remote@client", True)
             reports = self.session.GetReports(0, 100, utf8_strings=True)
             self.assertEqual(numReports, len(reports))
             report = reports[0]
@@ -5064,7 +5108,7 @@ END:VCARD'''
         # check client report
         self.session.Detach()
         DBusUtil.quit_events = []
-        self.sessionpath, self.session = self.createSession("target-config@client", True)
+        self.sessionpath, self.session = self.createSession("remote@client", True)
         reports = self.session.GetReports(0, 100, utf8_strings=True)
         self.assertEqual(1, len(reports))
         report = reports[0]
@@ -5085,7 +5129,7 @@ END:VCARD'''
             # or another slow sync
             if step == 1:
                 # force slow sync by removing client-side meta data
-                shutil.rmtree(os.path.join(xdg_root, 'config', 'syncevolution', 'default', 'peers', 'server', '.@client', '.synthesis'))
+                shutil.rmtree(os.path.join(xdg_root, 'config', 'syncevolution', 'default', 'peers', 'server', '.remote@client', '.synthesis'))
             serverContent = os.listdir(self.serverDB)
             output = open(os.path.join(self.clientDB, self.itemName), "w")
             output.write(self.johnVCard)
@@ -5109,7 +5153,7 @@ END:VCARD'''
             clientDBEntries.sort()
             self.assertEqual(entries, clientDBEntries)
             DBusUtil.quit_events = []
-            self.sessionpath, self.session = self.createSession("target-config@client", True)
+            self.sessionpath, self.session = self.createSession("remote@client", True)
             reports = self.session.GetReports(0, 100, utf8_strings=True)
             self.assertEqual(2, len(reports))
             report = reports[0]
@@ -5180,8 +5224,32 @@ class TestFileNotify(unittest.TestCase, DBusUtil):
         if os.path.isfile(self.serverexe + ".bak"):
             os.rename(self.serverexe + ".bak", self.serverexe)
 
+    def which(self, program):
+        def is_exe(fpath):
+            return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+        for path in os.environ['PATH'].split(os.pathsep):
+            path = path.strip('"')
+            exe_file = os.path.join(path, program)
+            if is_exe(exe_file):
+                return exe_file
+        return None
+
     def run(self, result):
-        self.runTest(result)
+        # Ensure that we use a private copy of syncevo-dbus-server, for two reasons:
+        # - when using the installed version, we might not be able to rename it.
+        # - when other tests run concurrently, they too would see the modification and shut down.
+        tmppath = os.path.abspath('TestFileNotifyDir')
+        oldpath = os.environ['PATH']
+        try:
+            os.makedirs(tmppath)
+            shutil.copy(self.which('syncevo-dbus-server'), tmppath)
+            os.environ['PATH'] = '%s:%s' % (tmppath, oldpath)
+            self.runTest(result)
+        finally:
+            os.environ['PATH'] = oldpath
+            if os.path.exists(tmppath):
+                shutil.rmtree(tmppath)
 
     def modifyServerFile(self):
         """rename server executable to trigger shutdown"""
@@ -5579,13 +5647,16 @@ def internalToIni(config):
 
 # result of removeComments(self.removeRandomUUID(filterConfig())) for
 # Google Calendar template/config
-googlecaldav = '''syncURL = https://www.google.com/calendar/dav/%u/user/?SyncEvolution=Google
+google = '''syncURL = https://apidata.googleusercontent.com/caldav/v2 https://www.googleapis.com/.well-known/carddav https://www.google.com/calendar/dav
 printChanges = 0
 dumpData = 0
 deviceId = fixed-devid
-IconURI = image://themedimage/icons/services/google-calendar
+IconURI = image://themedimage/icons/services/google
 ConsumerReady = 1
 peerType = WebDAV
+[addressbook]
+sync = two-way
+backend = CardDAV
 [calendar]
 sync = two-way
 backend = CalDAV
@@ -5752,11 +5823,23 @@ class CmdlineUtil(DBusUtil):
 
         return (out, err, s.returncode)
 
-    def sourceCheckOutput(self, sources=['addressbook', 'calendar', 'memo', 'todo']):
+    defSourceOutput = ("checking usability...", "configuring datastore with sync mode 'two-way'")
+
+    def sourceCheckOutput(self, sources=None):
         '''returns the output produced by --configure when checking sources'''
-        if not (isinstance(sources, type([])) or isinstance(sources, type(()))):
-            sources = (sources,)
-        return ''.join(['[INFO] %s: looking for databases...\n[INFO] %s: okay\n' % (i, i) for i in sources])
+        if sources is None:
+            sources = [(source, self.defSourceOutput) for source in ('addressbook', 'calendar', 'memo', 'todo')]
+        elif not (isinstance(sources, type([])) or isinstance(sources, type(()))):
+            sources = [ (sources, self.defSourceOutput) ]
+        res = []
+        for i in sources:
+            source = i[0]
+            result = i[1]
+            if not (isinstance(result, type([])) or isinstance(result, type(()))):
+                result = [result]
+            for e in result:
+                res.append('[INFO] %s: %s\n' % (source, e))
+        return ''.join(res)
 
     def assertNoErrors(self, err):
         '''check that error output is empty'''
@@ -5992,10 +6075,10 @@ sources/todo/config.ini:# databasePassword = '''.format(
         config = config.replace("PeerName = ScheduleWorld",
                                 "PeerName = Funambol")
         config = config.replace("syncURL = http://sync.scheduleworld.com/funambol/ds",
-                                "syncURL = http://my.funambol.com/sync",
+                                "syncURL = https://onemediahub.com/sync",
                                 1)
         config = config.replace("WebURL = http://www.scheduleworld.com",
-                                "WebURL = http://my.funambol.com",
+                                "WebURL = https://onemediahub.com",
                                 1)
         config = config.replace("IconURI = image://themedimage/icons/services/scheduleworld",
                                 "IconURI = image://themedimage/icons/services/funambol",
@@ -6151,7 +6234,7 @@ spds/sources/todo/config.txt:# evolutionpassword =
         self.assertTrue(out.startswith("List and manipulate databases:\n"))
         self.assertEqual(out.find("\nOptions:\n"), -1)
         self.assertTrue(out.endswith("Remove item(s):\n" \
-                                     "  syncevolution --delete-items [--] <config> <source> (<luid> ... | '*')\n\n"))
+                                     "  syncevolution --delete-items [--] <config> <store> (<luid> ... | '*')\n\n"))
         self.assertEqualDiff(specific_error, stripOutput(err))
 
     @property('debug', False)
@@ -6329,7 +6412,11 @@ spds/sources/todo/config.txt:# evolutionpassword =
         out, err, code = self.runCmdline(['--configure',
                                           '--sync-property', 'proxyHost = proxy',
                                           'scheduleworld', 'addressbook'])
-        self.assertSilent(out, err, ignore=self.sourceCheckOutput('addressbook'))
+        self.assertSilent(out, err, ignore=self.sourceCheckOutput([('addressbook', ["checking usability...",
+                                                                                    "configuring datastore with sync mode 'two-way'"]),
+                                                                   ('calendar', 'not selected'),
+                                                                   ('memo', 'not selected'),
+                                                                   ('todo', 'not selected')]))
         res = sortConfig(scanFiles(root))
         res = self.removeRandomUUID(res)
         expected = self.ScheduleWorldConfig()
@@ -6429,7 +6516,10 @@ spds/sources/todo/config.txt:# evolutionpassword =
 
         args.append("synthesis")
         out, err, code = self.runCmdline(args)
-        self.assertSilent(out, err, ignore=self.sourceCheckOutput())
+        self.assertSilent(out, err, ignore=self.sourceCheckOutput([('addressbook', ["checking usability...", "configuring datastore with sync mode 'two-way'"]),
+                                                                   ('calendar', 'inactive'),
+                                                                   ('memo', ["checking usability...", "configuring datastore with sync mode 'two-way'"]),
+                                                                   ('todo', 'inactive')]))
         res = scanFiles(root, "synthesis")
         expected = sortConfig(self.SynthesisConfig())
         self.assertEqualDiff(expected, res)
@@ -6451,9 +6541,8 @@ spds/sources/todo/config.txt:# evolutionpassword =
         expected = "Available configuration templates (servers):\n" \
                    "   template name = template description\n" \
                    "   eGroupware = http://www.egroupware.org\n" \
-                   "   Funambol = http://my.funambol.com\n" \
-                   "   Google_Calendar = event sync via CalDAV, use for the 'target-config@google-calendar' config\n" \
-                   "   Google_Contacts = contact sync via SyncML, see http://www.google.com/support/mobile/bin/topic.py?topic=22181\n" \
+                   "   Funambol = https://onemediahub.com\n" \
+                   "   Google = event and contact sync via CalDAV/CardDAV, use for the 'target-config@google' config\n" \
                    "   Goosync = http://www.goosync.com/\n" \
                    "   Memotoo = http://www.memotoo.com\n" \
                    "   Mobical = https://www.everdroid.com\n" \
@@ -6659,9 +6748,9 @@ spds/sources/todo/config.txt:# evolutionpassword =
 
         # note that "backend" will be taken from the @default context
         # if one exists, so run this before setting up Funambol below
-        out, err, code = self.runCmdline(["--print-config", "--template", "google calendar"])
+        out, err, code = self.runCmdline(["--print-config", "--template", "google"])
         self.assertNoErrors(err)
-        self.assertEqualDiff(googlecaldav,
+        self.assertEqualDiff(google,
                              removeComments(self.removeRandomUUID(filterConfig(out))))
 
         out, err, code = self.runCmdline(["--print-config", "--template", "yahoo"])
@@ -6812,7 +6901,7 @@ sources/xyz/config.ini:# databasePassword = """)
    not always obvious.
    
    When accepting a sync session in a SyncML server (HTTP server), only
-   sources with sync != disabled are made available to the client,
+   datastores with sync != disabled are made available to the client,
    which chooses the final sync mode based on its own configuration.
    When accepting a sync session in a SyncML client (local sync with
    the server contacting SyncEvolution on a device), the sync mode
@@ -6873,8 +6962,8 @@ sources/xyz/config.ini:# databasePassword = """)
         out, err, code = self.runCmdline(["--configure",
                                           "--template", "yahoo",
                                           "target-config@my-yahoo"])
-        # TODO: why does it check 'addressbook'? It's disabled in the template.
-        self.assertSilent(out, err, ignore=self.sourceCheckOutput(['addressbook', 'calendar']))
+        self.assertSilent(out, err, ignore=self.sourceCheckOutput([('addressbook', 'inactive'),
+                                                                   ('calendar', "configuring datastore with sync mode 'two-way'")]))
 
         out, err, code = self.runCmdline(["--print-config", "target-config@my-yahoo"])
         self.assertNoErrors(err)
@@ -6886,18 +6975,19 @@ sources/xyz/config.ini:# databasePassword = """)
             self.assertEqualDiff(yahoo.replace("sync = two-way", "sync = disabled"),
                                  removeComments(self.removeRandomUUID(filterConfig(out))))
 
-        # configure Google Calendar with template derived from config name
+        # configure Google Calendar/Contacts with template derived from config name
         out, err, code = self.runCmdline(["--configure",
-                                          "target-config@google-calendar"])
-        self.assertSilent(out, err, ignore=self.sourceCheckOutput('calendar'))
+                                          "target-config@google"])
+        self.assertSilent(out, err, ignore=self.sourceCheckOutput([('addressbook', "configuring datastore with sync mode 'two-way'"),
+                                                                   ('calendar', "configuring datastore with sync mode 'two-way'")]))
 
-        out, err, code = self.runCmdline(["--print-config", "target-config@google-calendar"])
+        out, err, code = self.runCmdline(["--print-config", "target-config@google"])
         self.assertNoErrors(err)
         if davenabled:
-            self.assertEqualDiff(googlecaldav,
+            self.assertEqualDiff(google,
                                  removeComments(self.removeRandomUUID(filterConfig(out))))
         else:
-            self.assertEqualDiff(googlecaldav.replace("sync = two-way", "sync = disabled"),
+            self.assertEqualDiff(google.replace("sync = two-way", "sync = disabled"),
                                  removeComments(self.removeRandomUUID(filterConfig(out))))
 
         # test "template not found" error cases
@@ -7288,8 +7378,7 @@ syncevolution/default/sources/eds_event/config.ini:backend = calendar
                                          expectSuccess = False)
         self.assertEqualDiff('', out)
         err = stripOutput(err)
-        self.assertEqualDiff(self.sourceCheckOutput('eds_event').replace('okay', 'no backend available') +
-                             '[ERROR] error code from SyncEvolution fatal error (local, status 10500): eds_event: no backend available\n', err)
+        self.assertEqualDiff('[ERROR] error code from SyncEvolution fatal error (local, status 10500): eds_event: no backend available\n', err)
 
         shutil.rmtree(self.configdir, True)
         # allow user to proceed if they wish and possible: here
@@ -7298,7 +7387,7 @@ syncevolution/default/sources/eds_event/config.ini:backend = calendar
                                          expectSuccess = False)
         self.assertEqualDiff('', out)
         err = stripOutput(err)
-        self.assertEqualDiff('[ERROR] error code from SyncEvolution fatal error (local, status 10500): no such source(s): eds_event\n', err)
+        self.assertEqualDiff('[ERROR] error code from SyncEvolution fatal error (local, status 10500): no such datastore(s): eds_event\n', err)
 
         shutil.rmtree(self.configdir, True)
         # allow user to proceed if they wish and possible: here
@@ -7307,7 +7396,7 @@ syncevolution/default/sources/eds_event/config.ini:backend = calendar
                                          expectSuccess = False)
         self.assertEqualDiff('', out)
         err = stripOutput(err)
-        self.assertEqualDiff('[ERROR] error code from SyncEvolution fatal error (local, status 10500): no such source(s): eds_event\n', err)
+        self.assertEqualDiff('[ERROR] error code from SyncEvolution fatal error (local, status 10500): no such datastore(s): eds_event\n', err)
 
         shutil.rmtree(self.configdir, True)
         # allow user to proceed if they wish: configure exactly the
@@ -7350,8 +7439,7 @@ syncevolution/default/sources/eds_event/config.ini:backend = calendar
                                           "--source-property", "type = file:text/x-vcard",
                                           "@foobar",
                                           "addressbook"])
-        self.assertSilent(out, err, ignore=self.sourceCheckOutput('addressbook'))
-
+        self.assertSilent(out, err, ignore=self.sourceCheckOutput([('addressbook', ('checking usability...', 'configuring datastore'))]))
         root = self.configdir + "/foobar"
         res = self.removeRandomUUID(scanFiles(root))
         expected = '''.internal.ini:contextMinVersion = {0}
@@ -7371,15 +7459,16 @@ sources/addressbook/config.ini:# databasePassword =
         # add calendar
         out, err, code = self.runCmdline(["--configure",
                                           "--source-property", "database@foobar = file://tmp/test2",
-                                          "--source-property", "backend = calendar",
+                                          "--source-property", "backend = file",
+                                          "--source-property", "databaseFormat = text/calendar",
                                           "@foobar",
                                           "calendar"])
         self.assertSilent(out, err)
 
         res = self.removeRandomUUID(scanFiles(root))
-        expected += '''sources/calendar/config.ini:backend = calendar
+        expected += '''sources/calendar/config.ini:backend = file
 sources/calendar/config.ini:database = file://tmp/test2
-sources/calendar/config.ini:# databaseFormat = 
+sources/calendar/config.ini:databaseFormat = text/calendar
 sources/calendar/config.ini:# databaseUser = 
 sources/calendar/config.ini:# databasePassword = 
 '''
@@ -7398,8 +7487,12 @@ sources/calendar/config.ini:# databasePassword =
                                     "addressbook/config.ini:database = file://tmp/test")
         expected = expected.replace("addressbook/config.ini:# databaseFormat = ",
                                     "addressbook/config.ini:databaseFormat = text/x-vcard")
+        expected = expected.replace("calendar/config.ini:backend = calendar",
+                                    "calendar/config.ini:backend = file")
         expected = expected.replace("calendar/config.ini:# database = ",
                                     "calendar/config.ini:database = file://tmp/test2")
+        expected = expected.replace("calendar/config.ini:# databaseFormat = ",
+                                    "calendar/config.ini:databaseFormat = text/calendar")
         expected = sortConfig(expected)
         self.assertEqualDiff(expected, res)
 
@@ -7422,7 +7515,9 @@ sources/calendar/config.ini:# databasePassword =
         out, err, code = self.runCmdline(["--configure",
                                           "--template", "SyncEvolution",
                                           "--source-property", "addressbook/type=file:text/vcard:3.0",
+                                          "--source-property", "addressbook/database=file:///tmp/test",
                                           "--source-property", "calendar/type=file:text/calendar:2.0",
+                                          "--source-property", "calendar/database=file:///tmp/test",
                                           "syncevo@syncevo"])
         self.assertSilent(out, err, ignore=self.sourceCheckOutput())
 
@@ -7464,7 +7559,7 @@ sources/calendar/config.ini:# databasePassword =
         if haveEDS:
             # limit output to one specific backend, chosen via config
             out, err, code = self.runCmdline(["--configure", "backend=evolution-contacts", "@foo-config", "bar-source"])
-            self.assertSilent(out, err, ignore=self.sourceCheckOutput('bar-source'))
+            self.assertSilent(out, err, ignore=self.sourceCheckOutput([('bar-source', ('checking usability...', 'configuring datastore'))]))
             out, err, code = self.runCmdline(["--print-databases", "@foo-config", "bar-source"])
             self.assertNoErrors(err)
             self.assertTrue(out.startswith("@foo-config/bar-source:\n"))
@@ -7918,20 +8013,20 @@ sources/memo/config.ini:type = todo
                                          expectSuccess = False)
         # Information about supported modules is optional, depends on compilation of
         # SyncEvolution.
-        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): bar: backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] configuration 'foo' does not exist\n\[ERROR\] source 'bar' does not exist\n\[ERROR\] backend property not set\n''')
+        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): bar: backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] configuration 'foo' does not exist\n\[ERROR\] datastore 'bar' does not exist\n\[ERROR\] backend property not set\n''')
         self.assertEqualDiff('', out)
 
         # "foo" not configured, no source named
         out, err, code  = self.runCmdline(["--print-items",
                                            "foo"],
                                           expectSuccess = False)
-        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] configuration 'foo' does not exist\n\[ERROR\] no source selected\n\[ERROR\] backend property not set\n''')
+        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] configuration 'foo' does not exist\n\[ERROR\] no datastore selected\n\[ERROR\] backend property not set\n''')
         self.assertEqualDiff('', out)
 
         # nothing known about source
         out, err, code = self.runCmdline(["--print-items"],
                                          expectSuccess = False)
-        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] no source selected\n\[ERROR\] backend property not set\n''')
+        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] no datastore selected\n\[ERROR\] backend property not set\n''')
         self.assertEqualDiff('', out)
 
         # now create "foo"
@@ -7944,7 +8039,7 @@ sources/memo/config.ini:type = todo
         out, err, code  = self.runCmdline(["--print-items",
                                            "foo"],
                                           expectSuccess = False)
-        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] no source selected\n\[ERROR\] backend property not set\n''')
+        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] no datastore selected\n\[ERROR\] backend property not set\n''')
         self.assertEqualDiff('', out)
 
         # "foo" configured, but "bar" is not
@@ -7952,7 +8047,7 @@ sources/memo/config.ini:type = todo
                                           "foo",
                                           "bar"],
                                          expectSuccess = False)
-        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): bar: backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] source 'bar' does not exist\n\[ERROR\] backend property not set\n''')
+        self.assertRegexpMatches(err, r'''\[ERROR\] error code from SyncEvolution error parsing config file \(local, status 20010\): bar: backend not supported (by any of the backend modules \((\S+, )+\S+\) )?or not correctly configured \(backend=select backend databaseFormat= syncFormat=\)\n\[ERROR\] datastore 'bar' does not exist\n\[ERROR\] backend property not set\n''')
         self.assertEqualDiff('', out)
 
         # add "bar" source, using file backend
@@ -8167,7 +8262,7 @@ END:VCARD
         # SYNCEVOLUTION_LOCAL_CHILD_DELAY2 should give us that chance.
         self.killed = False
         def output(path, level, text, procname):
-            if self.running and not self.killed and procname == '@client' and text == 'target side of local sync ready':
+            if self.running and not self.killed and procname == 'remote@client' and text == 'target side of local sync ready':
                 # kill syncevo-local-sync
                 for pid, (name, cmdline) in self.getChildren().iteritems():
                     if 'syncevo-local-sync' in cmdline:
@@ -8205,11 +8300,11 @@ END:VCARD
         # 2. loss of D-Bus connection is noticed first.
         # Also, the "connection is closed" error only
         # occurs occasionally.
-        if out.startswith('''[INFO @client] target side of local sync ready
+        if out.startswith('''[INFO remote@client] target side of local sync ready
 [ERROR] child process quit because of signal 9'''):
             out = out.replace('''[ERROR] sending message to child failed: The connection is closed
 ''', '')
-            self.assertEqualDiff(out, '''[INFO @client] target side of local sync ready
+            self.assertEqualDiff(out, '''[INFO remote@client] target side of local sync ready
 [ERROR] child process quit because of signal 9
 [ERROR] local transport failed: child process quit because of signal 9
 [INFO] Transport giving up after x retries and y:zzmin
@@ -8232,7 +8327,7 @@ First ERROR encountered: child process quit because of signal 9
 
 ''')
         else:
-            self.assertEqualDiff(out, '''[INFO @client] target side of local sync ready
+            self.assertEqualDiff(out, '''[INFO remote@client] target side of local sync ready
 [ERROR] sending message to child failed: The connection is closed
 [INFO] Transport giving up after x retries and y:zzmin
 [ERROR] transport problem: transport failed, retry period exceeded
@@ -8315,6 +8410,7 @@ FN:John Doe
 N:Doe;John
 END:VCARD''')
         output.close()
+        numSyncs = 0
 
         out, err, code = self.runCmdline(["--sync", "slow", "server"],
                                          sessionFlags=[],
@@ -8322,30 +8418,30 @@ END:VCARD''')
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] target side of local sync ready
-[INFO @client] @client/addressbook: starting first time sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting first time sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 Comparison was impossible.
 
 [INFO] @default/addressbook: starting first time sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
 Comparison was impossible.
 
 [INFO] @default/addressbook: started
 [INFO] @default/addressbook: sent 1
-[INFO @client] @client/addressbook: started
-[INFO @client] @client/addressbook: received 1/1
+[INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: received 1/1
 [INFO] @default/addressbook: first time sync done successfully
-[INFO @client] @client/addressbook: first time sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: first time sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -8404,7 +8500,8 @@ no changes
 (.*\n)+status: running;waiting, 0, \{addressbook: \(slow, running, 0\)\}
 (.*\n)*progress: 100, \{addressbook: \(sending, -1, -1, 1, 0, -1, -1\)\}
 (.*\n)*status: done, .*''')
-        self.checkSync(numReports=1)
+        numSyncs = numSyncs + 1
+        self.checkSync(numReports=numSyncs)
 
         # check result (should be unchanged)
         input = open(item, "r")
@@ -8417,28 +8514,28 @@ no changes
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] target side of local sync ready
-[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 no changes
 
 [INFO] @default/addressbook: starting normal sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
 no changes
 
 [INFO] @default/addressbook: started
-[INFO @client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: started
 [INFO] @default/addressbook: normal sync done successfully
-[INFO @client] @client/addressbook: normal sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: normal sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -8483,7 +8580,148 @@ no changes
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\)\}
 (.*\n)*progress: 100, \{addressbook: \(, -1, -1, -1, -1, -1, -1\)\}
 (.*\n)*status: done, .*''')
-        self.checkSync(numReports=2)
+        numSyncs = numSyncs + 1
+        self.checkSync(numReports=numSyncs)
+
+        # Now once more in the same mode with dumping data disabled.
+        # This should trigger the "quit sync early, avoid data write"
+        # optimization.
+        def listxdg():
+            return listall([xdg_root],
+                           exclude=[xdg_root + '/cache/syncevolution($|/.*)'],
+                           includedata=True)
+        before = listxdg()
+        out, err, code = self.runCmdline(["--run", "printChanges=0", "dumpData=0", "server"],
+                                         sessionFlags=[],
+                                         preserveOutputOrder=True)
+        self.assertEqual(err, None)
+        self.assertEqual(0, code)
+        out = self.stripSyncTime(out)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO] @default/addressbook: starting normal sync, two-way (peer is client)
+[INFO] @default/addressbook: started
+[INFO remote@client] @client/addressbook: started
+[INFO] @default/addressbook: normal sync done successfully
+[INFO remote@client] @client/addressbook: normal sync done successfully
+
+Synchronization successful.
+
+Changes applied during synchronization (remote@client):
++---------------|-----------------------|-----------------------|-CON-+
+|               |        @client        |       @default        | FLI |
+|        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+|   addressbook |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |
+|   two-way, 0 KB sent by client, 0 KB received                       |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+| start xxx, duration a:bcmin |
+|               synchronization completed successfully                |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+
+Synchronization successful.
+
+Changes applied during synchronization:
++---------------|-----------------------|-----------------------|-CON-+
+|               |       @default        |        @client        | FLI |
+|        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+|   addressbook |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |
+|   two-way, 0 KB sent by client, 0 KB received                       |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+| start xxx, duration a:bcmin |
+|               synchronization completed successfully                |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+''', out)
+        self.collectEvents()
+        self.assertRegexpMatches(self.prettyPrintEvents(),
+                                 r'''status: idle, .*
+(.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\)\}
+(.*\n)*progress: 100, \{addressbook: \(, -1, -1, -1, -1, -1, -1\)\}
+(.*\n)*status: done, .*''')
+        numSyncs = numSyncs + 1
+        self.checkSync(numReports=numSyncs)
+        after = listxdg()
+        self.assertEqual(before, after)
+
+        # Now once more in the same mode with data comparison.
+        before = listxdg()
+        out, err, code = self.runCmdline(["server"],
+                                         sessionFlags=[],
+                                         preserveOutputOrder=True)
+        self.assertEqual(err, None)
+        self.assertEqual(0, code)
+        out = self.stripSyncTime(out)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
+@client data changes to be applied during synchronization:
+*** @client/addressbook ***
+Comparison was impossible.
+
+[INFO] @default/addressbook: starting normal sync, two-way (peer is client)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
+@default data changes to be applied during synchronization:
+*** @default/addressbook ***
+Comparison was impossible.
+
+[INFO] @default/addressbook: started
+[INFO remote@client] @client/addressbook: started
+[INFO] @default/addressbook: normal sync done successfully
+[INFO remote@client] @client/addressbook: normal sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+
+Synchronization successful.
+
+Changes applied during synchronization (remote@client):
++---------------|-----------------------|-----------------------|-CON-+
+|               |        @client        |       @default        | FLI |
+|        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+|   addressbook |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |
+|   two-way, 0 KB sent by client, 0 KB received                       |
+|   item(s) in database backup: 1 before sync, 1 after it             |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+| start xxx, duration a:bcmin |
+|               synchronization completed successfully                |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+
+Data modified @client during synchronization:
+*** @client/addressbook ***
+no changes
+
+[INFO] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+
+Synchronization successful.
+
+Changes applied during synchronization:
++---------------|-----------------------|-----------------------|-CON-+
+|               |       @default        |        @client        | FLI |
+|        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+|   addressbook |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0  |
+|   two-way, 0 KB sent by client, 0 KB received                       |
+|   item(s) in database backup: 1 before sync, 1 after it             |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+| start xxx, duration a:bcmin |
+|               synchronization completed successfully                |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+
+Data modified @default during synchronization:
+*** @default/addressbook ***
+no changes
+
+''', out)
+        self.collectEvents()
+        self.assertRegexpMatches(self.prettyPrintEvents(),
+                                 r'''status: idle, .*
+(.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\)\}
+(.*\n)*progress: 100, \{addressbook: \(, -1, -1, -1, -1, -1, -1\)\}
+(.*\n)*status: done, .*''')
+        numSyncs = numSyncs + 1
+        self.checkSync(numReports=numSyncs)
+        after = listxdg()
+        self.assertEqual(before, after)
 
         # update contact
         output = open(item, "w")
@@ -8499,15 +8737,15 @@ END:VCARD''')
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] target side of local sync ready
-[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 no changes
 
 [INFO] @default/addressbook: starting normal sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
                        after last sync | current data
@@ -8523,15 +8761,15 @@ END:VCARD                                END:VCARD
 
 [INFO] @default/addressbook: started
 [INFO] @default/addressbook: sent 1
-[INFO @client] @client/addressbook: started
-[INFO @client] @client/addressbook: received 1/1
+[INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: received 1/1
 [INFO] @default/addressbook: normal sync done successfully
-[INFO @client] @client/addressbook: normal sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: normal sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -8585,7 +8823,8 @@ no changes
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\)\}
 (.*\n)*progress: 100, \{addressbook: \(sending, -1, -1, 1, 0, -1, -1\)\}
 (.*\n)*status: done, .*''')
-        self.checkSync(numReports=3)
+        numSyncs = numSyncs + 1
+        self.checkSync(numReports=numSyncs)
 
         # now remove contact
         os.unlink(item)
@@ -8595,15 +8834,15 @@ no changes
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] target side of local sync ready
-[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 no changes
 
 [INFO] @default/addressbook: starting normal sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
                        after last sync | current data
@@ -8619,15 +8858,15 @@ END:VCARD                              <
 
 [INFO] @default/addressbook: started
 [INFO] @default/addressbook: sent 1
-[INFO @client] @client/addressbook: started
-[INFO @client] @client/addressbook: received 1/1
+[INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: received 1/1
 [INFO] @default/addressbook: normal sync done successfully
-[INFO @client] @client/addressbook: normal sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: normal sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -8681,10 +8920,11 @@ no changes
 (.*\n)+status: running;waiting, 0, \{addressbook: \(two-way, running, 0\)\}
 (.*\n)*progress: 100, \{addressbook: \(sending, -1, -1, 1, 0, -1, -1\)\}
 (.*\n)*status: done, .*''')
-        self.checkSync(numReports=4)
+        numSyncs = numSyncs + 1
+        self.checkSync(numReports=numSyncs)
 
     @property("debug", False)
-    @timeout(usingValgrind() and 600 or 200)
+    @timeout(usingValgrind() and 1000 or 200)
     def testSyncOutput2(self):
         """TestCmdline.testSyncOutput2 - run syncs between local dirs and check output, with two sources"""
         self.setUpLocalSyncConfigs(enableCalendar=True)
@@ -8705,44 +8945,44 @@ END:VCARD''')
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] target side of local sync ready
-[INFO @client] @client/addressbook: starting first time sync, two-way (peer is server)
-[INFO @client] @client/calendar: starting first time sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting first time sync, two-way (peer is server)
+[INFO remote@client] @client/calendar: starting first time sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 Comparison was impossible.
 
-[INFO @client] creating complete data backup of source calendar before sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] creating complete data backup of datastore calendar before sync (enabled with dumpData and needed for printChanges)
 *** @client/calendar ***
 Comparison was impossible.
 
 [INFO] @default/addressbook: starting first time sync, two-way (peer is client)
 [INFO] @default/calendar: starting first time sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
 Comparison was impossible.
 
 [INFO] @default/addressbook: started
-[INFO] creating complete data backup of source calendar before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore calendar before sync (enabled with dumpData and needed for printChanges)
 *** @default/calendar ***
 Comparison was impossible.
 
 [INFO] @default/calendar: started
 [INFO] @default/addressbook: sent 1
-[INFO @client] @client/addressbook: started
-[INFO @client] @client/addressbook: received 1/1
-[INFO @client] @client/calendar: started
+[INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: received 1/1
+[INFO remote@client] @client/calendar: started
 [INFO] @default/addressbook: first time sync done successfully
 [INFO] @default/calendar: first time sync done successfully
-[INFO @client] @client/addressbook: first time sync done successfully
-[INFO @client] @client/calendar: first time sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: first time sync done successfully
+[INFO remote@client] @client/calendar: first time sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -8821,42 +9061,42 @@ no changes
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] target side of local sync ready
-[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
-[INFO @client] @client/calendar: starting normal sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO remote@client] @client/calendar: starting normal sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 no changes
 
-[INFO @client] creating complete data backup of source calendar before sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] creating complete data backup of datastore calendar before sync (enabled with dumpData and needed for printChanges)
 *** @client/calendar ***
 no changes
 
 [INFO] @default/addressbook: starting normal sync, two-way (peer is client)
 [INFO] @default/calendar: starting normal sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
 no changes
 
 [INFO] @default/addressbook: started
-[INFO] creating complete data backup of source calendar before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore calendar before sync (enabled with dumpData and needed for printChanges)
 *** @default/calendar ***
 no changes
 
 [INFO] @default/calendar: started
-[INFO @client] @client/addressbook: started
-[INFO @client] @client/calendar: started
+[INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/calendar: started
 [INFO] @default/addressbook: normal sync done successfully
 [INFO] @default/calendar: normal sync done successfully
-[INFO @client] @client/addressbook: normal sync done successfully
-[INFO @client] @client/calendar: normal sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: normal sync done successfully
+[INFO remote@client] @client/calendar: normal sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -8929,21 +9169,21 @@ END:VCARD''')
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] target side of local sync ready
-[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
-[INFO @client] @client/calendar: starting normal sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO remote@client] @client/calendar: starting normal sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 no changes
 
-[INFO @client] creating complete data backup of source calendar before sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] creating complete data backup of datastore calendar before sync (enabled with dumpData and needed for printChanges)
 *** @client/calendar ***
 no changes
 
 [INFO] @default/addressbook: starting normal sync, two-way (peer is client)
 [INFO] @default/calendar: starting normal sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
                        after last sync | current data
@@ -8958,24 +9198,24 @@ END:VCARD                                END:VCARD
 -------------------------------------------------------------------------------
 
 [INFO] @default/addressbook: started
-[INFO] creating complete data backup of source calendar before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore calendar before sync (enabled with dumpData and needed for printChanges)
 *** @default/calendar ***
 no changes
 
 [INFO] @default/calendar: started
 [INFO] @default/addressbook: sent 1
-[INFO @client] @client/addressbook: started
-[INFO @client] @client/addressbook: received 1/1
-[INFO @client] @client/calendar: started
+[INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: received 1/1
+[INFO remote@client] @client/calendar: started
 [INFO] @default/addressbook: normal sync done successfully
 [INFO] @default/calendar: normal sync done successfully
-[INFO @client] @client/addressbook: normal sync done successfully
-[INFO @client] @client/calendar: normal sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: normal sync done successfully
+[INFO remote@client] @client/calendar: normal sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -9051,21 +9291,21 @@ no changes
         self.assertEqual(err, None)
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
-        self.assertEqualDiff('''[INFO @client] target side of local sync ready
-[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
-[INFO @client] @client/calendar: starting normal sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO remote@client] @client/calendar: starting normal sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 no changes
 
-[INFO @client] creating complete data backup of source calendar before sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] creating complete data backup of datastore calendar before sync (enabled with dumpData and needed for printChanges)
 *** @client/calendar ***
 no changes
 
 [INFO] @default/addressbook: starting normal sync, two-way (peer is client)
 [INFO] @default/calendar: starting normal sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
                        after last sync | current data
@@ -9080,24 +9320,24 @@ END:VCARD                              <
 -------------------------------------------------------------------------------
 
 [INFO] @default/addressbook: started
-[INFO] creating complete data backup of source calendar before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore calendar before sync (enabled with dumpData and needed for printChanges)
 *** @default/calendar ***
 no changes
 
 [INFO] @default/calendar: started
 [INFO] @default/addressbook: sent 1
-[INFO @client] @client/addressbook: started
-[INFO @client] @client/addressbook: received 1/1
-[INFO @client] @client/calendar: started
+[INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: received 1/1
+[INFO remote@client] @client/calendar: started
 [INFO] @default/addressbook: normal sync done successfully
 [INFO] @default/calendar: normal sync done successfully
-[INFO @client] @client/addressbook: normal sync done successfully
-[INFO @client] @client/calendar: normal sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: normal sync done successfully
+[INFO remote@client] @client/calendar: normal sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -9173,29 +9413,29 @@ no changes
         self.assertEqual(0, code)
         out = self.stripSyncTime(out)
         self.assertEqualDiff('''[INFO] @default/calendar: inactive
-[INFO @client] target side of local sync ready
-[INFO @client] @client/calendar: inactive
-[INFO @client] @client/addressbook: starting normal sync, two-way (peer is server)
-[INFO @client] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/calendar: inactive
+[INFO remote@client] @client/addressbook: starting normal sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @client data changes to be applied during synchronization:
 *** @client/addressbook ***
 no changes
 
 [INFO] @default/addressbook: starting normal sync, two-way (peer is client)
-[INFO] creating complete data backup of source addressbook before sync (enabled with dumpData and needed for printChanges)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
 @default data changes to be applied during synchronization:
 *** @default/addressbook ***
 no changes
 
 [INFO] @default/addressbook: started
-[INFO @client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: started
 [INFO] @default/addressbook: normal sync done successfully
-[INFO @client] @client/addressbook: normal sync done successfully
-[INFO @client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+[INFO remote@client] @client/addressbook: normal sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
 
 Synchronization successful.
 
-Changes applied during synchronization (@client):
+Changes applied during synchronization (remote@client):
 +---------------|-----------------------|-----------------------|-CON-+
 |               |        @client        |       @default        | FLI |
 |        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
@@ -9512,7 +9752,7 @@ class TestHTTP(CmdlineUtil, unittest.TestCase):
         # This may happen without ever having to enter our threading
         # code, so we can't check for its 'background thread completed'
         # message. Instead check that the file source continued normally.
-        self.assertIn('continue opening file source', self.messages)
+        self.assertIn('addressbook-slow-server: continue opening file source', self.messages)
 
         # Finally, also check server session status.
         status, error, sources = self.session.GetStatus()

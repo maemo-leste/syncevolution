@@ -94,6 +94,11 @@ class Settings {
     virtual boost::shared_ptr<AuthProvider> getAuthProvider() = 0;
 
     /**
+     * Updates password to new one returned during OAuth2 authorization.
+     */
+    virtual void updatePassword(const std::string& password) = 0;
+
+    /**
      * Google returns a 401 error even if the credentials
      * are valid. It seems to use that to throttle request
      * rates. This read/write setting remembers whether the
@@ -115,13 +120,6 @@ class Settings {
      * so that Google CalDAV server accepts updates
      */
     virtual bool googleUpdateHack() const = 0;
-
-    /**
-     * if true, then avoid RECURRENCE-ID in sub items without
-     * corresponding parent by replacing it with
-     * X-SYNCEVOLUTION-RECURRENCE-ID
-     */
-    virtual bool googleChildHack() const = 0;
 
     /**
      * if true, then check whether server has added an unwanted alarm
@@ -197,17 +195,44 @@ struct URI {
      */
     static std::string normalizePath(const std::string &path, bool collection);
 
-    bool operator == (const URI &other) {
-        return m_scheme == other.m_scheme &&
-        m_host == other.m_host &&
-        m_userinfo == other.m_userinfo &&
-        m_port == other.m_port &&
-        m_path == other.m_path &&
-        m_query == other.m_query &&
-        m_fragment == other.m_fragment;
+    int compare(const URI &other) const {
+        int res;
+        res = m_scheme.compare(other.m_scheme);
+        if (!res) {
+            res = m_host.compare(other.m_host);
+            if (!res) {
+                res = m_userinfo.compare(other.m_userinfo);
+                if (!res) {
+                    res = other.getPort() - getPort();
+                    if (!res) {
+                        res = m_path.compare(other.m_path);
+                        if (!res) {
+                            res = m_query.compare(other.m_query);
+                            if (!res) {
+                                res = m_fragment.compare(other.m_fragment);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return res;
     }
 
-    bool empty() {
+    bool operator == (const URI &other) const { return compare(other) == 0; }
+    bool operator < (const URI &other) const { return compare(other) < 0; }
+    bool operator <= (const URI &other) const { return compare(other) <= 0; }
+    bool operator > (const URI &other) const { return compare(other) > 0; }
+    bool operator >= (const URI &other) const { return compare(other) >= 0; }
+
+    int getPort() const {
+        return m_port ? m_port :
+            m_scheme == "https" ? 443 :
+            m_scheme == "http" ? 80 :
+            0;
+    }
+
+    bool empty() const {
         return m_scheme.empty() &&
         m_host.empty() &&
         m_userinfo.empty() &&
@@ -388,7 +413,8 @@ class Session {
      *         errors reported via exceptions
      */
     bool checkError(int error, int code = 0, const ne_status *status = NULL,
-                    const string &location = "",
+                    const string &newLocation = "",
+                    const std::string &oldLocation = "",
                     const std::set<int> *expectedCodes = NULL);
 
     /** ne_set_server_auth() callback */
@@ -591,6 +617,7 @@ class Request
     ne_request *getRequest() const { return m_req; }
     std::string *getResult() const { return m_result; }
     XMLParser *getParser() const { return m_parser; }
+    std::string getPath() const { return m_path; }
 
     /** ne_block_reader implementation */
     static int addResultData(void *userdata, const char *buf, size_t len);
@@ -600,6 +627,10 @@ class Request
     // but due to a bug in neon, our method string is still used
     // for credentials)
     std::string m_method;
+
+    // Path used when creating the request. Copied by ne_request_create(),
+    // but cannot be accessed later via the request.
+    std::string m_path;
 
     Session &m_session;
     ne_request *m_req;

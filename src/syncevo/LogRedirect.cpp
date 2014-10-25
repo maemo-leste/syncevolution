@@ -21,7 +21,6 @@
 #include "config.h"
 #include <syncevo/LogRedirect.h>
 #include <syncevo/Logging.h>
-#include <syncevo/SyncContext.h>
 #include "test.h"
 #include <syncevo/util.h>
 #include <sys/types.h>
@@ -32,9 +31,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <errno.h>
 
+#include <boost/algorithm/string/find_iterator.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/noncopyable.hpp>
+#include <boost/foreach.hpp>
 
 #include <algorithm>
 #include <iostream>
@@ -56,8 +58,23 @@ void LogRedirect::abortHandler(int sig) throw()
     // Don't know state of logging system, don't log here!
     // SE_LOG_ERROR(NULL, "caught signal %d, shutting down", sig);
 
-    // shut down redirection, also flushes to log
+    // Shut down redirection, also flushes to log. This involves
+    // unsafe calls. For example, we may have to allocate new memory,
+    // which deadlocks if glib detected memory corruption and
+    // called abort() (see FDO #76375).
+    //
+    // But flushing the log is the whole point of the abortHandler, so
+    // we can't just skip this. To handle cases where the work that we
+    // need to do fails, we set a timeout and let the process be
+    // killed that way. alarm() and sigaction() are async-signal-safe.
     {
+        struct sigaction new_action, old_action;
+        memset(&new_action, 0, sizeof(new_action));
+        new_action.sa_handler = SIG_DFL; // Terminates the process.
+        sigemptyset(&new_action.sa_mask);
+        sigaction(SIGALRM, &new_action, &old_action);
+        alarm(5);
+
         RecMutex::Guard guard = lock();
         if (m_redirect) {
             m_redirect->restore();
@@ -398,7 +415,7 @@ bool LogRedirect::process(FDs &fds) throw()
                         break;
                     } else {
                         // Give up.
-                        SyncContext::throwError("out of memory");
+                        Exception::throwError(SE_HERE, "out of memory");
                         return false;
                     }
                 } else {
@@ -418,7 +435,7 @@ bool LogRedirect::process(FDs &fds) throw()
                         // pretend that data was read, so that caller invokes us again
                         return true;
                     } else {
-                        SyncContext::throwError("reading output", errno);
+                        Exception::throwError(SE_HERE, "reading output", errno);
                         return false;
                     }
                 } else {
@@ -586,7 +603,7 @@ void LogRedirect::process()
             switch (res) {
             case -1:
                 // fatal, cannot continue
-                SyncContext::throwError("waiting for output", errno);
+                Exception::throwError(SE_HERE, "waiting for output", errno);
                 return;
                 break;
             case 0:

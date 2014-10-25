@@ -179,6 +179,7 @@ bool Cmdline::parse(vector<string> &parsed)
                 }
                 parsed.push_back(m_argv[opt]);
         } else if(boost::iequals(m_argv[opt], "--source-property") ||
+                  boost::iequals(m_argv[opt], "--datastore-property") ||
                   boost::iequals(m_argv[opt], "-z")) {
             opt++;
             if (!parseProp(SOURCE_PROPERTY_TYPE,
@@ -277,7 +278,7 @@ bool Cmdline::parse(vector<string> &parsed)
                     dir = ".";
                 }
                 if (!relToAbs(dir)) {
-                    SyncContext::throwError(dir, errno);
+                    Exception::throwError(SE_HERE, dir, errno);
                 }
                 m_itemPath = dir + "/" + file;
             }
@@ -683,12 +684,12 @@ static void ExportLUID(SyncSourceRaw *raw,
     raw->readItemRaw(luid, item);
     if (!out) {
         // write into directory
-        string fullPath = itemPath + "/" + luid;
-        ofstream file((itemPath + "/" + luid).c_str());
+        string fullPath = itemPath + "/" + CmdlineLUID::fromLUID(luid);
+        ofstream file(fullPath.c_str());
         file << item;
         file.close();
         if (file.bad()) {
-            SyncContext::throwError(fullPath, errno);
+            Exception::throwError(SE_HERE, fullPath, errno);
         }
     } else {
         std::string delimiter;
@@ -770,7 +771,7 @@ bool Cmdline::run() {
         if (!m_server.empty()) {
             // list for specific backend chosen via config
             if (m_sources.size() != 1) {
-                SE_THROW(StringPrintf("must specify exactly one source after the config name '%s'",
+                SE_THROW(StringPrintf("must specify exactly one datastore after the config name '%s'",
                                       m_server.c_str()));
             }
             sourceName = *m_sources.begin();
@@ -920,7 +921,7 @@ bool Cmdline::run() {
             return false;
         }
         if (m_dryrun) {
-            SyncContext::throwError("--dry-run not supported for configuration changes");
+            Exception::throwError(SE_HERE, "--dry-run not supported for configuration changes");
         }
 
         // name of renamed config ("foo.old") after migration
@@ -959,7 +960,7 @@ bool Cmdline::run() {
         string origPeer;
         if (m_migrate) {
             if (!m_sources.empty()) {
-                SE_LOG_ERROR(NULL, "cannot migrate individual sources");
+                SE_LOG_ERROR(NULL, "cannot migrate individual datastores");
                 return false;
             }
 
@@ -1226,52 +1227,52 @@ bool Cmdline::run() {
                         sources.erase(entry);
                     }
 
-                    // check whether the sync source works; this can
-                    // take some time, so allow the user to abort
-                    SE_LOG_INFO(NULL, "%s: looking for databases...",
-                                source.c_str());
-                    // Even if the peer config does not exist yet
-                    // (fromScratch == true), the source config itself
-                    // may already exist with a username/password
-                    // using the keyring. Need to retrieve that
-                    // password before using the source.
-                    //
-                    // We need to check for databases again here,
-                    // because otherwise we don't know whether the
-                    // source is usable. The "database" property can
-                    // be empty in a usable source, and the "sync"
-                    // property in some potential other peer config
-                    // is not accessible.
-                    PasswordConfigProperty::checkPasswords(to->getUserInterfaceNonNull(),
-                                                           *to,
-                                                           PasswordConfigProperty::CHECK_PASSWORD_SOURCE|
-                                                           PasswordConfigProperty::CHECK_PASSWORD_RESOLVE_PASSWORD|
-                                                           PasswordConfigProperty::CHECK_PASSWORD_RESOLVE_USERNAME,
-                                                           boost::assign::list_of(source));
-                    SyncSourceParams params(source, to->getSyncSourceNodes(source), to);
-                    auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false, to.get()));
-                    if (syncSource.get() == NULL) {
-                        disable = "no backend available";
-                    } else {
-                        try {
-                            SyncSource::Databases databases = syncSource->getDatabases();
-                            if (databases.empty()) {
-                                disable = "no database to synchronize";
+                    // Only check the source if it is not already disabled.
+                    if (selected ||
+                        sourceConfig->getSync() != "disabled") {
+                        // Even if the peer config does not exist yet
+                        // (fromScratch == true), the source config itself
+                        // may already exist with a username/password
+                        // using the keyring. Need to retrieve that
+                        // password before using the source.
+                        //
+                        // We need to check for databases again here,
+                        // because otherwise we don't know whether the
+                        // source is usable. The "database" property can
+                        // be empty in a usable source, and the "sync"
+                        // property in some potential other peer config
+                        // is not accessible.
+                        PasswordConfigProperty::checkPasswords(to->getUserInterfaceNonNull(),
+                                                               *to,
+                                                               PasswordConfigProperty::CHECK_PASSWORD_SOURCE|
+                                                               PasswordConfigProperty::CHECK_PASSWORD_RESOLVE_PASSWORD|
+                                                               PasswordConfigProperty::CHECK_PASSWORD_RESOLVE_USERNAME,
+                                                               boost::assign::list_of(source));
+                        SyncSourceParams params(source, to->getSyncSourceNodes(source), to);
+                        auto_ptr<SyncSource> syncSource(SyncSource::createSource(params, false, to.get()));
+                        if (syncSource.get() == NULL) {
+                            disable = "no backend available";
+                        } else {
+                            try {
+                                syncSource->open();
+                                if (!syncSource->isUsable()) {
+                                    disable = "unusable";
+                                }
+                            } catch (...) {
+                                std::string explanation;
+                                Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
+                                disable = "backend failed: " + explanation;
                             }
-                        } catch (...) {
-                            std::string explanation;
-                            Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
-                            disable = "backend failed: " + explanation;
                         }
+                    } else {
+                        disable = "inactive";
                     }
+                    // Checking can take some time, so allow the user to abort.
                     s.checkForNormal();
-                    SE_LOG_INFO(NULL, "%s: %s\n",
-                                source.c_str(),
-                                disable.empty() ? "okay" : disable.c_str());
                 }
 
-                // Do sanity checking of source (can it be enabled?),
-                // but only set the sync mode if configuring a peer.
+                // Verify usability of source (can it be enabled?).
+                // Only set the sync mode if configuring a peer.
                 // A context-only config doesn't have the "sync"
                 // property.
                 string syncMode;
@@ -1279,14 +1280,32 @@ bool Cmdline::run() {
                     // abort if the user explicitly asked for the sync source
                     // and it cannot be enabled, otherwise disable it silently
                     if (selected) {
-                        SyncContext::throwError(source + ": " + disable);
+                        Exception::throwError(SE_HERE, source + ": " + disable);
+                    } else if (disable == "unusable") {
+                        // More detailed INFO message must have been
+                        // printed by isUsable().
+                    } else {
+                        // Print out own check result.
+                        SE_LOG_INFO(NULL, "%s: %s", source.c_str(), disable.c_str());
                     }
-                    syncMode = "disabled";
-                } else if (selected) {
-                    // user absolutely wants it: enable even if off by default
-                    ConfigProps filter = m_props.createSourceFilter(m_server, source);
-                    ConfigProps::const_iterator sync = filter.find("sync");
-                    syncMode = sync == filter.end() ? "two-way" : sync->second;
+                    if (sourceConfig->getSync() != "disabled") {
+                        syncMode = "disabled";
+                    }
+                } else {
+                    if (selected) {
+                        // user absolutely wants it: enable even if off by default
+                        ConfigProps filter = m_props.createSourceFilter(m_server, source);
+                        ConfigProps::const_iterator sync = filter.find("sync");
+                        syncMode = sync == filter.end() ? "two-way" : sync->second;
+                    }
+                    if (configureContext) {
+                        SE_LOG_INFO(NULL, "%s: configuring datastore",
+                                    source.c_str());
+                    } else {
+                        SE_LOG_INFO(NULL, "%s: configuring datastore with sync mode '%s'",
+                                    source.c_str(),
+                                    syncMode.empty() ? sourceConfig->getSync().c_str() : syncMode.c_str());
+                    }
                 }
                 if (!syncMode.empty() &&
                     !configureContext) {
@@ -1295,7 +1314,7 @@ bool Cmdline::run() {
             }
 
             if (!sources.empty()) {
-                SyncContext::throwError(string("no such source(s): ") + boost::join(sources, " "));
+                Exception::throwError(SE_HERE, string("no such datastore(s): ") + boost::join(sources, " "));
             }
         }
 
@@ -1316,7 +1335,7 @@ bool Cmdline::run() {
             return false;
         }
         if (m_dryrun) {
-            SyncContext::throwError("--dry-run not supported for removing configurations");
+            Exception::throwError(SE_HERE, "--dry-run not supported for removing configurations");
         }
 
         // extra sanity check
@@ -1328,7 +1347,7 @@ bool Cmdline::run() {
             boost::shared_ptr<SyncConfig> config;
             config.reset(new SyncConfig(m_server));
             if (!config->exists()) {
-                SyncContext::throwError(string("no such configuration: ") + m_server);
+                Exception::throwError(SE_HERE, string("no such configuration: ") + m_server);
             }
             config->remove();
             m_configModified = true;
@@ -1368,15 +1387,15 @@ bool Cmdline::run() {
                     explanation.push_back(StringPrintf("configuration '%s' does not exist", m_server.c_str()));
                 }
                 if (haveSourceName && !sourceNodes.exists()) {
-                    explanation.push_back(StringPrintf("source '%s' does not exist", sourceName.c_str()));
+                    explanation.push_back(StringPrintf("datastore '%s' does not exist", sourceName.c_str()));
                 } else if (!haveSourceName) {
-                    explanation.push_back("no source selected");
+                    explanation.push_back("no datastore selected");
                 }
                 SyncSourceConfig sourceConfig(sourceName, sourceNodes);
                 if (!sourceConfig.getBackend().wasSet()) {
                     explanation.push_back("backend property not set");
                 }
-                SyncContext::throwError(SyncMLStatus(sysync::LOCERR_CFGPARSE),
+                Exception::throwError(SE_HERE, SyncMLStatus(sysync::LOCERR_CFGPARSE),
                                         boost::join(explanation, "\n"));
             } else {
                 throw;
@@ -1397,20 +1416,20 @@ bool Cmdline::run() {
             SyncSourceLogging *logging = dynamic_cast<SyncSourceLogging *>(source.get());
             if (!ops.m_startDataRead ||
                 !ops.m_readNextItem) {
-                source->throwError("reading items not supported");
+                source->throwError(SE_HERE, "reading items not supported");
             }
 
-            err = ops.m_startDataRead(*source, "", "");
+            err = ops.m_startDataRead("", "");
             CHECK_ERROR("reading items");
             source->setReadAheadOrder(SyncSourceBase::READ_ALL_ITEMS);
             processLUIDs(source, boost::bind(ShowLUID, logging, _1));
         } else if (m_deleteItems) {
             if (!ops.m_deleteItem) {
-                source->throwError("deleting items not supported");
+                source->throwError(SE_HERE, "deleting items not supported");
             }
             list<string> luids;
             bool deleteAll = std::find(m_luids.begin(), m_luids.end(), "*") != m_luids.end();
-            err = ops.m_startDataRead(*source, "", "");
+            err = ops.m_startDataRead("", "");
             CHECK_ERROR("reading items");
             if (deleteAll) {
                 readLUIDs(source, luids);
@@ -1418,21 +1437,21 @@ bool Cmdline::run() {
                 luids = m_luids;
             }
             if (ops.m_endDataRead) {
-                err = ops.m_endDataRead(*source);
+                err = ops.m_endDataRead();
                 CHECK_ERROR("stop reading items");
             }
             if (ops.m_startDataWrite) {
-                err = ops.m_startDataWrite(*source);
+                err = ops.m_startDataWrite();
                 CHECK_ERROR("writing items");
             }
             BOOST_FOREACH(const string &luid, luids) {
                 sysync::ItemIDType id;
                 id.item = (char *)luid.c_str();
-                err = ops.m_deleteItem(*source, &id);
+                err = ops.m_deleteItem(&id);
                 CHECK_ERROR("deleting item");
             }
             char *token;
-            err = ops.m_endDataWrite(*source, true, &token);
+            err = ops.m_endDataWrite(true, &token);
             if (token) {
                 free(token);
             }
@@ -1440,17 +1459,17 @@ bool Cmdline::run() {
         } else {
             SyncSourceRaw *raw = dynamic_cast<SyncSourceRaw *>(source.get());
             if (!raw) {
-                source->throwError("reading/writing items directly not supported");
+                source->throwError(SE_HERE, "reading/writing items directly not supported");
             }
             if (m_import || m_update) {
-                err = ops.m_startDataRead(*source, "", "");
+                err = ops.m_startDataRead("", "");
                 CHECK_ERROR("reading items");
                 if (ops.m_endDataRead) {
-                    err = ops.m_endDataRead(*source);
+                    err = ops.m_endDataRead();
                     CHECK_ERROR("stop reading items");
                 }
                 if (ops.m_startDataWrite) {
-                    err = ops.m_startDataWrite(*source);
+                    err = ops.m_startDataWrite();
                     CHECK_ERROR("writing items");
                 }
 
@@ -1462,12 +1481,12 @@ bool Cmdline::run() {
                     if (m_itemPath == "-") {
                         context->getUserInterfaceNonNull().readStdin(content);
                     } else if (!ReadFile(m_itemPath, content)) {
-                        SyncContext::throwError(m_itemPath, errno);
+                        Exception::throwError(SE_HERE, m_itemPath, errno);
                     }
                     if (m_delimiter == "none") {
                         if (m_update) {
                             if (m_luids.size() != 1) {
-                                SyncContext::throwError("need exactly one LUID parameter");
+                                Exception::throwError(SE_HERE, "need exactly one LUID parameter");
                             } else {
                                 luid = *m_luids.begin();
                             }
@@ -1489,7 +1508,7 @@ bool Cmdline::run() {
                                 total++;
                             }
                             if (total != m_luids.size()) {
-                                SyncContext::throwError(StringPrintf("%lu items != %lu luids, must match => aborting",
+                                Exception::throwError(SE_HERE, StringPrintf("%lu items != %lu luids, must match => aborting",
                                                                      total, (unsigned long)m_luids.size()));
                             }
                         }
@@ -1502,7 +1521,7 @@ bool Cmdline::run() {
                             if (m_update) {
                                 if (luidit == m_luids.end()) {
                                     // was checked above
-                                    SyncContext::throwError("internal error, not enough luids");
+                                    Exception::throwError(SE_HERE, "internal error, not enough luids");
                                 }
                                 luid = *luidit;
                                 ++luidit;
@@ -1522,23 +1541,27 @@ bool Cmdline::run() {
                         string content;
                         string path = m_itemPath + "/" + entry;
                         if (!ReadFile(path, content)) {
-                            SyncContext::throwError(path, errno);
+                            Exception::throwError(SE_HERE, path, errno);
+                        }
+                        std::string luid;
+                        if (m_update) {
+                            luid = CmdlineLUID::toLUID(entry);
                         }
                         SE_LOG_SHOW(NULL, "#%d: %s: %s",
                                     count,
                                     entry.c_str(),
-                                    insertItem(raw, "", content).getEncoded().c_str());
+                                    insertItem(raw, luid, content).getEncoded().c_str());
                         count++;
                     }
                 }
                 char *token = NULL;
-                err = ops.m_endDataWrite(*source, true, &token);
+                err = ops.m_endDataWrite(true, &token);
                 if (token) {
                     free(token);
                 }
                 CHECK_ERROR("stop writing items");
             } else if (m_export) {
-                err = ops.m_startDataRead(*source, "", "");
+                err = ops.m_startDataRead("", "");
                 CHECK_ERROR("reading items");
 
                 ostream *out = NULL;
@@ -1576,7 +1599,7 @@ bool Cmdline::run() {
                 if (outFile) {
                     outFile->close();
                     if (outFile->bad()) {
-                        SyncContext::throwError(m_itemPath, errno);
+                        Exception::throwError(SE_HERE, m_itemPath, errno);
                     }
                 }
             }
@@ -1646,7 +1669,7 @@ bool Cmdline::run() {
 
         // check whether there were any sources specified which do not exist
         if (!unmatchedSources.empty()) {
-            context->throwError(string("no such source(s): ") + boost::join(unmatchedSources, " "));
+            Exception::throwError(SE_HERE, string("no such datastore(s): ") + boost::join(unmatchedSources, " "));
         }
 
         if (m_status) {
@@ -1678,7 +1701,7 @@ bool Cmdline::run() {
                 return false;
             }
             if (m_sources.empty()) {
-                usage(false, "Sources must be selected explicitly for --restore to prevent accidental restore.");
+                usage(false, "Datastores must be selected explicitly for --restore to prevent accidental restore.");
                 return false;
             }
             context->restore(m_restore,
@@ -1716,13 +1739,13 @@ void Cmdline::processLUIDs(SyncSource *source, const boost::function<void (const
     const SyncSource::Operations &ops = source->getOperations();
     sysync::ItemIDType id;
     sysync::sInt32 status;
-    sysync::TSyError err = ops.m_readNextItem(*source, &id, &status, true);
+    sysync::TSyError err = ops.m_readNextItem(&id, &status, true);
     CHECK_ERROR("next item");
     while (status != sysync::ReadNextItem_EOF) {
         process(id.item);
         StrDispose(id.item);
         StrDispose(id.parent);
-        err = ops.m_readNextItem(*source, &id, &status, false);
+        err = ops.m_readNextItem(&id, &status, false);
         CHECK_ERROR("next item");
     }
 }
@@ -1807,7 +1830,7 @@ bool Cmdline::parseProp(PropertyType propertyType,
 
             if (isSyncProp) {
                 if (isSourceProp) {
-                    usage(false, StringPrintf("property '%s' in %s could be both a sync and a source property, use --sync-property or --source-property to disambiguate it", propname, args.c_str()));
+                    usage(false, StringPrintf("property '%s' in %s could be both a sync and a datastore property, use --sync-property or --datastore-property to disambiguate it", propname, args.c_str()));
                     return false;
                 } else {
                     validProps = &m_validSyncProps;
@@ -1884,7 +1907,7 @@ bool Cmdline::parseProp(PropertyType propertyType,
                     if (validProps == &m_validSyncProps) {
                         // complain if sync property includes source prefix
                         if (!spec.m_source.empty()) {
-                            SE_LOG_ERROR(NULL, "%s: source name '%s' not allowed in sync property",
+                            SE_LOG_ERROR(NULL, "%s: datastore name '%s' not allowed in sync property",
                                          args.c_str(),
                                          spec.m_source.c_str());
                             return false;
@@ -2041,7 +2064,7 @@ void Cmdline::checkForPeerProps()
             // legacy "sync" property, which applies to both shared and unshared
             // properties => cannot determine that here anymore, so ignore it
         } else {
-            SyncContext::throwError(string("per-peer (unshared) properties not allowed: ") +
+            Exception::throwError(SE_HERE, string("per-peer (unshared) properties not allowed: ") +
                                     props);
         }
     }
@@ -2067,6 +2090,9 @@ void Cmdline::listDatabases(SyncSource *source, const string &header)
             out << "   " << database.m_name << " (" << database.m_uri << ")";
             if (database.m_isDefault) {
                 out << " <default>";
+            }
+            if (database.m_isReadOnly) {
+                out << " <read-only>";
             }
             out << endl;
         }
@@ -2520,14 +2546,17 @@ static string internalToIni(const string &config)
 }
 
 /** result of removeComments(filterRandomUUID(filterConfig())) for Google Calendar template/config */
-static const std::string googlecaldav =
-               "syncURL = https://www.google.com/calendar/dav/%u/user/?SyncEvolution=Google\n"
+static const std::string google =
+               "syncURL = https://apidata.googleusercontent.com/caldav/v2 https://www.googleapis.com/.well-known/carddav https://www.google.com/calendar/dav\n"
                "printChanges = 0\n"
                "dumpData = 0\n"
                "deviceId = fixed-devid\n"
-               "IconURI = image://themedimage/icons/services/google-calendar\n"
+               "IconURI = image://themedimage/icons/services/google\n"
                "ConsumerReady = 1\n"
                "peerType = WebDAV\n"
+               "[addressbook]\n"
+               "sync = two-way\n"
+               "backend = CardDAV\n"
                "[calendar]\n"
                "sync = two-way\n"
                "backend = CalDAV\n";
@@ -3031,9 +3060,8 @@ protected:
         CPPUNIT_ASSERT_EQUAL_DIFF("Available configuration templates (servers):\n"
                                   "   template name = template description\n"
                                   "   eGroupware = http://www.egroupware.org\n"
-                                  "   Funambol = http://my.funambol.com\n"
-                                  "   Google_Calendar = event sync via CalDAV, use for the 'target-config@google-calendar' config\n"
-                                  "   Google_Contacts = contact sync via SyncML, see http://www.google.com/support/mobile/bin/topic.py?topic=22181\n"
+                                  "   Funambol = https://onemediahub.com\n"
+                                  "   Google = event and contact sync via CalDAV/CardDAV, use for the 'target-config@google' config\n"
                                   "   Goosync = http://www.goosync.com/\n"
                                   "   Memotoo = http://www.memotoo.com\n"
                                   "   Mobical = https://www.everdroid.com\n"
@@ -3116,7 +3144,7 @@ protected:
 
     void testPrintFileTemplatesConfig() {
         // simulate reading templates from user's XDG HOME
-        symlink("../templates", (m_testDir + "/syncevolution-templates").c_str());
+        CPPUNIT_ASSERT(!symlink("../templates", (m_testDir + "/syncevolution-templates").c_str()));
         ScopedEnvChange templates("SYNCEVOLUTION_TEMPLATE_DIR", "/dev/null");
         ScopedEnvChange xdg("XDG_CONFIG_HOME", m_testDir);
         ScopedEnvChange home("HOME", m_testDir);
@@ -3130,9 +3158,9 @@ protected:
         // note that "backend" will be take from the @default context if one
         // exists, so run this before setting up Funambol below
         {
-            TestCmdline cmdline("--print-config", "--template", "google calendar", NULL);
+            TestCmdline cmdline("--print-config", "--template", "google", NULL);
             cmdline.doit();
-            CPPUNIT_ASSERT_EQUAL_DIFF(googlecaldav,
+            CPPUNIT_ASSERT_EQUAL_DIFF(google,
                                       removeComments(filterRandomUUID(filterConfig(cmdline.m_out.str()))));
         }
 
@@ -3181,7 +3209,8 @@ protected:
 
         {
             TestCmdline cmdline("--configure",
-                                "--source-property", "uri = dummy",
+                                // Intentionally use legacy parameter name here.
+                                "--datastore-property", "uri = dummy",
                                 "scheduleworld",
                                 "xyz",
                                 NULL);
@@ -3253,7 +3282,7 @@ protected:
                                   "   not always obvious.\n"
                                   "   \n"
                                   "   When accepting a sync session in a SyncML server (HTTP server), only\n"
-                                  "   sources with sync != disabled are made available to the client,\n"
+                                  "   datastores with sync != disabled are made available to the client,\n"
                                   "   which chooses the final sync mode based on its own configuration.\n"
                                   "   When accepting a sync session in a SyncML client (local sync with\n"
                                   "   the server contacting SyncEvolution on a device), the sync mode\n"
@@ -3269,7 +3298,7 @@ protected:
                                   string(filter.m_cmdline->m_props[""].m_sourceProps[""]));
         CPPUNIT_ASSERT_EQUAL_DIFF("",                                  string(filter.m_cmdline->m_props[""].m_syncProps));
 
-        TestCmdline filter2("--source-property", "sync=refresh", NULL);
+        TestCmdline filter2("--datastore-property", "sync=refresh", NULL);
         CPPUNIT_ASSERT(filter2.m_cmdline->parse());
         CPPUNIT_ASSERT(!filter2.m_cmdline->run());
         CPPUNIT_ASSERT_NO_THROW(filter2.expectUsageError("[ERROR] No configuration name specified.\n"));
@@ -3278,10 +3307,10 @@ protected:
         CPPUNIT_ASSERT_EQUAL_DIFF("",
                                   string(filter2.m_cmdline->m_props[""].m_syncProps));
 
-        TestCmdline filter3("--source-property", "xyz=1", NULL);
+        TestCmdline filter3("--datastore-property", "xyz=1", NULL);
         CPPUNIT_ASSERT(!filter3.m_cmdline->parse());
         CPPUNIT_ASSERT_EQUAL(string(""), filter3.m_out.str());
-        CPPUNIT_ASSERT_EQUAL(string("[ERROR] '--source-property xyz=1': no such property\n"), filter3.m_err.str());
+        CPPUNIT_ASSERT_EQUAL(string("[ERROR] '--datastore-property xyz=1': no such property\n"), filter3.m_err.str());
 
         TestCmdline filter4("xyz=1", NULL);
         CPPUNIT_ASSERT(!filter4.m_cmdline->parse());
@@ -3491,14 +3520,10 @@ protected:
                                 "foobar@default", NULL);
             cmdline.doit(false);
             CPPUNIT_ASSERT_EQUAL(std::string(""), cmdline.m_out.str());
-            CPPUNIT_ASSERT_EQUAL(std::string("[INFO] addressbook: looking for databases...\n"
-                                             "[INFO] addressbook: okay\n"
-                                             "[INFO] calendar: looking for databases...\n"
-                                             "[INFO] calendar: okay\n"
-                                             "[INFO] memo: looking for databases...\n"
-                                             "[INFO] memo: okay\n"
-                                             "[INFO] todo: looking for databases...\n"
-                                             "[INFO] todo: okay\n"
+            CPPUNIT_ASSERT_EQUAL(std::string("[INFO] addressbook: inactive\n"
+                                             "[INFO] calendar: inactive\n"
+                                             "[INFO] memo: inactive\n"
+                                             "[INFO] todo: inactive\n"
                                              "[ERROR] Unsupported value for the \"keyring\" property, no such keyring found: no-such-keyring"),
                                  cmdline.m_err.str());
         }
@@ -3525,17 +3550,17 @@ protected:
                                       removeComments(filterRandomUUID(filterConfig(cmdline.m_out.str()))));
         }
 
-        // configure Google Calendar with template derived from config name
+        // configure Google Calendar/Contacts with template derived from config name
         {
             TestCmdline cmdline("--configure",
-                                "target-config@google-calendar",
+                                "target-config@google",
                                 NULL);
             cmdline.doit();
         }
         {
-            TestCmdline cmdline("--print-config", "target-config@google-calendar", NULL);
+            TestCmdline cmdline("--print-config", "target-config@google", NULL);
             cmdline.doit();
-            CPPUNIT_ASSERT_EQUAL_DIFF(googlecaldav,
+            CPPUNIT_ASSERT_EQUAL_DIFF(google,
                                       removeComments(filterRandomUUID(filterConfig(cmdline.m_out.str()))));
         }
 
@@ -3593,7 +3618,7 @@ protected:
             // updating "type" for peer is mapped to updating "backend",
             // "databaseFormat", "syncFormat", "forceSyncFormat"
             TestCmdline cmdline("--configure",
-                                "--source-property", "addressbook/type=file:text/vcard:3.0",
+                                "--datastore-property", "addressbook/type=file:text/vcard:3.0",
                                 "scheduleworld",
                                 NULL);
             cmdline.doit();
@@ -3615,7 +3640,7 @@ protected:
         {
             // updating type for context must not affect peer
             TestCmdline cmdline("--configure",
-                                "--source-property", "type=file:text/x-vcard:2.1",
+                                "--datastore-property", "type=file:text/x-vcard:2.1",
                                 "@default", "addressbook",
                                 NULL);
             cmdline.doit();
@@ -3733,7 +3758,7 @@ protected:
         }
 
         {
-            TestCmdline cmdline("--source-property", "?",
+            TestCmdline cmdline("--datastore-property", "?",
                                 NULL);
             cmdline.doit();
             CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
@@ -3742,7 +3767,7 @@ protected:
         }
 
         {
-            TestCmdline cmdline("--source-property", "?",
+            TestCmdline cmdline("--datastore-property", "?",
                                 "--sync-property", "?",
                                 NULL);
             cmdline.doit();
@@ -3753,7 +3778,7 @@ protected:
 
         {
             TestCmdline cmdline("--sync-property", "?",
-                                "--source-property", "?",
+                                "--datastore-property", "?",
                                 NULL);
             cmdline.doit();
             CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
@@ -3762,11 +3787,11 @@ protected:
         }
 
         {
-            TestCmdline cmdline("--source-property", "sync=?",
+            TestCmdline cmdline("--datastore-property", "sync=?",
                                 NULL);
             cmdline.doit();
             CPPUNIT_ASSERT_EQUAL_DIFF("", cmdline.m_err.str());
-            CPPUNIT_ASSERT_EQUAL_DIFF("'--source-property sync=?'\n",
+            CPPUNIT_ASSERT_EQUAL_DIFF("'--datastore-property sync=?'\n",
                                       filterIndented(cmdline.m_out.str()));
         }
 
@@ -3797,8 +3822,8 @@ protected:
         // create from scratch with only addressbook configured
         {
             TestCmdline cmdline("--configure",
-                                "--source-property", "database = file://tmp/test",
-                                "--source-property", "type = file:text/x-vcard",
+                                "--datastore-property", "database = file://tmp/test",
+                                "--datastore-property", "type = file:text/x-vcard",
                                 "@foobar",
                                 "addressbook",
                                 NULL);
@@ -3823,11 +3848,12 @@ protected:
                          CONFIG_CONTEXT_CUR_VERSION);
         CPPUNIT_ASSERT_EQUAL_DIFF(expected, res);
 
-        // add calendar
+        // add unusable calendar: it is unusable because the file backend
+        // cannot create the directory
         {
             TestCmdline cmdline("--configure",
-                                "--source-property", "database@foobar = file://tmp/test2",
-                                "--source-property", "backend = calendar",
+                                "--datastore-property", "database@foobar = file:///no-such-dir/test2",
+                                "--datastore-property", "backend = file",
                                 "@foobar",
                                 "calendar",
                                 NULL);
@@ -3836,8 +3862,8 @@ protected:
         res = scanFiles(root);
         removeRandomUUID(res);
         expected +=
-            "sources/calendar/config.ini:backend = calendar\n"
-            "sources/calendar/config.ini:database = file://tmp/test2\n"
+            "sources/calendar/config.ini:backend = file\n"
+            "sources/calendar/config.ini:database = file:///no-such-dir/test2\n"
             "sources/calendar/config.ini:# databaseFormat = \n"
             "sources/calendar/config.ini:# databaseUser = \n"
             "sources/calendar/config.ini:# databasePassword = \n";
@@ -3863,16 +3889,22 @@ protected:
                            "addressbook/config.ini:# databaseFormat = ",
                            "addressbook/config.ini:databaseFormat = text/x-vcard");
         boost::replace_all(expected,
+                           "calendar/config.ini:backend = calendar",
+                           "calendar/config.ini:backend = file");
+        boost::replace_all(expected,
                            "calendar/config.ini:# database = ",
-                           "calendar/config.ini:database = file://tmp/test2");
+                           "calendar/config.ini:database = file:///no-such-dir/test2");
+        boost::replace_all(expected,
+                           "calendar/config.ini:sync = two-way",
+                           "calendar/config.ini:sync = disabled");
         sortConfig(expected);
         CPPUNIT_ASSERT_EQUAL_DIFF(expected, res);
 
         // disable all sources except for addressbook
         {
             TestCmdline cmdline("--configure",
-                                "--source-property", "addressbook/sync=two-way",
-                                "--source-property", "sync=none",
+                                "--datastore-property", "addressbook/sync=two-way",
+                                "--datastore-property", "sync=none",
                                 "scheduleworld@foobar",
                                 NULL);
             cmdline.doit();
@@ -3887,8 +3919,8 @@ protected:
         {
             TestCmdline cmdline("--configure",
                                 "--template", "SyncEvolution",
-                                "--source-property", "addressbook/type=file:text/vcard:3.0",
-                                "--source-property", "calendar/type=file:text/calendar:2.0",
+                                "--datastore-property", "addressbook/type=file:text/vcard:3.0",
+                                "--datastore-property", "calendar/type=file:text/calendar:2.0",
                                 "syncevo@syncevo",
                                 NULL);
             cmdline.doit();
@@ -3960,7 +3992,7 @@ protected:
 
         {
             TestCmdline cmdline("--configure",
-                                "--source-property", "sync = disabled",
+                                "--datastore-property", "sync = disabled",
                                 "scheduleworld",
                                 NULL);
             cmdline.doit();
@@ -3976,7 +4008,7 @@ protected:
 
         {
             TestCmdline cmdline("--configure",
-                                "--source-property", "sync = one-way-from-server",
+                                "--datastore-property", "sync = one-way-from-server",
                                 "scheduleworld",
                                 "addressbook",
                                 NULL);
@@ -3998,7 +4030,7 @@ protected:
         {
             TestCmdline cmdline("--configure",
                                 "--sync", "two-way",
-                                "-z", "database=source",
+                                "-z", "database=datastore",
                                 // note priority of suffix: most specific wins
                                 "--sync-property", "maxlogdirs@scheduleworld@default=20",
                                 "--sync-property", "maxlogdirs@default=10",
@@ -4017,10 +4049,10 @@ protected:
                                "sync = two-way");
             boost::replace_all(expected,
                                "# database = ",
-                               "database = source");
+                               "database = datastore");
             boost::replace_all(expected,
                                "database = xyz",
-                               "database = source");
+                               "database = datastore");
             boost::replace_all(expected,
                                "# maxlogdirs = 10",
                                "maxlogdirs = 20");
@@ -4492,7 +4524,7 @@ private:
             CPPUNIT_ASSERT(out.find("\nOptions:\n") == std::string::npos);
             CPPUNIT_ASSERT(boost::ends_with(out,
                                             "Remove item(s):\n"
-                                            "  syncevolution --delete-items [--] <config> <source> (<luid> ... | '*')\n\n"));
+                                            "  syncevolution --delete-items [--] <config> <store> (<luid> ... | '*')\n\n"));
             // exact error message
             CPPUNIT_ASSERT_EQUAL(error, err);
 
@@ -4523,6 +4555,9 @@ private:
                 if (level != SHOW) {
                     out << "[" << levelToStr(level) << "] ";
                     m_all << "[" << levelToStr(level) << "] ";
+                }
+                if (options.m_prefix) {
+                    out << options.m_prefix << " :";
                 }
                 out << str;
                 m_all << str;
@@ -4760,11 +4795,11 @@ private:
 
         boost::replace_first(config,
                              "syncURL = http://sync.scheduleworld.com/funambol/ds",
-                             "syncURL = http://my.funambol.com/sync");
+                             "syncURL = https://onemediahub.com/sync");
 
         boost::replace_first(config,
                              "WebURL = http://www.scheduleworld.com",
-                             "WebURL = http://my.funambol.com");
+                             "WebURL = https://onemediahub.com");
 
         boost::replace_first(config,
                              "IconURI = image://themedimage/icons/services/scheduleworld",

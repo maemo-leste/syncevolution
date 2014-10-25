@@ -41,6 +41,7 @@
 
 #include <syncevo/Timespec.h>    // definitions used to be included in util.h,
                                  // include it to avoid changing code using the time things
+#include <syncevo/Exception.h>   // same for Exception and SE_THROW*
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -329,6 +330,17 @@ std::string StringPrintf(const char *format, ...)
 std::string StringPrintfV(const char *format, va_list ap);
 
 /**
+ * Turns a value of arbitrary type into a std::string,
+ * using the << operator.
+ */
+template<class T> std::string ToString(const T &value)
+{
+    std::stringstream s;
+    s << value;
+    return s.str();
+}
+
+/**
  * strncpy() which inserts adds 0 byte
  */
 char *Strncpy(char *dest, const char *src, size_t n);
@@ -474,117 +486,6 @@ class InitStateTri : public InitStateString
     Value getValue() const;
 };
 
-enum HandleExceptionFlags {
-    HANDLE_EXCEPTION_FLAGS_NONE = 0,
-
-    /**
-     * a 404 status error is possible and must not be logged as ERROR
-     */
-    HANDLE_EXCEPTION_404_IS_OKAY = 1 << 0,
-    HANDLE_EXCEPTION_FATAL = 1 << 1,
-    /**
-     * don't log exception as ERROR
-     */
-    HANDLE_EXCEPTION_NO_ERROR = 1 << 2,
-    HANDLE_EXCEPTION_MAX = 1 << 3,
-};
-
-/**
- * an exception which records the source file and line
- * where it was thrown
- *
- * @TODO add function name
- */
-class Exception : public std::runtime_error
-{
- public:
-    Exception(const std::string &file,
-                           int line,
-                           const std::string &what) :
-    std::runtime_error(what),
-        m_file(file),
-        m_line(line)
-        {}
-    ~Exception() throw() {}
-    const std::string m_file;
-    const int m_line;
-
-    /**
-     * Convenience function, to be called inside a catch(..) block.
-     *
-     * Rethrows the exception to determine what it is, then logs it
-     * at the chosen level (error by default).
-     *
-     * Turns certain known exceptions into the corresponding
-     * status code if status still was STATUS_OK when called.
-     * Returns updated status code.
-     *
-     * @param logPrefix      passed to SE_LOG* messages
-     * @retval explanation   set to explanation for problem, if non-NULL
-     * @param level     level to be used for logging
-     */
-    static SyncMLStatus handle(SyncMLStatus *status = NULL, const std::string *logPrefix = NULL, std::string *explanation = NULL, Logger::Level = Logger::ERROR, HandleExceptionFlags flags = HANDLE_EXCEPTION_FLAGS_NONE);
-    static SyncMLStatus handle(const std::string &logPrefix, HandleExceptionFlags flags = HANDLE_EXCEPTION_FLAGS_NONE) { return handle(NULL, &logPrefix, NULL, Logger::ERROR, flags); }
-    static SyncMLStatus handle(std::string &explanation, HandleExceptionFlags flags = HANDLE_EXCEPTION_FLAGS_NONE) { return handle(NULL, NULL, &explanation, Logger::ERROR, flags); }
-    static void handle(HandleExceptionFlags flags) { handle(NULL, NULL, NULL, Logger::ERROR, flags); }
-    static void log() { handle(NULL, NULL, NULL, Logger::DEBUG); }
-
-    /**
-     * Tries to identify exception class based on explanation string created by
-     * handle(). If successful, that exception is throw with the same
-     * attributes as in the original exception.
-     *
-     * If not, tryRethrow() returns (mustThrow false) or throws a std::runtime_error
-     * with the explanation as text.
-     */
-    static void tryRethrow(const std::string &explanation, bool mustThrow = false);
-
-    /**
-     * Same as tryRethrow() for strings with a 'org.syncevolution.xxxx:' prefix,
-     * as passed as D-Bus error strings.
-     */
-    static void tryRethrowDBus(const std::string &error);
-};
-
-/**
- * StatusException by wrapping a SyncML status
- */
-class StatusException : public Exception
-{
-public:
-    StatusException(const std::string &file,
-                    int line,
-                    const std::string &what,
-                    SyncMLStatus status)
-        : Exception(file, line, what), m_status(status)
-    {}
-
-    SyncMLStatus syncMLStatus() const { return m_status; }
-protected:
-    SyncMLStatus m_status;
-};
-
-class TransportException : public Exception
-{
- public:
-    TransportException(const std::string &file,
-                       int line,
-                       const std::string &what) :
-    Exception(file, line, what) {}
-    ~TransportException() throw() {}
-};
-
-class TransportStatusException : public StatusException
-{
- public:
-    TransportStatusException(const std::string &file,
-                             int line,
-                             const std::string &what,
-                             SyncMLStatus status) :
-    StatusException(file, line, what, status) {}
-    ~TransportStatusException() throw() {}
-};
-
 /**
  * replace ${} with environment variables, with
  * XDG_DATA_HOME, XDG_CACHE_HOME and XDG_CONFIG_HOME having their normal
@@ -649,33 +550,45 @@ class ScopedEnvChange
 
 std::string getCurrentTime();
 
-/** throw a normal SyncEvolution Exception, including source information */
-#define SE_THROW(_what) \
-    SE_THROW_EXCEPTION(Exception, _what)
+// GRunWhile(), GRunInMain(), GRunIsMain() depend on glib support,
+// which pretty much is a hard requirement of SyncEvolution these days.
+// Different implementations would be possible and the APIs do not depend
+// on glib types, therefore they are defined here. The glib implemention
+// is in GLibSupport.cpp.
 
-/** throw a class which accepts file, line, what parameters */
-#define SE_THROW_EXCEPTION(_class,  _what) \
-    throw _class(__FILE__, __LINE__, _what)
+/**
+ * Process events in the default context while the callback returns
+ * true.
+ *
+ * This must be used instead of g_main_context_iterate() by code which
+ * may get called in other threads. In that case the check is
+ * transferred to the main thread which does the actual event
+ * processing. g_main_context_iterate() would just block because we
+ * register the main thread as permanent owner of the default context,
+ * or would suffer from race conditions if we didn't.
+ *
+ * The main thread must also be running GRunWhile().
+ *
+ * Exceptions in the check code are fatal and should be avoided.
+ *
+ * The check code will be called in the current thread once if checkFirst
+ * is true, otherwise it will only be invoked in the main thread. Use that
+ * latter mode for code which must run in the main thread.
+ */
+void GRunWhile(const boost::function<bool ()> &check, bool checkFirst = true);
 
-/** throw a class which accepts file, line, what plus 1 additional parameter */
-#define SE_THROW_EXCEPTION_1(_class,  _what, _x1)   \
-    throw _class(__FILE__, __LINE__, (_what), (_x1))
+/**
+ * Runs the action in the main thread once, then returns.  Any
+ * exception thrown by the action will be caught and rethrown in the
+ * calling thread.
+ */
+void GRunInMain(const boost::function<void ()> &action);
 
-/** throw a class which accepts file, line, what plus 2 additional parameters */
-#define SE_THROW_EXCEPTION_2(_class,  _what, _x1, _x2) \
-    throw _class(__FILE__, __LINE__, (_what), (_x1), (_x2))
-
-/** throw a class which accepts file, line, what plus 2 additional parameters */
-#define SE_THROW_EXCEPTION_3(_class,  _what, _x1, _x2, _x3) \
-    throw _class(__FILE__, __LINE__, (_what), (_x1), (_x2), (_x3))
-
-/** throw a class which accepts file, line, what plus 2 additional parameters */
-#define SE_THROW_EXCEPTION_4(_class,  _what, _x1, _x2, _x3, _x4) \
-    throw _class(__FILE__, __LINE__, (_what), (_x1), (_x2), (_x3), (_x4))
-
-/** throw a class which accepts file, line, what parameters and status parameters*/
-#define SE_THROW_EXCEPTION_STATUS(_class,  _what, _status) \
-    throw _class(__FILE__, __LINE__, _what, _status)
+/**
+ * True iff the calling thread is handling the main event loop.  Can
+ * be used to avoid GRunInMain().
+ */
+bool GRunIsMain();
 
 SE_END_CXX
 #endif // INCL_SYNCEVOLUTION_UTIL

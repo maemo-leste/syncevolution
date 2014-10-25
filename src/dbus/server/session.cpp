@@ -59,6 +59,7 @@ public:
          /* m_checkSource      (*this, "CheckSource"), */
          /* m_getDatabases     (*this, "GetDatabases"), */
     m_sync(*this, "Sync"),
+    m_setFreeze(*this, "SetFreeze"),
     m_restore(*this, "Restore"),
     m_execute(*this, "Execute"),
     m_passwordResponse(*this, "PasswordResponse"),
@@ -93,6 +94,7 @@ public:
     /* GDBusCXX::DBusClientCall0                                    m_checkSource; */
     /* GDBusCXX::DBusClientCall1<ReadOperations::SourceDatabases_t> m_getDatabases; */
     GDBusCXX::DBusClientCall2<bool, SyncReport> m_sync;
+    GDBusCXX::DBusClientCall1<bool> m_setFreeze;
     GDBusCXX::DBusClientCall1<bool> m_restore;
     GDBusCXX::DBusClientCall1<bool> m_execute;
     /* GDBusCXX::DBusClientCall0                                    m_serverShutdown; */
@@ -360,7 +362,8 @@ void Session::initServer(SharedBuffer data, const std::string &messageType)
     m_initialMessageType = messageType;
 }
 
-void Session::sync(const std::string &mode, const SessionCommon::SourceModes_t &sourceModes)
+void Session::syncExtended(const std::string &mode, const SessionCommon::SourceModes_t &sourceModes,
+                           const StringMap &env)
 {
     PushLogger<Logger> guard(m_me);
     if (m_runOperation == SessionCommon::OP_SYNC) {
@@ -374,11 +377,15 @@ void Session::sync(const std::string &mode, const SessionCommon::SourceModes_t &
         SE_THROW_EXCEPTION(InvalidCall, "session is not active, call not allowed at this time");
     }
 
+    m_syncMode = mode;
+    m_syncEnv = env;
+
     // Turn session into "running sync" now, before returning to
     // caller. Starting the helper (if needed) and making it
     // execute the sync is part of "running sync".
     runOperationAsync(SessionCommon::OP_SYNC,
-                      boost::bind(&Session::sync2, this, mode, sourceModes));
+                      boost::bind(&Session::sync2, this, mode, sourceModes),
+                      env);
 }
 
 void Session::sync2(const std::string &mode, const SessionCommon::SourceModes_t &sourceModes)
@@ -465,6 +472,49 @@ void Session::abort()
     }
 }
 
+void Session::setFreezeAsync(bool freeze, const Result<void (bool)> &result)
+{
+    PushLogger<Logger> guard(m_me);
+    SE_LOG_DEBUG(NULL, "session %s: SetFreeze(%s), %s",
+                 getPath(),
+                 freeze ? "freeze" : "thaw",
+                 m_forkExecParent ? "send to helper" : "no effect, because no helper");
+    if (m_forkExecParent) {
+        m_helper->m_setFreeze.start(freeze,
+                                    boost::bind(&Session::setFreezeDone,
+                                                m_me,
+                                                _1, _2,
+                                                freeze,
+                                                result));
+    } else {
+        // Had no effect.
+        result.done(false);
+    }
+}
+
+void Session::setFreezeDone(bool changed, const std::string &error,
+                            bool freeze,
+                            const Result<void (bool)> &result)
+{
+    PushLogger<Logger> guard(m_me);
+    try {
+        SE_LOG_DEBUG(NULL, "session %s: SetFreeze(%s) returned from helper %s, error %s",
+                     getPath(),
+                     freeze ? "freeze" : "thaw",
+                     changed ? "changed freeze state" : "no effect",
+                     error.c_str());
+        if (!error.empty()) {
+            Exception::tryRethrowDBus(error);
+        }
+        if (changed) {
+            m_freeze = freeze;
+        }
+        result.done(changed);
+    } catch (...) {
+        result.failed();
+    }
+}
+
 void Session::suspend()
 {
     PushLogger<Logger> guard(m_me);
@@ -511,12 +561,31 @@ void Session::getStatus(std::string &status,
     sources = m_sourceStatus;
 }
 
+void Session::getAPIProgress(int32_t &progress,
+                             APISourceProgresses_t &sources)
+{
+    PushLogger<Logger> guard(m_me);
+    progress = m_progData.getProgress();
+    sources = m_sourceProgress;
+}
+
 void Session::getProgress(int32_t &progress,
                           SourceProgresses_t &sources)
 {
     PushLogger<Logger> guard(m_me);
     progress = m_progData.getProgress();
     sources = m_sourceProgress;
+}
+
+bool Session::getSyncSourceReport(const std::string &sourceName, SyncSourceReport &report) const
+{
+    SyncSourceReports::const_iterator it = m_syncSourceReports.find(sourceName);
+    if (it != m_syncSourceReports.end()) {
+        report = it->second;
+        return true;
+    } else {
+        return false;
+    }
 }
 
 void Session::fireStatus(bool flush)
@@ -533,7 +602,7 @@ void Session::fireStatus(bool flush)
     m_statusTimer.reset();
 
     getStatus(status, error, sources);
-    emitStatus(status, error, sources);
+    m_statusSignal(status, error, sources);
 }
 
 void Session::fireProgress(bool flush)
@@ -549,7 +618,7 @@ void Session::fireProgress(bool flush)
     m_progressTimer.reset();
 
     getProgress(progress, sources);
-    emitProgress(progress, sources);
+    m_progressSignal(progress, sources);
 }
 
 boost::shared_ptr<Session> Session::createSession(Server &server,
@@ -563,6 +632,11 @@ boost::shared_ptr<Session> Session::createSession(Server &server,
     return me;
 }
 
+static void SetProgress(Session::SourceProgresses_t &to, const Session::SourceProgresses_t &from)
+{
+    to = from;
+}
+
 Session::Session(Server &server,
                  const std::string &peerDeviceID,
                  const std::string &config_name,
@@ -573,7 +647,6 @@ Session::Session(Server &server,
                      "org.syncevolution.Session",
                      boost::bind(&Server::autoTermCallback, &server)),
     ReadOperations(config_name, server),
-    m_server(server),
     m_flags(flags),
     m_sessionID(session),
     m_peerDeviceID(peerDeviceID),
@@ -589,6 +662,8 @@ Session::Session(Server &server,
     m_stepIsWaiting(false),
     m_priority(PRI_DEFAULT),
     m_error(0),
+    m_lastProgressTimestamp(Timespec::monotonic()),
+    m_freeze(false),
     m_statusTimer(100),
     m_progressTimer(50),
     m_restoreSrcTotal(0),
@@ -614,12 +689,16 @@ Session::Session(Server &server,
     add(this, &Session::abort, "Abort");
     add(this, &Session::suspend, "Suspend");
     add(this, &Session::getStatus, "GetStatus");
-    add(this, &Session::getProgress, "GetProgress");
+    add(this, &Session::getAPIProgress, "GetProgress");
     add(this, &Session::restore, "Restore");
     add(this, &Session::checkPresence, "CheckPresence");
     add(this, &Session::execute, "Execute");
     add(emitStatus);
     add(emitProgress);
+    m_statusSignal.connect(boost::bind(boost::ref(emitStatus), _1, _2, _3));
+    m_progressSignal.connect(boost::bind(&Timespec::resetMonotonic, &m_lastProgressTimestamp));
+    m_progressSignal.connect(boost::bind(SetProgress, boost::ref(m_lastProgress), _2));
+    m_progressSignal.connect(boost::bind(boost::ref(emitProgress), _1, _2));
 
     SE_LOG_DEBUG(NULL, "session %s created", getPath());
 }
@@ -764,7 +843,8 @@ static void raiseChildTermError(int status, const SimpleResult &result)
 }
 
 void Session::runOperationAsync(SessionCommon::RunOperation op,
-                                const SuccessCb_t &helperReady)
+                                const SuccessCb_t &helperReady,
+                                const StringMap &env)
 {
     PushLogger<Logger> guard(m_me);
     m_server.addSyncSession(this);
@@ -774,10 +854,11 @@ void Session::runOperationAsync(SessionCommon::RunOperation op,
     fireStatus(true);
 
     useHelperAsync(SimpleResult(helperReady,
-                                boost::bind(&Session::failureCb, this)));
+                                boost::bind(&Session::failureCb, this)),
+                   env);
 }
 
-void Session::useHelperAsync(const SimpleResult &result)
+void Session::useHelperAsync(const SimpleResult &result, const StringMap &env)
 {
     PushLogger<Logger> guard(m_me);
     try {
@@ -802,6 +883,11 @@ void Session::useHelperAsync(const SimpleResult &result)
                 m_forkExecParent->addEnvVar("SYNCEVOLUTION_USE_DLT", StringPrintf("%d", LoggerDLT::getCurrentDLTLogLevel()));
             }
 #endif
+            BOOST_FOREACH (const StringPair &entry, env) {
+                SE_LOG_DEBUG(NULL, "running helper with env variable %s=%s",
+                             entry.first.c_str(), entry.second.c_str());
+                m_forkExecParent->addEnvVar(entry.first, entry.second);
+            }
             // We own m_forkExecParent, so the "this" pointer for
             // onConnect will live longer than the signal in
             // m_forkExecParent -> no need for resource
@@ -953,6 +1039,7 @@ void Session::onConnect(const GDBusCXX::DBusConnectionPtr &conn) throw ()
         m_helper->m_syncProgress.activate(boost::bind(&Session::syncProgress, this, _1, _2, _3, _4));
         m_helper->m_sourceProgress.activate(boost::bind(&Session::sourceProgress, this, _1, _2, _3, _4, _5, _6));
         m_helper->m_sourceSynced.activate(boost::bind(boost::ref(m_sourceSynced), _1, _2));
+        m_sourceSynced.connect(boost::bind(StoreSyncSourceReport, boost::ref(m_syncSourceReports), _1, _2));
         m_helper->m_waiting.activate(boost::bind(&Session::setWaiting, this, _1));
         m_helper->m_syncSuccessStart.activate(boost::bind(boost::ref(Session::m_syncSuccessStartSignal)));
         m_helper->m_configChanged.activate(boost::bind(boost::ref(m_server.m_configChangedSignal), ""));
@@ -1002,7 +1089,7 @@ void Session::onQuit(int status) throw ()
                                         m_me,
                                         false,
                                         SyncReport()),
-                            0.1 /* seconds */);
+                            1 /* seconds */);
     } catch (...) {
         Exception::handle();
     }
@@ -1184,11 +1271,25 @@ void Session::sourceProgress(sysync::TProgressEventEnum type,
                 progress.m_receiveCount = extra1;
                 progress.m_receiveTotal = extra2;
                 m_progData.itemReceive(sourceName, extra1, extra2);
-                fireProgress(true);
+                fireProgress();
             }
+            break;
+        case sysync::PEV_ITEMPROCESSED:
+            progress.m_added = extra1;
+            progress.m_updated = extra2;
+            progress.m_deleted = extra3;
+            // Do not fireProgress() here! We are going to get a
+            // PEV_ITEMRECEIVED directly afterwards (see
+            // dbus-sync.cpp).
             break;
         case sysync::PEV_ALERTED:
             if (sourceSyncMode != SYNC_NONE) {
+                // Reset item counts, must be set (a)new.
+                // Relevant in multi-cycle syncing.
+                progress.m_receiveCount = -1;
+                progress.m_receiveTotal = -1;
+                progress.m_sendCount = -1;
+                progress.m_sendTotal = -1;
                 status.set(PrettyPrintSyncMode(sourceSyncMode), "running", 0);
                 fireStatus(true);
                 m_progData.setStep(ProgressData::PRO_SYNC_DATA);

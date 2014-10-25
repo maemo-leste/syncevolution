@@ -21,10 +21,11 @@ import copy
 import errno
 import signal
 import stat
+import exceptions
 
 def log(format, *args):
     now = time.time()
-    print time.asctime(time.gmtime(now)), 'UTC', '(+ %.1fs / %.1fs)' % (now - log.latest, now - log.start), format % args
+    print 'runtests.py-%d' % os.getpid(), time.asctime(time.gmtime(now)), 'UTC', '(+ %.1fs / %.1fs)' % (now - log.latest, now - log.start), format % args
     log.latest = now
 log.start = time.time()
 log.latest = log.start
@@ -40,6 +41,7 @@ def cd(path):
     if not os.access(path, os.F_OK):
         os.makedirs(path)
     os.chdir(path)
+    log('changing into directory %s (= %s)', path, os.getcwd())
 
 def abspath(path):
     """Absolute path after expanding vars and user."""
@@ -261,24 +263,75 @@ class Action:
                         sys.stdout = os.fdopen(fd, "w", 0) # unbuffered output!
                         sys.stderr = sys.stdout
                     if self.needhome and context.home_template:
+                        # Clone home directory template?
                         home = os.path.join(context.tmpdir, 'home', self.name)
-                        if not os.path.isdir(home):
+                        mapping = [('.cache', 'cache', 'XDG_CACHE_HOME'),
+                                   ('.config', 'config', 'XDG_CONFIG_HOME'),
+                                   ('.local/share', 'data', 'XDG_DATA_HOME')]
+                        if not os.path.isdir(home):\
+                            # Files that we need to handle ourselves.
+                            manual = []
                             # Ignore special files like sockets (for example,
                             # .cache/keyring-5sj9Qz/control).
                             def ignore(path, entries):
                                 exclude = []
                                 for entry in entries:
                                     mode = os.lstat(os.path.join(path, entry)).st_mode
-                                    if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+                                    if entry in ('akonadi.db',
+                                                 'akonadiserverrc'):
+                                        manual.append((path, entry))
+                                        exclude.append(entry)
+                                    # Copy only regular files. Ignore process id files and socket-<hostname> symlinks created
+                                    # inside the home by a concurrent Akonadi instance.
+                                    # Some files need special processing (see below).
+                                    elif not (stat.S_ISDIR(mode) or stat.S_ISREG(mode) or stat.S_ISLNK(mode)) \
+                                            or entry == 'akonadi.db-shm' \
+                                            or entry == 'akonadiconnectionrc' \
+                                            or entry.endswith('.pid') \
+                                            or entry.startswith('socket-'):
                                         exclude.append(entry)
                                 return exclude
                             shutil.copytree(context.home_template, home,
                                             symlinks=True,
                                             ignore=ignore)
+
+                            for path, entry in manual:
+                                source = os.path.join(path, entry)
+                                sourceDump = source + '.dump'
+                                target = os.path.join(home, os.path.relpath(path, context.home_template), entry)
+                                if entry == 'akonadi.db':
+                                    # Replace XDG_DATA_HOME paths inside the sqlite3 db.
+                                    # This runs *outside* of the chroot. It relies on
+                                    # compatibility between the sqlite3 inside and outside the chroots.
+                                    #
+                                    # Occasionally in parallel testing, 'sqlite3 .dump' produced
+                                    # incomplete output. Perhaps caused by parallel writes?
+                                    # To work around that, a static dump is used instead if found.
+                                    if os.path.isfile(sourceDump):
+                                        db = open(sourceDump).read()
+                                    else:
+                                        db = subprocess.check_output(['sqlite3', source, '.dump'])
+                                    db = db.replace(os.path.expanduser('~/.local/share/'),
+                                                    os.path.join(context.stripSchrootDir(home), 'data', ''))
+                                    sqlite = subprocess.Popen(['sqlite3', target],
+                                                              stdin=subprocess.PIPE)
+                                    sqlite.communicate(db)
+                                    if sqlite.returncode:
+                                        raise Exception("sqlite3 returned %d for the following input:\n%s" % (sqlite.returncode, db))
+                                    db = subprocess.check_output(['sqlite3', target, '.dump'])
+                                    log('target %s:\n%s', target, db)
+                                elif entry == 'akonadiserverrc':
+                                    # Replace hard-coded path to XDG dirs.
+                                    content = open(source).read()
+                                    for old, new, name in mapping:
+                                        content = content.replace(os.path.expanduser('~/%s/' % old),
+                                                                  os.path.join(context.stripSchrootDir(home), new, ''))
+                                    rc = open(target, 'w')
+                                    rc.write(content)
+                                    rc.close()
+                                    log('target %s:\n%s', target, content)
                         os.environ['HOME'] = context.stripSchrootDir(home)
-                        for old, new, name in [('.cache', 'cache', 'XDG_CACHE_HOME'),
-                                               ('.config', 'config', 'XDG_CONFIG_HOME'),
-                                               ('.local/share', 'data', 'XDG_DATA_HOME')]:
+                        for old, new, name in mapping:
                             newdir = os.path.join(home, new)
                             olddir = os.path.join(home, old)
                             if not os.path.isdir(olddir):
@@ -535,8 +588,11 @@ class Context:
         # run testresult checker
         testdir = compile.testdir
         backenddir = os.path.join(compile.installdir, "usr/lib/syncevolution/backends")
-        # resultchecker doesn't need valgrind, remove it
-        shell = re.sub(r'\S*valgrind\S*', '', options.shell)
+        # resultchecker doesn't need valgrind, remove it if present
+        shell = options.simpleshell
+        if not shell:
+            shell = options.shell
+        shell = re.sub(r'\S*valgrind\S*', '', shell)
         # When using schroot, run it in /tmp, because the host's directory might
         # not exist in the chroot.
         shell = shell.replace('schroot ', 'schroot -d /tmp ', 1)
@@ -563,8 +619,8 @@ class Context:
         self.runCommand(" && ".join(commands))
 
         # report result by email
-        if self.recipients:
-            server = smtplib.SMTP(self.mailhost)
+        server, body, writer = self.startEmail()
+        if server:
             msg=''
             try:
                 msg = open(self.resultdir + "/nightly.html").read()
@@ -575,6 +631,19 @@ class Context:
             msg = re.sub(r'href="([a-zA-Z0-9./])',
                          'href="' + uri + r'/\1',
                          msg)
+            writer.startbody("text/html;charset=ISO-8859-1").write(msg)
+            self.finishEmail(server, body)
+        else:
+            log('%s\n', '\n'.join(self.summary))
+
+        if status in Action.COMPLETED:
+            sys.exit(0)
+        else:
+            sys.exit(1)
+
+    def startEmail(self):
+        if self.recipients:
+            server = smtplib.SMTP(self.mailhost)
             body = StringIO.StringIO()
             writer = MimeWriter.MimeWriter (body)
             writer.addheader("From", self.sender)
@@ -583,18 +652,14 @@ class Context:
             writer.addheader("Subject", self.mailtitle + ": " + os.path.basename(self.resultdir))
             writer.addheader("MIME-Version", "1.0")
             writer.flushheaders()
-            writer.startbody("text/html;charset=ISO-8859-1").write(msg)
-
-            failed = server.sendmail(self.sender, self.recipients, body.getvalue())
-            if failed:
-                log('could not send to: %s', failed)
-                sys.exit(1)
+            return (server, body, writer)
         else:
-            log('%s\n', '\n'.join(self.summary))
+            return (None, None, None)
 
-        if status in Action.COMPLETED:
-            sys.exit(0)
-        else:
+    def finishEmail(self, server, body):
+        failed = server.sendmail(self.sender, self.recipients, body.getvalue())
+        if failed:
+            log('could not send to: %s', failed)
             sys.exit(1)
 
 class CVSCheckout(Action):
@@ -615,14 +680,14 @@ class CVSCheckout(Action):
     def execute(self):
         cd(self.workdir)
         if os.access(self.module, os.F_OK):
-            os.chdir(self.module)
+            cd(self.module)
             context.runCommand("cvs update -d -r %s"  % (self.revision))
         elif self.revision == "HEAD":
             context.runCommand("cvs -d %s checkout %s" % (self.cvsroot, self.module))
-            os.chdir(self.module)
+            cd(self.module)
         else:
             context.runCommand("cvs -d %s checkout -r %s %s" % (self.cvsroot, self.revision, self.module))
-            os.chdir(self.module)
+            cd(self.module)
         if os.access("autogen.sh", os.F_OK):
             context.runCommand("%s ./autogen.sh" % (self.runner))
 
@@ -647,7 +712,7 @@ class SVNCheckout(Action):
         else:
             cmd = "checkout"
         context.runCommand("svn %s %s %s"  % (cmd, self.url, self.module))
-        os.chdir(self.module)
+        cd(self.module)
         if os.access("autogen.sh", os.F_OK):
             context.runCommand("%s ./autogen.sh" % (self.runner))
 
@@ -683,7 +748,7 @@ class GitCheckout(GitCheckoutBase, Action):
                            {"dir": self.basedir,
                             "rev": self.revision},
                            runAsIs=True)
-        os.chdir(self.basedir)
+        cd(self.basedir)
         if os.access("autogen.sh", os.F_OK):
             context.runCommand("%s ./autogen.sh" % (self.runner))
 
@@ -710,7 +775,7 @@ class GitCopy(GitCheckoutBase, Action):
         if not os.access(self.basedir, os.F_OK):
             context.runCommand("(mkdir -p %s && cp -a -l %s/%s %s) || ( rm -rf %s && false )" %
                                (self.workdir, self.sourcedir, self.name, self.workdir, self.basedir))
-        os.chdir(self.basedir)
+        cd(self.basedir)
         cmd = " && ".join([
                 'rm -f %(patchlog)s',
                 'echo "save local changes with stash under a fixed name <rev>-nightly"',
@@ -802,6 +867,11 @@ class SyncEvolutionTest(Action):
 
     def execute(self):
         resdir = os.getcwd()
+        log('result dir: %s, /proc/self/cwd -> %s', resdir, os.readlink('/proc/self/cwd'))
+        if resdir == '/':
+            time.sleep(5)
+            resdir = os.getcwd()
+            log('result dir: %s, /proc/self/cwd -> %s', resdir, os.readlink('/proc/self/cwd'))
         # Run inside a new directory which links to all files in the build dir.
         # That way different actions are independent of each other while still
         # sharing the same test binaries and files.
@@ -821,7 +891,7 @@ class SyncEvolutionTest(Action):
                 name = os.path.join(actiondir, entry)
                 os.symlink(target, name)
                 links[entry] = os.path.join(hosttargetdir, entry)
-        os.chdir(actiondir)
+        cd(actiondir)
         try:
             # use installed backends if available
             backenddir = os.path.join(self.build.installdir, "usr/lib/syncevolution/backends")
@@ -981,6 +1051,9 @@ parser.add_option("", "--resulturi",
 parser.add_option("", "--shell",
                   type="string", dest="shell", default="",
                   help="a prefix which is put in front of a command to execute it (can be used for e.g. run_garnome)")
+parser.add_option("", "--simple-shell",
+                  type="string", dest="simpleshell", default="",
+                  help="shell to use for result checking (just the environment, no daemons)")
 parser.add_option("", "--schrootdir",
                   type="string", dest="schrootdir", default="",
                   help="the path to the root of the chroot when using schroot in --shell; --resultdir already includes the path")
@@ -1156,7 +1229,7 @@ class SyncEvolutionBuild(AutotoolsBuild):
         # - The wrapper script is invokved for the first time
         #   on some other platform, it tries to link, but fails
         #   because libs are different.
-        context.runCommand("%s %s src/client-test CXXFLAGS='-O0 -g' LDFLAGS=-no-install" % (self.runner, context.make))
+        context.runCommand("%s %s src/client-test CXXFLAGS='-O0 -g' ADDITIONAL_LDFLAGS=-no-install" % (self.runner, context.make))
 
 class NopAction(Action):
     def __init__(self, name):
@@ -1246,6 +1319,8 @@ if options.sourcedir:
                                                      # http://sourceforge.net/apps/trac/cppcheck/ticket/5316:
                                                      # Happens with cppcheck 1.61: Analysis failed. If the code is valid then please report this failure.
                                                      "--suppress=cppcheckError:*/localengineds.cpp",
+                                                     # We use inline suppressions for some errors.
+                                                     '--inline-suppr',
                                                      ]))
             # Be more specific about which sources we check. We are not interested in
             # pcre and expat, for example.
@@ -1438,30 +1513,120 @@ distcheck = SyncEvolutionDistcheck("distcheck",
                                    [ compile.name ])
 context.add(distcheck)
 
-evolutiontest = SyncEvolutionTest("evolution", compile,
-                                  "", options.shell,
-                                  "Client::Source SyncEvolution",
-                                  [],
-                                  "CLIENT_TEST_FAILURES="
-                                  # testReadItem404 works with some Akonadi versions (Ubuntu Lucid),
-                                  # but not all (Debian Testing). The other tests always fail,
-                                  # the code needs to be fixed.
-                                  "Client::Source::kde_.*::testReadItem404,"
-                                  "Client::Source::kde_.*::testDelete404,"
-                                  "Client::Source::kde_.*::testImport.*,"
-                                  "Client::Source::kde_.*::testRemoveProperties,"
-                                  " "
-                                  "CLIENT_TEST_SKIP="
-                                  "Client::Source::file_event::LinkedItemsDefault::testLinkedItemsInsertBothUpdateChildNoIDs,"
-                                  "Client::Source::file_event::LinkedItemsDefault::testLinkedItemsUpdateChildNoIDs,"
-                                  "Client::Source::file_event::LinkedItemsWithVALARM::testLinkedItemsInsertBothUpdateChildNoIDs,"
-                                  "Client::Source::file_event::LinkedItemsWithVALARM::testLinkedItemsUpdateChildNoIDs,"
-                                  "Client::Source::file_event::LinkedItemsAllDay::testLinkedItemsInsertBothUpdateChildNoIDs,"
-                                  "Client::Source::file_event::LinkedItemsAllDay::testLinkedItemsUpdateChildNoIDs,"
-                                  "Client::Source::file_event::LinkedItemsNoTZ::testLinkedItemsInsertBothUpdateChildNoIDs,"
-                                  "Client::Source::file_event::LinkedItemsNoTZ::testLinkedItemsUpdateChildNoIDs",
-                                  testPrefix=options.testprefix)
-context.add(evolutiontest)
+# Special case "evolution": this used to be a catch-all for all
+# Client::Source and unit tests in the "SyncEvolution" test group.
+# In practice it was always run with specific sources enabled.
+#
+# Now runtests.py has separate test runs for all of these but continues
+# to use --enable evolution=... This is done by mapping the enabled["evolution"]
+# value into the new categories (kde, eds, file, unittests).
+# The advantage is parallel testing and some separation between running incompatible
+# sources in the same process.
+#
+# Akonadi is known to crash randomly when used after EDS in the same
+# process (from Client::Source::kde_contact::testOpen):
+#
+# [DEBUG 00:00:00] ClientTest.cpp:1004: starting source->open()
+# [ERROR 00:20:00] stderr: syncevolution(787)/libakonadi Akonadi::SessionPrivate::socketError: Socket error occurred: "QLocalSocket::connectToServer: Invalid name"
+# [DEVELOPER 00:20:00] stderr: QDBusConnection: session D-Bus connection created before QCoreApplication. Application may misbehave.
+# [DEVELOPER 00:20:00] stderr: kres-migrator: cannot connect to X server
+# [DEVELOPER 00:20:00] stderr: QDBusConnection: session D-Bus connection created before QCoreApplication. Application may misbehave.
+# [DEVELOPER 00:20:00] stderr: kres-migrator: cannot connect to X server
+# [DEVELOPER 00:20:00] stderr: Qt has caught an exception thrown from an event handler. Throwing
+# [DEVELOPER 00:20:00] stderr: exceptions from an event handler is not supported in Qt. You must
+# [DEVELOPER 00:20:00] stderr: reimplement QApplication::notify() and catch all exceptions there.
+
+localtests = []
+
+test = SyncEvolutionTest("eds", compile,
+                         "", options.shell,
+                         "Client::Source::eds_contact Client::Source::eds_event Client::Source::eds_task Client::Source::eds_memo ",
+                         [],
+                         "CLIENT_TEST_FAILURES="
+                         " "
+                         "CLIENT_TEST_SKIP="
+                         " "
+                         ,
+                         testPrefix=options.testprefix)
+localtests.append(test)
+context.add(test)
+
+test = SyncEvolutionTest("kde", compile,
+                         "", options.shell,
+                         "Client::Source::kde_contact Client::Source::kde_event Client::Source::kde_task Client::Source::kde_memo",
+                         [],
+                         "CLIENT_TEST_FAILURES="
+                         # testReadItem404 works with some Akonadi versions (Ubuntu Lucid),
+                         # but not all (Debian Testing). The other tests always fail,
+                         # the code needs to be fixed.
+                         "Client::Source::kde_.*::testReadItem404,"
+                         "Client::Source::kde_.*::testDelete404,"
+                         "Client::Source::kde_.*::testLinkedItems.*404,"
+                         "Client::Source::kde_.*::testImport.*,"
+                         "Client::Source::kde_.*::testRemoveProperties,"
+                         " "
+                         "CLIENT_TEST_SKIP="
+                         " "
+                         ,
+                         testPrefix=options.testprefix)
+localtests.append(test)
+context.add(test)
+
+test = SyncEvolutionTest("file", compile,
+                         "", options.shell,
+                         "Client::Source::file_contact Client::Source::file_event Client::Source::file_task Client::Source::file_memo",
+                         [],
+                         "CLIENT_TEST_FAILURES="
+                         " "
+                         "CLIENT_TEST_SKIP="
+                         "Client::Source::file_event::LinkedItemsDefault::testLinkedItemsInsertBothUpdateChildNoIDs,"
+                         "Client::Source::file_event::LinkedItemsDefault::testLinkedItemsUpdateChildNoIDs,"
+                         "Client::Source::file_event::LinkedItemsWithVALARM::testLinkedItemsInsertBothUpdateChildNoIDs,"
+                         "Client::Source::file_event::LinkedItemsWithVALARM::testLinkedItemsUpdateChildNoIDs,"
+                         "Client::Source::file_event::LinkedItemsAllDay::testLinkedItemsInsertBothUpdateChildNoIDs,"
+                         "Client::Source::file_event::LinkedItemsAllDay::testLinkedItemsUpdateChildNoIDs,"
+                         "Client::Source::file_event::LinkedItemsNoTZ::testLinkedItemsInsertBothUpdateChildNoIDs,"
+                         "Client::Source::file_event::LinkedItemsNoTZ::testLinkedItemsUpdateChildNoIDs"
+                         " "
+                         ,
+                         testPrefix=options.testprefix)
+localtests.append(test)
+context.add(test)
+
+test = SyncEvolutionTest("unittests", compile,
+                         "", options.shell,
+                         "SyncEvolution",
+                         [],
+                         "CLIENT_TEST_FAILURES="
+                         " "
+                         "CLIENT_TEST_SKIP="
+                         " "
+                         ,
+                         testPrefix=options.testprefix)
+localtests.append(test)
+context.add(test)
+
+# Implement the mapping from "evolution" to the new test names.
+if enabled.has_key("evolution"):
+    if enabled["evolution"] is None:
+        # Everything is enabled.
+        for test in localtests:
+            enable[test.name] = None
+    else:
+        # Specific tests are enabled.
+        evolution = enabled["evolution"].split(",")
+        localtestsEnabled = {}
+        for e in evolution:
+            if e:
+                for localtest in localtests:
+                    # Match "Client:source::eds_contact::testImport" against
+                    # "Client::source::eds_contact Client::source::eds_event ...".
+                    for defTest in localtest.tests.split():
+                        if defTest.startswith(e):
+                            localtestsEnabled.setdefault(localtest.name, []).append(e)
+                            break
+        for name, e in localtestsEnabled.iteritems():
+            enabled[name] = ','.join(e)
 
 # test-dbus.py itself doesn't need to run under valgrind, remove it...
 shell = re.sub(r'\S*valgrind\S*', '', options.shell)
@@ -1502,20 +1667,35 @@ test = SyncEvolutionTest("googlecalendar", compile,
                          "CLIENT_TEST_UNIQUE_UID=2 " # server keeps backups and complains with 409 about not increasing SEQUENCE number even after deleting old data
                          "CLIENT_TEST_MODE=server " # for Client::Sync
                          "CLIENT_TEST_FAILURES="
-                         # http://code.google.com/p/google-caldav-issues/issues/detail?id=61 "cannot remove detached recurrence"
-                         "Client::Source::google_caldav::LinkedItemsDefault::testLinkedItemsRemoveNormal,"
-                         "Client::Source::google_caldav::LinkedItemsNoTZ::testLinkedItemsRemoveNormal,"
-                         "Client::Source::google_caldav::LinkedItemsWithVALARM::testLinkedItemsRemoveNormal,"
-                         "Client::Source::google_caldav::LinkedItemsAllDayGoogle::testLinkedItemsRemoveNormal,"
+                         # Its is possible now to send a child event with RECURRENCE-ID.
+                         # However, adding the parent later causes the server to also update
+                         # properties of the child.
+                         "Client::Source::google_caldav::LinkedItems.*::testLinkedItemsChildParent,"
+                         "Client::Source::google_caldav::LinkedItems.*::testLinkedItemsChildChangesParent,"
+                         "Client::Source::google_caldav::LinkedItems.*::testLinkedItemsInsertBothUpdateParent,"
+                         # Removing individual events from an item with more than one event
+                         # has no effect.
+                         "Client::Source::google_caldav::LinkedItems.*::testLinkedItemsRemoveParentFirst,"
+                         "Client::Source::google_caldav::LinkedItems.*::testLinkedItemsRemoveNormal,"
+                         # A child with date-only RECURRENCE-ID gets stored with date-time RECURRENCE-ID.
+                         "Client::Source::google_caldav::LinkedItemsAllDayGoogle::testLinkedItemsChild,"
+                         "Client::Source::google_caldav::LinkedItemsAllDayGoogle::testLinkedItemsInsertChildTwice,"
+                         "Client::Source::google_caldav::LinkedItemsAllDayGoogle::testLinkedItemsUpdateChild,"
+                         "Client::Source::google_caldav::LinkedItemsAllDayGoogle::testLinkedItemsUpdateChildNoIDs,"
                          ,
                          testPrefix=options.testprefix)
 context.add(test)
 
 test = SyncEvolutionTest("googlecontacts", compile,
                          "", options.shell,
-                         "Client::Sync::eds_contact::testItems Client::Source::google_carddav",
+                         "Client::Sync::eds_contact::testItems "
+                         "Client::Sync::eds_contact::testDownload "
+                         "Client::Sync::eds_contact::testUpload "
+                         "Client::Sync::eds_contact::testUpdateLocalWins "
+                         "Client::Sync::eds_contact::testUpdateRemoteWins "
+                         "Client::Source::google_carddav",
                          [ "google_carddav", "eds_contact" ],
-                         "CLIENT_TEST_WEBDAV='google carddav testcases=testcases/eds_contact.vcf' "
+                         "CLIENT_TEST_WEBDAV='google carddav' "
                          "CLIENT_TEST_NUM_ITEMS=10 " # don't stress server
                          "CLIENT_TEST_MODE=server " # for Client::Sync
                          "CLIENT_TEST_FAILURES="
@@ -1587,6 +1767,31 @@ test = SyncEvolutionTest("apple", compile,
                          "CLIENT_TEST_WEBDAV='apple caldav caldavtodo carddav' "
                          "CLIENT_TEST_NUM_ITEMS=100 " # test is local, so we can afford a higher number;
                          # used to be 250, but with valgrind that led to runtimes of over 40 minutes in testManyItems (too long!)
+                         "CLIENT_TEST_FAILURES="
+                         # After introducing POST, a misbehavior (?) of the
+                         # server started breaking the test:
+                         # - POST returns a certain etag "foo" in send.client.A
+                         # - the server seems to reorder properties, leading to etag "bar"
+                         # - in check.client.A, because of "foo" != "bar", the item gets
+                         #   downloaded and updated in a sync where no such update is
+                         #   expected.
+                         #
+                         # Related to https://bugs.freedesktop.org/show_bug.cgi?id=63882 "WebDAV: re-import uploaded item".
+                         # However, it is uncertain whether the server really
+                         # behaves correctly, because the client cannot detect
+                         # that the item is still getting modified by the server.
+                         "Client::Sync::eds_contact::testOneWayFromLocal,"
+                         "Client::Sync::eds_contact::testOneWayFromClient,"
+                         "Client::Sync::eds_task::testOneWayFromLocal,"
+                         "Client::Sync::eds_task::testOneWayFromClient,"
+                         " "
+                         # Apple Calendar Server 5.2 (and earlier?)
+                         # implement timezones by reference and does
+                         # not return VTIMEZONE definitions (see
+                         # "Apple Calendar Server 5.2 + timezone by
+                         # reference" on the caldeveloper mailing
+                         # list). Ignore timezone related test failures.
+                         "CLIENT_TEST_NO_TIMEZONES=1 "
                          "CLIENT_TEST_MODE=server " # for Client::Sync
                          ,
                          testPrefix=options.testprefix)
@@ -1707,6 +1912,7 @@ syncevoPrefix=" ".join([os.path.join(sync.basedir, "test", "wrappercheck.sh")] +
                              [ "--daemon-log", "syncevohttp.log" ] ) +
                        [ options.testprefix,
                          os.path.join(compile.installdir, "usr", "libexec", "syncevo-dbus-server"),
+                         '--verbosity=3', # Full information about daemon operation.
                          '--dbus-verbosity=1', # Only errors from syncevo-dbus-server and syncing.
                          '--stdout', '--no-syslog', # Write into same syncevohttp.log as syncevo-http-server.
                          '--duration=unlimited', # Never shut down, even if client is inactive for a while.
@@ -1717,6 +1923,7 @@ syncevoPrefix=" ".join([os.path.join(sync.basedir, "test", "wrappercheck.sh")] +
                          "--daemon-log", "syncevohttp.log",
                          "--wait-for-daemon-output", "syncevo-http:.listening.on.port.<httpport>",
                          os.path.join(compile.installdir, "usr", "bin", "syncevo-http-server"),
+                         "--debug",
                          "http://127.0.0.1:<httpport>/syncevolution",
                          "--",
                          options.testprefix])
@@ -1844,6 +2051,110 @@ test = SyncEvolutionTest("edsdav",
                          "CLIENT_TEST_SKIP="
                          ,
                          testPrefix=syncevoPrefix.replace('<httpport>', '9904'))
+context.add(test)
+
+# The test uses plain files on clients and a server config with EDS
+# backend. This can be used to send test items to SyncEvoltion which have
+# not gone through the EDS import step first.
+test = SyncEvolutionTest("fileeds",
+                         compile,
+                         "", options.shell,
+                         "Client::Sync::file_event Client::Sync::file_contact",
+                         [ "file_event", "file_contact" ],
+                         "CLIENT_TEST_NUM_ITEMS=100 "
+                         "CLIENT_TEST_LOG=syncevohttp.log "
+                         # Slow, and running many syncs still fails when using
+                         # valgrind. Tested separately below in "edsxfile".
+                         # "CLIENT_TEST_RETRY=t "
+                         # "CLIENT_TEST_RESEND=t "
+                         # "CLIENT_TEST_SUSPEND=t "
+                         # server supports refresh-from-client, use it for
+                         # more efficient test setup
+                         "CLIENT_TEST_DELETE_REFRESH=1 "
+                         # server supports multiple cycles inside the same session
+                         "CLIENT_TEST_PEER_CAN_RESTART=1 "
+                         "CLIENT_TEST_SKIP="
+                         ,
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9905'))
+context.add(test)
+
+# The test uses plain files on clients and server. This allows checking of
+# content without having transformations inside EDS involved at all.
+test = SyncEvolutionTest("filefile",
+                         compile,
+                         "", options.shell,
+                         "Client::Sync::file_event Client::Sync::file_contact",
+                         [ "file_event", "file_contact" ],
+                         "CLIENT_TEST_NUM_ITEMS=100 "
+                         "CLIENT_TEST_LOG=syncevohttp.log "
+                         # Slow, and running many syncs still fails when using
+                         # valgrind. Tested separately below in "edsxfile".
+                         # "CLIENT_TEST_RETRY=t "
+                         # "CLIENT_TEST_RESEND=t "
+                         # "CLIENT_TEST_SUSPEND=t "
+                         # server supports refresh-from-client, use it for
+                         # more efficient test setup
+                         "CLIENT_TEST_DELETE_REFRESH=1 "
+                         # server supports multiple cycles inside the same session
+                         "CLIENT_TEST_PEER_CAN_RESTART=1 "
+                         # server cannot detect pairs based on UID/RECURRENCE-ID
+                         "CLIENT_TEST_ADD_BOTH_SIDES_SERVER_IS_DUMB=1 "
+                         "CLIENT_TEST_SKIP="
+                         ,
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9906'))
+context.add(test)
+
+# The test uses Akonadi on the client and server server side.
+test = SyncEvolutionTest("kdekde",
+                         compile,
+                         "", options.shell,
+                         "Client::Sync::kde_event Client::Sync::kde_contact",
+                         [ "kde_event", "kde_contact" ],
+                         "CLIENT_TEST_NUM_ITEMS=100 "
+                         "CLIENT_TEST_LOG=syncevohttp.log "
+                         # Slow, and running many syncs still fails when using
+                         # valgrind. Tested separately below in "edsxfile".
+                         # "CLIENT_TEST_RETRY=t "
+                         # "CLIENT_TEST_RESEND=t "
+                         # "CLIENT_TEST_SUSPEND=t "
+                         # server supports refresh-from-client, use it for
+                         # more efficient test setup
+                         "CLIENT_TEST_DELETE_REFRESH=1 "
+                         # server supports multiple cycles inside the same session
+                         "CLIENT_TEST_PEER_CAN_RESTART=1 "
+                         "CLIENT_TEST_SKIP="
+                         ,
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9907'))
+context.add(test)
+
+# The test uses files on the client and KDE on the server server side.
+test = SyncEvolutionTest("filekde",
+                         compile,
+                         "", options.shell,
+                         "Client::Sync::file_event Client::Sync::file_contact",
+                         [ "file_event", "file_contact" ],
+                         "CLIENT_TEST_NUM_ITEMS=100 "
+                         "CLIENT_TEST_LOG=syncevohttp.log "
+                         # Slow, and running many syncs still fails when using
+                         # valgrind. Tested separately below in "edsxfile".
+                         # "CLIENT_TEST_RETRY=t "
+                         # "CLIENT_TEST_RESEND=t "
+                         # "CLIENT_TEST_SUSPEND=t "
+                         # server supports refresh-from-client, use it for
+                         # more efficient test setup
+                         "CLIENT_TEST_DELETE_REFRESH=1 "
+                         # server supports multiple cycles inside the same session
+                         "CLIENT_TEST_PEER_CAN_RESTART=1 "
+
+                         "CLIENT_TEST_FAILURES="
+                         # Different vcard flavor, need different test data (just as
+                         # in testImport).
+                         "Client::Sync::file_contact::testItems,"
+                         " "
+
+                         "CLIENT_TEST_SKIP="
+                         ,
+                         testPrefix=syncevoPrefix.replace('<httpport>', '9908'))
 context.add(test)
 
 scheduleworldtest = SyncEvolutionTest("scheduleworld", compile,
@@ -2233,5 +2544,19 @@ if options.list:
     for action in context.todo:
         print action.name
 else:
-    log('Ready to run. I have PID %d.', os.getpid())
-    context.execute()
+    pid = os.getpid()
+    log('Ready to run. I have PID %d.', pid)
+    try:
+        context.execute()
+    except exceptions.SystemExit:
+        raise
+    except:
+        # Something went wrong. Send emergency email if an email is
+        # expected and we are the parent process.
+        if pid == os.getpid():
+            server, body, writer = context.startEmail()
+            if server:
+                writer.startbody("text/html;charset=ISO-8859-1").write('<html><body><pre>%s</pre></body></html>' %
+                                                                       traceback.format_exc())
+                context.finishEmail(server, body)
+        raise

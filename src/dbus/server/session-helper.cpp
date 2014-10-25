@@ -109,6 +109,12 @@ public:
             options.m_level <= m_dbusLogLevel) {
             // send to parent
             string log = StringPrintfV(format, args);
+            if (options.m_prefix) {
+                std::string prefix = *options.m_prefix;
+                prefix += ": ";
+                boost::replace_all(log, "\n", prefix);
+                log.insert(0, prefix);
+            }
             string strLevel = Logger::levelToStr(options.m_level);
             try {
                 m_helper->emitLogOutput(strLevel, log, options.m_processName ? *options.m_processName : getProcessName());
@@ -146,6 +152,7 @@ SessionHelper::SessionHelper(GMainLoop *loop,
     add(this, &SessionHelper::sync, "Sync");
     add(this, &SessionHelper::restore, "Restore");
     add(this, &SessionHelper::execute, "Execute");
+    add(this, &SessionHelper::setFreeze, "SetFreeze");
     add(this, &SessionHelper::passwordResponse, "PasswordResponse");
     add(this, &SessionHelper::storeMessage, "StoreMessage");
     add(this, &SessionHelper::connectionState, "ConnectionState");
@@ -331,5 +338,14 @@ void SessionHelper::passwordResponse(bool timedOut, bool aborted, const std::str
         SE_LOG_DEBUG(NULL, "discarding obsolete password response");
     }
 }
+
+bool SessionHelper::setFreeze(bool frozen)
+{
+    return m_sync ?
+        m_sync->setFreeze(frozen) :
+        false;
+}
+
+
 
 SE_END_CXX

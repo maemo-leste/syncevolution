@@ -50,6 +50,7 @@
 SE_BEGIN_CXX
 
 const char *const SourceAdminDataName = "adminData";
+const char *const SyncMaxMsgSize = "maxMsgSize";
 
 int ConfigVersions[CONFIG_LEVEL_MAX][CONFIG_VERSION_MAX] =
 {
@@ -202,7 +203,7 @@ void ConfigProperty::splitComment(const string &comment, list<string> &commentLi
 
 void ConfigProperty::throwValueError(const ConfigNode &node, const string &name, const string &value, const string &error) const
 {
-    SyncContext::throwError(node.getName() + ": " + name + " = " + value + ": " + error);
+    Exception::throwError(SE_HERE, node.getName() + ": " + name + " = " + value + ": " + error);
 }
 
 std::string ConfigProperty::sharing2str(Sharing sharing)
@@ -1302,9 +1303,7 @@ static ConfigProperty syncPropSyncURL("syncURL",
                                       "Identifies how to contact the peer,\n"
                                       "best explained with some examples.\n\n"
                                       "HTTP(S) SyncML servers::\n\n"
-                                      "  http://my.funambol.com/sync\n"
-                                      "  http://sync.scheduleworld.com/funambol/ds\n"
-                                      "  https://m.google.com/syncml\n\n"
+                                      "  http://example.com/sync\n\n"
                                       "OBEX over Bluetooth uses the MAC address, with\n"
                                       "the channel chosen automatically::\n\n"
                                       "  obex-bt://00:0A:94:03:F3:7E\n\n"
@@ -1404,6 +1403,17 @@ public:
             }
         }
         key.user = getUsername(syncPropUsername, globalConfigNode);
+        // User domain part of a username which looks like an email address
+        // as server name if we don't have something better. Needed for
+        // WebDAV configs using just an email address to locate the server.
+        if (key.server.empty()) {
+            size_t offset = key.user.find('@');
+            if (offset != key.user.npos &&
+                offset != key.user.size() - 1) {
+                key.server = key.user.substr(offset + 1);
+                key.user.resize(offset);
+            }
+        }
         return key;
     }
 } syncPropPassword;
@@ -1418,7 +1428,7 @@ static BoolConfigProperty syncPropPreventSlowSync("preventSlowSync",
                                                   "side with a refresh-from-client/server sync instead of doing\n"
                                                   "a slow sync.\n"
                                                   "When this option is enabled, slow syncs that could cause problems\n"
-                                                  "are not allowed to proceed. Instead, the affected sources are\n"
+                                                  "are not allowed to proceed. Instead, the affected datastores are\n"
                                                   "skipped, allowing the user to choose a suitable sync mode in\n"
                                                   "the next run (slow sync selected explicitly, refresh sync).\n"
                                                   "The following situations are handled:\n\n"
@@ -1498,7 +1508,7 @@ static StringConfigProperty syncPropClientAuthType("clientAuthType",
                                                    Values() +
                                                    (Aliases("basic") + "syncml:auth-basic") +
                                                    (Aliases("md5") + "syncml:auth-md5" + ""));
-static ULongConfigProperty syncPropMaxMsgSize("maxMsgSize",
+static ULongConfigProperty syncPropMaxMsgSize(SyncMaxMsgSize,
                                               "The maximum size of each message can be set (maxMsgSize) and the\n"
                                               "peer can be told to never sent items larger than a certain\n"
                                               "threshold (maxObjSize). Presumably the peer has to truncate or\n"
@@ -1998,7 +2008,7 @@ void PasswordConfigProperty::checkPassword(UserInterface &ui,
                      serverName.c_str(),
                      username.c_str());
     } else {
-        SE_LOG_DEBUG(NULL, "checking password property '%s' in source '%s' of config '%s' with user identity '%s'",
+        SE_LOG_DEBUG(NULL, "checking password property '%s' in datastore '%s' of config '%s' with user identity '%s'",
                      getMainName().c_str(),
                      sourceName.c_str(),
                      serverName.c_str(),
@@ -2062,7 +2072,7 @@ void PasswordConfigProperty::checkPassword(UserInterface &ui,
             const char *envval = getenv(envname.c_str());
             SE_LOG_DEBUG(NULL, "using password from env var %s", envname.c_str());
             if (!envval) {
-                SyncContext::throwError(string("the environment variable '") +
+                Exception::throwError(SE_HERE, string("the environment variable '") +
                                         envname +
                                         "' for the '" +
                                         descr +
@@ -2145,7 +2155,7 @@ void PasswordConfigProperty::savePassword(UserInterface &ui,
                      serverName.c_str(),
                      username.c_str());
     } else {
-        SE_LOG_DEBUG(NULL, "possibly saving password property '%s' in source '%s' of config '%s' with user identity '%s'",
+        SE_LOG_DEBUG(NULL, "possibly saving password property '%s' in datastore '%s' of config '%s' with user identity '%s'",
                      getMainName().c_str(),
                      sourceName.c_str(),
                      serverName.c_str(),
@@ -2184,14 +2194,6 @@ void PasswordConfigProperty::savePassword(UserInterface &ui,
         }
         credConfig->setSyncPassword(password, false);
         syncPropPassword.savePassword(ui, *credConfig);
-    } else if (identity.m_provider != USER_IDENTITY_PLAIN_TEXT) {
-        // Cannot store passwords in providers.
-        if (password.wasSet() && !password.empty()) {
-            SE_THROW(StringPrintf("setting property '%s' not supported for provider '%s' from property '%s'",
-                                  getMainName().c_str(),
-                                  identity.m_provider.c_str(),
-                                  usernameProperty.getMainName().c_str()));
-        }
     } else {
         if (password == "-" || password == "" ||
             (boost::starts_with(password, "${") && boost::ends_with(password, "}"))) {
@@ -2282,9 +2284,26 @@ void SyncConfig::setSyncURL(const vector<string> &value, bool temporarily) {
 }
 InitStateString SyncConfig::getClientAuthType() const { return syncPropClientAuthType.getProperty(*getNode(syncPropClientAuthType)); }
 void SyncConfig::setClientAuthType(const string &value, bool temporarily) { syncPropClientAuthType.setProperty(*getNode(syncPropClientAuthType), value, temporarily); }
-InitState<unsigned long > SyncConfig::getMaxMsgSize() const { return syncPropMaxMsgSize.getPropertyValue(*getNode(syncPropMaxMsgSize)); }
+
+template<class T> InitState<T> EnsureMinSize(const InitState<T> &current, T min)
+{
+    if (current >= min) {
+        return current;
+    } else {
+        return InitState<T>(min);
+    }
+}
+
+InitState<unsigned long > SyncConfig::getMaxMsgSize() const {
+    // Sanitize value: don't run with buffer sizes smaller than 10KB.
+    return EnsureMinSize(syncPropMaxMsgSize.getPropertyValue(*getNode(syncPropMaxMsgSize)),
+                         10 * 1024ul);
+}
 void SyncConfig::setMaxMsgSize(unsigned long value, bool temporarily) { syncPropMaxMsgSize.setProperty(*getNode(syncPropMaxMsgSize), value, temporarily); }
-InitState<unsigned int > SyncConfig::getMaxObjSize() const { return syncPropMaxObjSize.getPropertyValue(*getNode(syncPropMaxObjSize)); }
+InitState<unsigned int > SyncConfig::getMaxObjSize() const {
+    return EnsureMinSize(syncPropMaxObjSize.getPropertyValue(*getNode(syncPropMaxObjSize)),
+                         1024u);
+}
 void SyncConfig::setMaxObjSize(unsigned int value, bool temporarily) { syncPropMaxObjSize.setProperty(*getNode(syncPropMaxObjSize), value, temporarily); }
 InitStateString SyncConfig::getDevID() const { return syncPropDevID.getProperty(*getNode(syncPropDevID)); }
 void SyncConfig::setDevID(const string &value, bool temporarily) { syncPropDevID.setProperty(*getNode(syncPropDevID), value, temporarily); }
@@ -2672,7 +2691,7 @@ StringConfigProperty SyncSourceConfig::m_sourcePropSync("sync",
                                            "not always obvious.\n"
                                            "\n"
                                            "When accepting a sync session in a SyncML server (HTTP server), only\n"
-                                           "sources with sync != disabled are made available to the client,\n"
+                                           "datastores with sync != disabled are made available to the client,\n"
                                            "which chooses the final sync mode based on its own configuration.\n"
                                            "When accepting a sync session in a SyncML client (local sync with\n"
                                            "the server contacting SyncEvolution on a device), the sync mode\n"
@@ -2701,25 +2720,25 @@ public:
     SourceBackendConfigProperty() :
         StringConfigProperty("backend",
                              "Specifies the SyncEvolution backend and thus the\n"
-                             "data which is synchronized by this source. Each\n"
+                             "data which is synchronized by this datastore. Each\n"
                              "backend may support multiple databases (see 'database'\n"
                              "property), different formats inside that database (see\n"
                              "'databaseFormat'), and different formats when talking to\n"
                              "the sync peer (see 'syncFormat' and 'forceSyncFormat').\n"
                              "\n"
                              "A special 'virtual' backend combines several other\n"
-                             "data sources and presents them as one set of items\n"
+                             "datastores and presents them as one set of items\n"
                              "to the peer. For example, Nokia phones typically\n"
                              "exchange tasks and events as part of one set of\n"
                              "calendar items.\n"
                              "\n"
                              "Right now such a virtual backend is limited to\n"
-                             "combining one calendar source with events and one\n"
-                             "task source. They have to be specified in the\n"
+                             "combining one calendar datastore with events and one\n"
+                             "task datastore. They have to be specified in the\n"
                              "``database`` property, typically like this:\n"
                              "``calendar,todo``\n"
                              "\n"
-                             "Different sources combined in one virtual source must\n"
+                             "Different datastores combined in one virtual datastore must\n"
                              "have a common format. As with other backends,\n"
                              "the preferred format can be influenced via the 'syncFormat'\n"
                              "attribute.\n"
@@ -2812,7 +2831,7 @@ static ConfigProperty sourcePropDatabaseID(Aliases("database") + "evolutionsourc
                                            "like for example the system address book.\n"
                                            "Not setting this property selects that default\n"
                                            "database.\n\n"
-                                           "If the backend is a virtual data source,\n"
+                                           "If the backend is a virtual data datastore,\n"
                                            "this field must contain comma seperated list of\n"
                                            "sub datasources actually used to store data.\n"
                                            "If your sub datastore has a comma in name, you\n"
@@ -2824,8 +2843,8 @@ static ConfigProperty sourcePropDatabaseID(Aliases("database") + "evolutionsourc
                                            "run ``syncevolution --print-databases``. The name\n"
                                            "is printed in front of the colon, followed by\n"
                                            "an identifier in brackets. Usually the name is unique and can be\n"
-                                           "used to reference the data source. The default\n"
-                                           "data source is marked with <default> at the end\n"
+                                           "used to reference the data datastore. The default\n"
+                                           "data datastore is marked with <default> at the end\n"
                                            "of the line, if there is a default.\n");
 
 static StringConfigProperty sourcePropDatabaseFormat("databaseFormat",
@@ -2836,11 +2855,11 @@ static StringConfigProperty sourcePropDatabaseFormat("databaseFormat",
 
 static ConfigProperty sourcePropURI("uri",
                                     "this is appended to the server's URL to identify the\n"
-                                    "server's database; if unset, the source name is used as\n"
+                                    "server's database; if unset, the datastore name is used as\n"
                                     "fallback");
 
 static ConfigProperty sourcePropUser(Aliases("databaseUser") + "evolutionuser",
-                                     "authentication for backend data source; password can be specified\n"
+                                     "authentication for backend data datastore; password can be specified\n"
                                      "in multiple ways, see SyncML server password for details\n"
                                      "\n"
                                      "Warning: setting database user/password in cases where it is not\n"
@@ -2880,7 +2899,7 @@ public:
         key.object += " ";
         key.object += sourceName;
         key.object += " backend";
-        key.description = StringPrintf("databasePassword for %s in source %s",
+        key.description = StringPrintf("databasePassword for %s in datastore %s",
                                        descr.c_str(), sourceName.c_str());
         return key;
     }
@@ -2995,11 +3014,11 @@ SyncSourceNodes::getNode(const ConfigProperty &prop) const
 {
     switch (prop.getSharing()) {
     case ConfigProperty::GLOBAL_SHARING:
-        return boost::shared_ptr<FilterConfigNode>(new FilterConfigNode(boost::shared_ptr<ConfigNode>(new DevNullConfigNode("no global source properties"))));
+        return boost::shared_ptr<FilterConfigNode>(new FilterConfigNode(boost::shared_ptr<ConfigNode>(new DevNullConfigNode("no global datastore properties"))));
         break;
     case ConfigProperty::SOURCE_SET_SHARING:
         if (prop.isHidden()) {
-            return boost::shared_ptr<FilterConfigNode>(new FilterConfigNode(boost::shared_ptr<ConfigNode>(new DevNullConfigNode("no hidden source set properties"))));
+            return boost::shared_ptr<FilterConfigNode>(new FilterConfigNode(boost::shared_ptr<ConfigNode>(new DevNullConfigNode("no hidden datastore set properties"))));
         } else {
             return m_sharedNode;
         }

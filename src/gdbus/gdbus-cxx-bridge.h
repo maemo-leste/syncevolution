@@ -201,8 +201,7 @@ DBusConnectionPtr dbus_get_bus_connection(const char *busType,
                                           DBusErrorCXX *err);
 
 DBusConnectionPtr dbus_get_bus_connection(const std::string &address,
-                                          DBusErrorCXX *err,
-                                          bool delayed = false);
+                                          DBusErrorCXX *err);
 
 void dbus_bus_connection_undelay(const DBusConnectionPtr &conn);
 
@@ -224,14 +223,10 @@ class DBusServerCXX : private boost::noncopyable
      */
     typedef boost::function<void (DBusServerCXX &, DBusConnectionPtr &)> NewConnection_t;
 
-    void setNewConnectionCallback(const NewConnection_t &newConnection) { m_newConnection = newConnection; }
-    NewConnection_t getNewConnectionCallback() const { return m_newConnection; }
-
     /**
-     * Start listening for new connections on the given address, like unix:abstract=myaddr.
-     * Address may be empty, in which case a new, unused address will chosen.
+     * Start listening for new connections on an unused address.
      */
-    static boost::shared_ptr<DBusServerCXX> listen(const std::string &address, DBusErrorCXX *err);
+    static boost::shared_ptr<DBusServerCXX> listen(const NewConnection_t &newConnection, DBusErrorCXX *err);
 
     /**
      * address used by the server
@@ -1078,6 +1073,27 @@ template<> struct dbus_traits<uint32_t> :
     static std::string getSignature() {return getType(); }
     static std::string getReply() { return ""; }
 };
+template<> struct dbus_traits<int64_t> :
+    public basic_marshal< int64_t, DBUS_TYPE_INT64 >
+{
+    static std::string getType() { return "x"; }
+    static std::string getSignature() {return getType(); }
+    static std::string getReply() { return ""; }
+};
+template<> struct dbus_traits<uint64_t> :
+    public basic_marshal< uint64_t, DBUS_TYPE_UINT64 >
+{
+    static std::string getType() { return "t"; }
+    static std::string getSignature() {return getType(); }
+    static std::string getReply() { return ""; }
+};
+template<> struct dbus_traits<double> :
+    public basic_marshal< double, DBUS_TYPE_DOUBLE >
+{
+    static std::string getType() { return "d"; }
+    static std::string getSignature() {return getType(); }
+    static std::string getReply() { return ""; }
+};
 
 template<> struct dbus_traits<bool> : public dbus_traits_base
 {
@@ -1618,6 +1634,32 @@ template<class K, class V, V K::*m, class M> struct dbus_member
     {
         dbus_traits<V>::append(iter, val.*m);
         M::append(iter, val);
+    }
+};
+
+/**
+ * The base class of type V of a struct K, followed by another dbus_member
+ * or dbus_member_single to end the chain
+ */
+template<class K, class V, class M> struct dbus_base
+{
+    static std::string getType()
+    {
+        return dbus_traits<V>::getType() + M::getType();
+    }
+    typedef V host_type;
+
+    static void get(ExtractArgs &context,
+                    GVariantIter &iter, K &val)
+    {
+        dbus_traits<V>::get(context, iter, val);
+        M::get(context, iter, val);
+    }
+
+    static void append(GVariantBuilder &builder, const K &val)
+    {
+        dbus_traits<V>::append(builder, val);
+        M::append(builder, val);
     }
 };
 

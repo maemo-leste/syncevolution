@@ -39,6 +39,8 @@
 #include <syncevo/GLibSupport.h> // PBAP backend does not compile without GLib.
 #include <syncevo/util.h>
 #include <syncevo/BoostHelper.h>
+#include <src/syncevo/SynthesisEngine.h>
+#include <syncevo/SuspendFlags.h>
 
 #include "gdbus-cxx-bridge.h"
 
@@ -47,7 +49,6 @@
 
 #include <synthesis/SDK_util.h>
 
-#include <syncevo/SyncContext.h>
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
@@ -64,29 +65,208 @@ SE_BEGIN_CXX
 #define OBC_TRANSFER_INTERFACE_NEW5 "org.bluez.obex.Transfer1"
 
 typedef std::map<int, pcrecpp::StringPiece> Content;
-
-class PullAll
-{
-    std::string m_buffer; // vCards kept in memory when using old obexd.
-    TmpFile m_tmpFile; // Stored in temporary file and mmapped with more recent obexd.
-    Content m_content; // Refers to chunks of m_buffer or m_tmpFile without copying them.
-    int m_numContacts; // Number of existing contacts, according to GetSize() or after downloading.
-    int m_currentContact; // Numbered starting with zero according to discovery in addVCards.
-    boost::shared_ptr<PbapSession> m_session; // Only set when there is a transfer ongoing.
-    int m_tmpFileOffset; // Number of bytes already parsed.
-
-    friend class PbapSession;
-public:
-    std::string getNextID();
-    bool getContact(int contactNumber, pcrecpp::StringPiece &vcard);
-    const char *addVCards(int startIndex, const pcrecpp::StringPiece &content);
-};
+typedef std::list<std::string> ContactQueue;
+typedef std::list<std::string> Properties;
+typedef boost::variant< std::string, Properties, uint16_t > Bluez5Values;
+typedef std::map<std::string, Bluez5Values> Bluez5Filter;
+typedef std::map<std::string, boost::variant<std::string> > Params;
+typedef std::pair<GDBusCXX::DBusObject_t, Params> Bluez5PullAllResult;
 
 enum PullData
 {
     PULL_AS_CONFIGURED,
     PULL_WITHOUT_PHOTOS
 };
+
+struct PullParams
+{
+    /** Which data to pull. */
+    PullData m_pullData;
+
+    /**
+     * How much time is meant to be used per chunk.
+     */
+    double m_timePerChunk;
+
+    /**
+     * The lambda factor used in exponential smoothing of the max
+     * count per transfer to achieve the desired time per chunk.
+     * 0 means "use latest observation only", 1 means "keep using
+     * initial chunk size".
+     */
+    double m_timeLambda;
+
+    /** Initial chunk size in number of contacts, without and with photo data. */
+    uint16_t m_startMaxCount[2];
+
+    /** Initial chunk offset, again in contacts. */
+    uint16_t m_startOffset;
+
+    PullParams() { memset(this, 0, sizeof(*this)); }
+};
+
+/**
+ * This class is responsible for a) generating unique IDs for each
+ * contact in a certain order (returned one-by-one via getNextID())
+ * and b) returning the contact one-by-one in that order
+ * (getContact()). This is done to match the way how the sync engine
+ * handles items.
+ *
+ * Although the API of getContact() allows random access, we don't need
+ * to support that for syncing.
+ *
+ * IDs are #0 to #n-1 where n = GetSize() at the time when the session
+ * starts.
+ *
+ * A simple transfer then just does a PullAll() and returns the
+ * incoming data one at a time. The downsides are a) if the transfer
+ * always gets interrupted in the middle, we never cache contacts at
+ * the end and b) the entire data must be stored temporarily, either in RAM
+ * or on disk.
+ *
+ * Transfers have been reported to take half an hour for slow peers and
+ * large address books. This is perhaps unusual, but it happens. More common
+ * is the second downside.
+ *
+ * Transferring in chunks addresses both. Here's a potential (and not
+ * 100% correct!) algorithm for transferring a complete address book in chunks:
+ *
+ * uint16 used = GetSize() # not the same as maximum offset!
+ * uint16 start = choose_start()
+ * uint16 chunksize = choose_chunk_size()
+ *
+ * uint16 i
+ * for (i = start; i < used; i += chunksize) {
+ *    PullAll( Offset = i, MaxCount = chunksize)
+ * }
+ * for (i = 0; i < start; i += chunksize) {
+ *    PullAll( Offset = i, MaxCount = min(chunksize, start - 1)
+ * }
+ *
+ * Note that GetSize() is specified as returning the number of entries in
+ * the selected phonebook object that are actually used (i.e. indexes that
+ * correspond to non-NULL entries). This is relevant if contacts get
+ * deleted after starting the session. In that case, the algorithm above
+ * will not necessarily read all contacts. Here's an example:
+ *         offsets #0 till #99, with contacts #10 till #19 deleted
+ *         chunksize = 10
+ *         GetSize() = 90
+ *
+ * => this will request offsets #0 till #89, missing contacts #90 till #99
+ *
+ * This could be fixed with an additional PullAll, leading to:
+ *
+ * for (i = start; i < used; i += chunksize) {
+ *    PullAll( Offset = i, MaxCount = chunksize)
+ * }
+ * PullAll(Offset = i) # no MaxCount!
+ * for (i = 0; i < start; i += chunksize) {
+ *    PullAll( Offset = i, MaxCount = min(chunksize, start - 1)
+ * }
+ *
+ * The additional PullAll() is meant to read all contacts at the end which
+ * would not be covered otherwise.
+ *
+ * Now the other problem: MaxCount means "read chunksize contacts
+ * starting at #i". Therefore the algorithm above will end up reading contacts
+ * multiple times occasionally. Example:
+ *
+ *         offsets #0 till #99, with contact #0 deleted
+ *         chunksize = 10
+ *         GetSize() = 98
+ *
+ * PullAll(Offset = 0, MaxCount = 10) => returns 10 contacts #1 till #10 (inclusive)
+ * PullAll(Offset = 10, MaxCount = 10) => returns 10 contacts #10 till #19
+ * => contact #10 appears twice in the result
+ *
+ * The duplicate cannot be filtered out easily because the UID is not
+ * reliable. This could be addressed by keeping a hash of each contact and
+ * discarding those who are exact matches for already seen contacts. It's easier
+ * to accept the duplicate and remove it during the next sync.
+ *
+ * When combining these two problems (some contacts read twice, plus
+ * the additional PullAll() at the end), we can get more contacts than
+ * originally anticipated based on GetSize(). The sync engine will not
+ * ask for more contacts than we originally announced. Therefore the
+ * current implementation does *not* do the additional PullAll(); this
+ * is unlikely to cause any real problems because it should be rare
+ * that the number of contacts changes in the short period of time
+ * between establishing the session and asking for the size.
+ *
+ * There are two more aspects that I chose to ignore above: how to
+ * implement the choice of start offset and chunk size.
+ *
+ * Start offset could be random (no persistent state needed) or could
+ * continue where the last sync left off. The latter will require a write
+ * after each PullAll() (in case of unexpected shutdowns), even if nothing
+ * ever changes. Is that acceptable? Probably not. The current implementation
+ * chooses randomly by default.
+ *
+ * The chunk size in bytes depends on the size of the average contact,
+ * which is unknown. Make it too small, and we end up generating lots
+ * of individual transfers. Make it too large, and we still have
+ * chunks that never transfer completely. The current implementation
+ * uses self-tuning to achieve a certain desired transfer time per
+ * chunk.
+ *
+ * This algorithm can be tuned by env variables. See the README for
+ * details.
+ */
+class PullAll
+{
+    PullParams m_pullParams;
+
+    std::string m_buffer; // vCards kept in memory when using old obexd.
+    TmpFile m_tmpFile; // Stored in temporary file and mmapped with more recent obexd.
+
+    // Maps contact number to chunks of m_buffer or m_tmpFile.
+    Content m_content;
+    int m_contentStartIndex;
+
+    uint16_t m_numContacts; // Number of existing contacts, according to GetSize() or after downloading.
+    uint16_t m_currentContact; // Numbered starting with zero according to discovery in addVCards.
+    boost::shared_ptr<PbapSession> m_session; // Only set when there is a transfer ongoing.
+    size_t m_tmpFileOffset; // Number of bytes already parsed.
+    uint16_t m_transferOffset; // First contact requested as part of current transfer.
+    uint16_t m_initialOffset; // First contact request by first transfer.
+    uint16_t m_transferMaxCount; // Number of contacts requested as part of current transfer, 0 when not doing chunked transfers.
+    uint16_t m_desiredMaxCount; // Number of contacts supposed to be transfered, may be more than m_transferMaxCount when reading at the end of the enumerated contacts.
+    Bluez5Filter m_filter;  // Current filter for a Bluez5-like transfer (includes obexd 0.48 case).
+    Timespec m_transferStart; // Start time of current transfer.
+
+    // Observed results from the last transfer.
+    double m_lastTransferRate;
+    double m_lastContactSizeAverage;
+    bool m_wasSuspended;
+
+    friend class PbapSession;
+    friend class PbapSyncSource;
+public:
+    PullAll();
+    ~PullAll();
+
+    std::string getNextID();
+    bool getContact(const char *id, pcrecpp::StringPiece &vcard);
+    const char *addVCards(int startIndex, const pcrecpp::StringPiece &content);
+};
+
+PullAll::PullAll() :
+    m_contentStartIndex(0),
+    m_numContacts(0),
+    m_currentContact(0),
+    m_tmpFileOffset(0),
+    m_transferOffset(0),
+    m_initialOffset(0),
+    m_transferMaxCount(0),
+    m_desiredMaxCount(0),
+    m_lastTransferRate(0),
+    m_lastContactSizeAverage(0),
+    m_wasSuspended(false)
+{}
+
+PullAll::~PullAll()
+{
+}
 
 class PbapSession : private boost::noncopyable {
 public:
@@ -95,13 +275,15 @@ public:
     void initSession(const std::string &address, const std::string &format);
 
     typedef std::map<std::string, pcrecpp::StringPiece> Content;
-    typedef std::map<std::string, boost::variant<std::string> > Params;
 
-    boost::shared_ptr<PullAll> startPullAll(PullData pullata);
+    boost::shared_ptr<PullAll> startPullAll(const PullParams &pullParams);
+    void continuePullAll(PullAll &state);
     void checkForError(); // Throws exception if transfer failed.
     Timespec transferComplete() const;
     void resetTransfer();
     void shutdown(void);
+    void setFreeze(bool freeze);
+    void blockOnFreeze();
 
 private:
     PbapSession(PbapSyncSource &parent);
@@ -109,6 +291,7 @@ private:
     PbapSyncSource &m_parent;
     boost::weak_ptr<PbapSession> m_self;
     std::auto_ptr<GDBusCXX::DBusRemoteObject> m_client;
+    bool m_frozen;
     enum {
         OBEXD_OLD, // obexd < 0.47
         OBEXD_NEW, // obexd == 0.47, file-based transfer
@@ -116,10 +299,7 @@ private:
         BLUEZ5     // obexd in Bluez >= 5.0
     } m_obexAPI;
 
-    /** filter parameters for BLUEZ5 PullAll */
-    typedef std::list<std::string> Properties;
-    typedef boost::variant< std::string, Properties > Bluez5Values;
-    std::map<std::string, Bluez5Values> m_filter5;
+    Bluez5Filter m_filter5;
     Properties m_filterFields;
     Properties supportedProperties() const;
 
@@ -177,7 +357,8 @@ private:
 };
 
 PbapSession::PbapSession(PbapSyncSource &parent) :
-    m_parent(parent)
+    m_parent(parent),
+    m_frozen(false)
 {
 }
 
@@ -209,6 +390,24 @@ void PbapSession::propChangedCb(const GDBusCXX::Path_t &path,
                 completion.m_transferErrorMsg = "reason unknown";
             }
             m_transfers[path] = completion;
+        } else if (status == "active" && m_currentTransfer == path && m_frozen) {
+            // Retry Suspend() which must have failed earlier.
+            try {
+                GDBusCXX::DBusRemoteObject transfer(m_client->getConnection(),
+                                                    m_currentTransfer,
+                                                    OBC_TRANSFER_INTERFACE_NEW5,
+                                                    OBC_SERVICE_NEW5,
+                                                    true);
+                GDBusCXX::DBusClientCall0(transfer, "Suspend")();
+                SE_LOG_DEBUG(NULL, "successfully suspended transfer when it became active");
+            } catch (...) {
+                // Ignore all errors here. The worst that can happen is that
+                // the transfer continues to run. Once Bluez supports suspending
+                // queued transfers we shouldn't get here at all.
+                std::string explanation;
+                Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
+                SE_LOG_DEBUG(NULL, "ignoring failure of delayed suspend: %s", explanation.c_str());
+            }
         }
     }
 }
@@ -245,7 +444,7 @@ void PbapSession::propertyChangedCb(const GDBusCXX::Path_t &path,
     }
 }
 
-PbapSession::Properties PbapSession::supportedProperties() const
+Properties PbapSession::supportedProperties() const
 {
     Properties props;
     static const std::set<std::string> supported =
@@ -305,7 +504,7 @@ void PbapSession::initSession(const std::string &address, const std::string &for
     std::string properties;
     const pcrecpp::RE re("(?:(2\\.1|3\\.0):?)?(\\^?)([-a-zA-Z,]*)");
     if (!re.FullMatch(format, &version, &tmp, &properties)) {
-        m_parent.throwError(StringPrintf("invalid specification of PBAP vCard format (databaseFormat): %s",
+        m_parent.throwError(SE_HERE, StringPrintf("invalid specification of PBAP vCard format (databaseFormat): %s",
                                          format.c_str()));
     }
     char negated = tmp.c_str()[0];
@@ -314,7 +513,7 @@ void PbapSession::initSession(const std::string &address, const std::string &for
         version = "2.1";
     }
     if (version != "2.1" && version != "3.0") {
-        m_parent.throwError(StringPrintf("invalid vCard version prefix in PBAP vCard format specification (databaseFormat): %s",
+        m_parent.throwError(SE_HERE, StringPrintf("invalid vCard version prefix in PBAP vCard format specification (databaseFormat): %s",
                                          format.c_str()));
     }
     std::set<std::string> keywords;
@@ -377,7 +576,7 @@ void PbapSession::initSession(const std::string &address, const std::string &for
     }
 
     if (session.empty()) {
-        m_parent.throwError("PBAP: failed to create session");
+        m_parent.throwError(SE_HERE, "PBAP: failed to create session");
     }
 
     if (m_obexAPI != OBEXD_OLD) {
@@ -469,7 +668,7 @@ void PbapSession::initSession(const std::string &address, const std::string &for
                          boost::bind(&boost::iequals<std::string,std::string>, _1, prop, std::locale()));
 
         if (entry == m_filterFields.end()) {
-            m_parent.throwError(StringPrintf("invalid property name in PBAP vCard format specification (databaseFormat): %s",
+            m_parent.throwError(SE_HERE, StringPrintf("invalid property name in PBAP vCard format specification (databaseFormat): %s",
                                              prop.c_str()));
         }
 
@@ -487,17 +686,29 @@ void PbapSession::initSession(const std::string &address, const std::string &for
     SE_LOG_DEBUG(NULL, "PBAP session initialized");
 }
 
-boost::shared_ptr<PullAll> PbapSession::startPullAll(PullData pullData)
+boost::shared_ptr<PullAll> PbapSession::startPullAll(const PullParams &pullParams)
 {
     resetTransfer();
+    blockOnFreeze();
 
     // Update prepared filter to match pullData.
-    std::map<std::string, Bluez5Values> currentFilter = m_filter5;
+    Bluez5Filter currentFilter = m_filter5;
     std::string &format = boost::get<std::string>(currentFilter["Format"]);
     std::list<std::string> &filter = boost::get< std::list<std::string> >(currentFilter["Fields"]);
-    switch (pullData) {
+    switch (pullParams.m_pullData) {
     case PULL_AS_CONFIGURED:
-        SE_LOG_DEBUG(NULL, "pull all with configured filter: '%s'",
+        // Avoid empty filter. Android 4.3 on Samsung Galaxy S3
+        // only returns the mandatory FN, N, TEL fields when no
+        // filter is set.
+        const char *filterSource;
+        if (filter.empty()) {
+            filterSource = "default properties";
+            filter = supportedProperties();
+        } else {
+            filterSource = "configured";
+        }
+        SE_LOG_DEBUG(NULL, "pull all with %s filter: '%s'",
+                     filterSource,
                      boost::join(filter, " ").c_str());
         break;
     case PULL_WITHOUT_PHOTOS:
@@ -533,7 +744,16 @@ boost::shared_ptr<PullAll> PbapSession::startPullAll(PullData pullData)
     }
 
     boost::shared_ptr<PullAll> state(new PullAll);
+    state->m_pullParams = pullParams;
+    state->m_contentStartIndex = 0;
     state->m_currentContact = 0;
+    state->m_transferOffset = 0;
+    state->m_desiredMaxCount = 0;
+    state->m_initialOffset = 0;
+    state->m_transferMaxCount = 0;
+    state->m_lastTransferRate = 0;
+    state->m_lastContactSizeAverage = 0;
+    state->m_wasSuspended = false;
     if (m_obexAPI != OBEXD_OLD) {
         // Beware, this will lead to a "Complete" signal in obexd
         // 0.47. We need to be careful with looking at the right
@@ -541,10 +761,33 @@ boost::shared_ptr<PullAll> PbapSession::startPullAll(PullData pullData)
         state->m_numContacts = GDBusCXX::DBusClientCall1<uint16_t>(*m_session, "GetSize")();
         SE_LOG_DEBUG(NULL, "Expecting %d contacts.", state->m_numContacts);
 
-        state->m_tmpFile.create();
+        state->m_tmpFile.create(TmpFile::FILE);
         SE_LOG_DEBUG(NULL, "Created temporary file for PullAll %s", state->m_tmpFile.filename().c_str());
-        GDBusCXX::DBusClientCall1<std::pair<GDBusCXX::DBusObject_t, Params> > pullall(*m_session, "PullAll");
-        std::pair<GDBusCXX::DBusObject_t, Params> tuple =
+
+        // Start chunk size depends on whether we pull PHOTOs.
+        bool pullPhotos = std::find(filter.begin(), filter.end(), "PHOTO") != filter.end();
+        state->m_transferMaxCount = pullParams.m_startMaxCount[pullPhotos];
+        if (state->m_transferMaxCount > 0 &&
+            (pullAllWithFiltersFallback || m_obexAPI == BLUEZ5)) {
+            // Enable transfering in chunks.
+            state->m_desiredMaxCount = state->m_transferMaxCount;
+
+            state->m_initialOffset =
+                state->m_transferOffset = pullParams.m_startOffset < 0 ?
+                0 :
+                (pullParams.m_startOffset % state->m_numContacts);
+            uint16_t available = state->m_numContacts - state->m_transferOffset;
+            if (available < state->m_transferMaxCount) {
+                // Don't read past end of contacts.
+                state->m_transferMaxCount = available;
+            }
+            currentFilter["Offset"] = state->m_transferOffset;
+            currentFilter["MaxCount"] = state->m_transferMaxCount;
+            state->m_filter = currentFilter;
+        }
+
+        state->m_transferStart.resetMonotonic();
+        Bluez5PullAllResult tuple =
             pullAllWithFiltersFallback ?
             // 0.48
             GDBusCXX::DBusClientCall1<std::pair<GDBusCXX::DBusObject_t, Params> >(*m_session, "PullAll")(state->m_tmpFile.filename(), currentFilter) :
@@ -556,7 +799,11 @@ boost::shared_ptr<PullAll> PbapSession::startPullAll(PullData pullData)
         const GDBusCXX::DBusObject_t &transfer = tuple.first;
         const Params &properties = tuple.second;
         m_currentTransfer = transfer;
-        SE_LOG_DEBUG(NULL, "pullall transfer path %s, %ld properties", transfer.c_str(), (long)properties.size());
+        SE_LOG_DEBUG(NULL, "start pullall offset #%u count %u, transfer path %s, %ld properties",
+                     state->m_transferOffset,
+                     state->m_transferMaxCount,
+                     transfer.c_str(),
+                     (long)properties.size());
         // Work will be finished incrementally in PullAll::getContact().
         //
         // In the meantime we return IDs by simply enumerating the expected ones.
@@ -565,6 +812,7 @@ boost::shared_ptr<PullAll> PbapSession::startPullAll(PullData pullData)
         // "Record does not exist any more in database%s -> ignore").
         state->m_tmpFileOffset = 0;
         state->m_session = m_self.lock();
+        state->m_filter = currentFilter;
     } else {
         // < 0.47
         //
@@ -594,8 +842,30 @@ const char *PullAll::addVCards(int startIndex, const pcrecpp::StringPiece &vcard
         ++count;
     }
 
-    SE_LOG_DEBUG(NULL, "PBAP content parsed: %d entries starting at %d", count - startIndex, startIndex);
+    SE_LOG_DEBUG(NULL, "PBAP content parsed: %d contacts starting at ID %d", count - startIndex, startIndex);
     return tmp.data();
+}
+
+void PbapSession::continuePullAll(PullAll &state)
+{
+    m_transfers.clear();
+    state.m_transferStart.resetMonotonic();
+    blockOnFreeze();
+
+    Bluez5PullAllResult tuple =
+        m_obexAPI == BLUEZ5 ?
+        GDBusCXX::DBusClientCall2<GDBusCXX::DBusObject_t, Params>(*m_session, "PullAll")(state.m_tmpFile.filename(), state.m_filter) :
+        // must be 0.48
+        GDBusCXX::DBusClientCall1<std::pair<GDBusCXX::DBusObject_t, Params> >(*m_session, "PullAll")(state.m_tmpFile.filename(), state.m_filter);
+
+    const GDBusCXX::DBusObject_t &transfer = tuple.first;
+    const Params &properties = tuple.second;
+    m_currentTransfer = transfer;
+    SE_LOG_DEBUG(NULL, "continue pullall offset #%u count %u, transfer path %s, %ld properties",
+                 state.m_transferOffset,
+                 state.m_transferMaxCount,
+                 transfer.c_str(),
+                 (long)properties.size());
 }
 
 void PbapSession::checkForError()
@@ -603,7 +873,7 @@ void PbapSession::checkForError()
     Transfers::const_iterator it = m_transfers.find(m_currentTransfer);
     if (it != m_transfers.end()) {
         if (!it->second.m_transferErrorCode.empty()) {
-            m_parent.throwError(StringPrintf("%s: %s",
+            m_parent.throwError(SE_HERE, StringPrintf("%s: %s",
                                              it->second.m_transferErrorCode.c_str(),
                                              it->second.m_transferErrorMsg.c_str()));
         }
@@ -635,9 +905,10 @@ std::string PullAll::getNextID()
     return id;
 }
 
-bool PullAll::getContact(int contactNumber, pcrecpp::StringPiece &vcard)
+bool PullAll::getContact(const char *id, pcrecpp::StringPiece &vcard)
 {
-    SE_LOG_DEBUG(NULL, "get PBAP contact #%d", contactNumber);
+    int contactNumber = atoi(id);
+    SE_LOG_DEBUG(NULL, "get PBAP contact ID %s", id);
     if (contactNumber < 0 ||
         contactNumber >= m_numContacts) {
         SE_LOG_DEBUG(NULL, "invalid contact number");
@@ -645,10 +916,12 @@ bool PullAll::getContact(int contactNumber, pcrecpp::StringPiece &vcard)
     }
 
     Content::iterator it;
+    SuspendFlags &s = SuspendFlags::getSuspendFlags();
     while ((it = m_content.find(contactNumber)) == m_content.end() &&
            m_session &&
            (!m_session->transferComplete() ||
-            m_tmpFile.moreData())) {
+            m_tmpFile.moreData() ||
+            m_transferMaxCount)) {
         // Wait? We rely on regular propgress signals to wake us up.
         // obex 0.47 sends them every 64KB, at least in combination
         // with a Samsung Galaxy SIII. This may depend on both obexd
@@ -657,9 +930,12 @@ bool PullAll::getContact(int contactNumber, pcrecpp::StringPiece &vcard)
         // some of the unread data (at least how it is implemented
         // now).
         while (!m_session->transferComplete() && m_tmpFile.moreData() < 128 * 1024) {
+            s.checkForNormal();
             g_main_context_iteration(NULL, true);
         }
         m_session->checkForError();
+
+        Timespec completed = m_session->transferComplete();
         if (m_tmpFile.moreData()) {
             // Remap. This shifts all addresses already stored in
             // m_content, so beware and update those.
@@ -680,22 +956,82 @@ bool PullAll::getContact(int contactNumber, pcrecpp::StringPiece &vcard)
             // Continue parsing where we stopped before.
             pcrecpp::StringPiece next(newMem.data() + m_tmpFileOffset,
                                       newMem.size() - m_tmpFileOffset);
-            const char *end = addVCards(m_content.size(), next);
-            int newTmpFileOffset = end - newMem.data();
-            SE_LOG_DEBUG(NULL, "PBAP content parsed: %d out of %d (total), %d out of %d (last update)",
-                         newTmpFileOffset,
+            const char *end = addVCards(m_contentStartIndex + m_content.size(), next);
+            size_t newTmpFileOffset = end - newMem.data();
+            SE_LOG_DEBUG(NULL, "PBAP content parsed: %ld out of %d (total), %d out of %d (last update)",
+                         (long)newTmpFileOffset,
                          newMem.size(),
                          (int)(end - next.data()),
                          next.size());
             m_tmpFileOffset = newTmpFileOffset;
+
+            if (completed) {
+                double duration = (completed - m_transferStart).duration();
+                m_lastTransferRate = duration > 0 ? m_tmpFile.size() / duration : 0;
+                m_lastContactSizeAverage = m_content.size() ? (double)m_tmpFile.size() / (double)m_content.size() : 0;
+
+                SE_LOG_DEBUG(NULL, "transferred %ldKB and %ld contacts in %.1fs -> transfer rate %.1fKB/s and %.1fcontacts/s, average contact size %.0fB",
+                             (long)m_tmpFile.size() / 1024,
+                             (long)m_content.size(),
+                             duration,
+                             m_lastTransferRate / 1024,
+                             m_content.size() / duration,
+                             m_lastContactSizeAverage);
+            }
+        } else if (completed && m_transferMaxCount > 0) {
+            // Tune m_desiredMaxCount to achieve the intended transfer
+            // time. Ignore clipped or suspended transfers, they are
+            // not representative. Also avoid completely bogus
+            // observations.
+            if (!m_wasSuspended &&
+                m_transferMaxCount == m_desiredMaxCount &&
+                m_lastTransferRate > 0 &&
+                m_lastContactSizeAverage > 0) {
+                // Use exponential moving average.
+                double count = m_lastTransferRate * m_pullParams.m_timePerChunk / m_lastContactSizeAverage;
+                double newcount = m_desiredMaxCount * m_pullParams.m_timeLambda +
+                    count * (1 - m_pullParams.m_timeLambda);
+                uint16_t nextcount = (newcount < 0 || newcount > 0xFFFF) ? 0xFFFF : (uint16_t)newcount;
+                SE_LOG_DEBUG(NULL, "old max count %u, measured max count for last transfer %.1f, lambda %f, next max count %u",
+                             m_desiredMaxCount, count, m_pullParams.m_timeLambda, nextcount);
+                m_desiredMaxCount = nextcount;
+            }
+            m_wasSuspended = false;
+            if (m_transferOffset + m_transferMaxCount < m_numContacts) {
+                // Move one chunk forward.
+                m_transferOffset += m_transferMaxCount;
+                m_transferMaxCount = std::min((uint16_t)(((m_transferOffset < m_initialOffset) ? m_initialOffset : m_numContacts) - m_transferOffset),
+                                              m_desiredMaxCount);
+            } else {
+                // Wrap around to offset #0.
+                m_transferOffset = 0;
+                m_transferMaxCount = std::min(m_initialOffset, m_desiredMaxCount);
+            }
+
+            if (m_transferMaxCount > 0) {
+                m_filter["Offset"] = m_transferOffset;
+                m_filter["MaxCount"] = m_transferMaxCount;
+
+                m_tmpFileOffset = 0;
+                m_tmpFile.close();
+                m_tmpFile.unmap();
+                m_tmpFile.create(TmpFile::FILE);
+                SE_LOG_DEBUG(NULL, "Created next temporary file for PullAll %s", m_tmpFile.filename().c_str());
+                m_contentStartIndex += m_content.size();
+                m_content.clear();
+                m_session->continuePullAll(*this);
+            }
         }
     }
 
     if (it == m_content.end()) {
-        SE_LOG_DEBUG(NULL, "did not get the expected contact #%d, perhaps some contacts were deleted?", contactNumber);
+        SE_LOG_DEBUG(NULL, "did not get the expected contact #%d, perhaps some contacts were deleted?",
+                     contactNumber);
         return false;
     }
+
     vcard = it->second;
+
     return true;
 }
 
@@ -713,6 +1049,86 @@ void PbapSession::shutdown(void)
     SE_LOG_DEBUG(NULL, "PBAP session closed");
 }
 
+void PbapSession::setFreeze(bool freeze)
+{
+    SE_LOG_DEBUG(NULL, "PbapSession::setFreeze(%s, %s)",
+                 m_currentTransfer.c_str(),
+                 freeze ? "freeze" : "thaw");
+    if (freeze == m_frozen) {
+        SE_LOG_DEBUG(NULL, "no change in freeze state");
+        return;
+    }
+    if (m_client.get()) {
+        if (m_obexAPI == OBEXD_OLD) {
+            SE_THROW("freezing OBEX transfer not possible with old obexd");
+        }
+        if (!m_currentTransfer.empty()) {
+            // Suspend/Resume implemented since Bluez 5.15. If not
+            // implemented, we will get a D-Bus exception that is returned
+            // to the caller as error, which will abort the sync.
+            GDBusCXX::DBusRemoteObject transfer(m_client->getConnection(),
+                                                m_currentTransfer,
+                                                OBC_TRANSFER_INTERFACE_NEW5,
+                                                OBC_SERVICE_NEW5,
+                                                true);
+            try {
+                if (freeze) {
+                    GDBusCXX::DBusClientCall0(transfer, "Suspend")();
+                } else {
+                    GDBusCXX::DBusClientCall0(transfer, "Resume")();
+                }
+            } catch (...) {
+                std::string explanation;
+                Exception::handle(explanation, HANDLE_EXCEPTION_NO_ERROR);
+
+                if (m_currentTransfer.empty() || transferComplete()) {
+                    // Transfer already finished. This causes obexd to report
+                    // "GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: Method "xxx" with signature "" on interface "org.bluez.obex.Transfer1" doesn't exist."
+                    //
+                    // We can ignore any error for suspend/resume when
+                    // there is no active transfer. The sync engine will
+                    // handle suspending/resuming the processing of the data.
+                    SE_LOG_DEBUG(NULL, "ignore error after transfer completed: %s", explanation.c_str());
+                } else if (freeze && explanation.find("org.bluez.obex.Error.NotInProgress") != explanation.npos) {
+                    // Suspending failed because the transfer had not
+                    // started yet (still queuing), see
+                    // "org.bluez.obex.Transfer1 Suspend/Resume in
+                    // queued state" on linux-bluetooth.
+                    // Ignore this and retry the Suspend when the transfer
+                    // becomes active.
+                    SE_LOG_DEBUG(NULL, "must retry Suspend(), got error at the moment: %s", explanation.c_str());
+                } else {
+                    // Have to abort.
+                    GDBusCXX::DBusClientCall0(transfer, "Cancel")();
+
+                    // Bluez does not change the transfer status when cancelling it,
+                    // so our propChangedCb() doesn't get called. We need to record
+                    // the end of the transfer directly to stop the syncing.
+                    Completion completion = Completion::now();
+                    completion.m_transferErrorCode = "cancelled";
+                    completion.m_transferErrorMsg = "transfer cancelled because suspending not possible";
+                    m_transfers[m_currentTransfer] = completion;
+
+                    Exception::tryRethrow(explanation, true);
+                }
+            }
+        }
+    }
+    // Handle setFreeze() before and after we have a running
+    // transfer by setting a flag and checking that flag before
+    // initiating a new transfer.
+    m_frozen = freeze;
+}
+
+void PbapSession::blockOnFreeze()
+{
+    SuspendFlags &s = SuspendFlags::getSuspendFlags();
+    while (m_frozen) {
+        s.checkForNormal();
+        g_main_context_iteration(NULL, true);
+    }
+}
+
 PbapSyncSource::PbapSyncSource(const SyncSourceParams &params) :
     SyncSource(params)
 {
@@ -726,7 +1142,7 @@ PbapSyncSource::PbapSyncSource(const SyncSourceParams &params) :
         boost::iequals(PBAPSyncMode, "incremental") ? PBAP_SYNC_INCREMENTAL :
         boost::iequals(PBAPSyncMode, "text") ? PBAP_SYNC_TEXT :
         boost::iequals(PBAPSyncMode, "all") ? PBAP_SYNC_NORMAL :
-        (throwError(StringPrintf("invalid value for SYNCEVOLUTION_PBAP_SYNC: %s", PBAPSyncMode)), PBAP_SYNC_NORMAL);
+        (throwError(SE_HERE, StringPrintf("invalid value for SYNCEVOLUTION_PBAP_SYNC: %s", PBAPSyncMode)), PBAP_SYNC_NORMAL);
     m_isFirstCycle = true;
     m_hadContacts = false;
 }
@@ -741,7 +1157,7 @@ void PbapSyncSource::open()
     const string prefix("obex-bt://");
 
     if (!boost::starts_with(database, prefix)) {
-        throwError("database should specifiy device address (obex-bt://<bt-addr>)");
+        throwError(SE_HERE, "database should specifiy device address (obex-bt://<bt-addr>)");
     }
 
     std::string address = database.substr(prefix.size());
@@ -752,7 +1168,7 @@ void PbapSyncSource::open()
 void PbapSyncSource::beginSync(const std::string &lastToken, const std::string &resumeToken)
 {
     if (!lastToken.empty()) {
-        throwError(STATUS_SLOW_SYNC_508, std::string("PBAP cannot do change detection"));
+        throwError(SE_HERE, STATUS_SLOW_SYNC_508, std::string("PBAP cannot do change detection"));
     }
 }
 
@@ -774,12 +1190,25 @@ void PbapSyncSource::close()
     m_session->shutdown();
 }
 
+void PbapSyncSource::setFreeze(bool freeze)
+{
+    if (m_session) {
+        m_session->setFreeze(freeze);
+    }
+    if (m_pullAll) {
+        m_pullAll->m_wasSuspended = true;
+    }
+}
+
+
 PbapSyncSource::Databases PbapSyncSource::getDatabases()
 {
     Databases result;
 
     result.push_back(Database("select database via bluetooth address",
-                              "[obex-bt://]<bt-addr>"));
+                              "[obex-bt://]<bt-addr>",
+                              false,
+                              true));
     return result;
 }
 
@@ -801,18 +1230,22 @@ std::string PbapSyncSource::getPeerMimeType() const
 void PbapSyncSource::getSynthesisInfo(SynthesisInfo &info,
                                       XMLConfigFragments &fragments)
 {
-    // We send vCards in either 2.1 or 3.0. The Synthesis engine
-    // handles both when parsing, so we don't have to be exact here.
-    info.m_native = "vCard21";
-    info.m_fieldlist = "contacts";
-    info.m_profile = "\"vCard\", 1";
-
-    // vCard 3.0 is the more sane format for exchanging with the
-    // Synthesis peer in a local sync, so use that by default.
-    std::string type = "text/vcard";
+    // Use vCard 3.0 with minimal conversion by default.
+    std::string type = "raw/text/vcard";
     SourceType sourceType = getSourceType();
     if (!sourceType.m_format.empty()) {
         type = sourceType.m_format;
+    }
+    if (type == "raw/text/vcard") {
+        // Raw mode.
+        info.m_native = "vCard30";
+        info.m_fieldlist = "Raw";
+        info.m_profile = "";
+    } else {
+        // Assume that it's something more traditional requiring parsing.
+        info.m_native = "vCard21";
+        info.m_fieldlist = "contacts";
+        info.m_profile = "\"vCard\", 1";
     }
     info.m_datatypes = getDataTypeSupport(type, sourceType.m_forceFormat);
 
@@ -830,12 +1263,48 @@ sysync::TSyError PbapSyncSource::readNextItem(sysync::ItemID aID,
                                   bool aFirst)
 {
     if (aFirst) {
-        m_pullAll = m_session->startPullAll((m_PBAPSyncMode == PBAP_SYNC_TEXT ||
-                                             (m_PBAPSyncMode == PBAP_SYNC_INCREMENTAL && m_isFirstCycle)) ? PULL_WITHOUT_PHOTOS :
-                                            PULL_AS_CONFIGURED);
+        PullParams params;
+        memset(&params, 0, sizeof(params));
+
+        params.m_pullData = (m_PBAPSyncMode == PBAP_SYNC_TEXT ||
+                             (m_PBAPSyncMode == PBAP_SYNC_INCREMENTAL && m_isFirstCycle)) ?
+            PULL_WITHOUT_PHOTOS :
+            PULL_AS_CONFIGURED;
+
+        const char *env;
+        if ((env = getenv("SYNCEVOLUTION_PBAP_CHUNK_TRANSFER_TIME")) != NULL) {
+            params.m_timePerChunk = atof(env);
+        } else {
+            params.m_timePerChunk = 30;
+        }
+        static const double LAMBDA_DEF = 0.1;
+        if ((env = getenv("SYNCEVOLUTION_PBAP_CHUNK_TIME_LAMBDA")) != NULL) {
+            params.m_timeLambda = atof(env);
+        } else {
+            params.m_timeLambda = LAMBDA_DEF;
+        }
+        if (params.m_timeLambda < 0 ||
+            params.m_timeLambda > 1) {
+            params.m_timeLambda = LAMBDA_DEF;
+        }
+        if ((env = getenv("SYNCEVOLUTION_PBAP_CHUNK_MAX_COUNT_PHOTO")) != NULL) {
+            params.m_startMaxCount[true] = atoi(env);
+        }
+        if ((env = getenv("SYNCEVOLUTION_PBAP_CHUNK_MAX_COUNT_NO_PHOTO")) != NULL) {
+            params.m_startMaxCount[false] = atoi(env);
+        }
+        if ((env = getenv("SYNCEVOLUTION_PBAP_CHUNK_OFFSET")) != NULL) {
+            params.m_startOffset = atoi(env);
+        } else {
+            unsigned int seed = (unsigned int)Timespec::system().seconds();
+            // Clip it such that it is >= 0 and < 0x10000.
+            params.m_startOffset = rand_r(&seed) % 0x10000;
+        }
+
+        m_pullAll = m_session->startPullAll(params);
     }
     if (!m_pullAll) {
-        throwError("logic error: readNextItem without aFirst=true before");
+        throwError(SE_HERE, "logic error: readNextItem without aFirst=true before");
     }
     std::string id = m_pullAll->getNextID();
     if (id.empty()) {
@@ -858,11 +1327,11 @@ sysync::TSyError PbapSyncSource::readNextItem(sysync::ItemID aID,
 sysync::TSyError PbapSyncSource::readItemAsKey(sysync::cItemID aID, sysync::KeyH aItemKey)
 {
     if (!m_pullAll) {
-        throwError("logic error: readItemAsKey() without preceeding readNextItem()");
+        throwError(SE_HERE, "logic error: readItemAsKey() without preceeding readNextItem()");
     }
     pcrecpp::StringPiece vcard;
-    if (m_pullAll->getContact(atoi(aID->item), vcard)) {
-        return getSynthesisAPI()->setValue(aItemKey, "data", vcard.data(), vcard.size());
+    if (m_pullAll->getContact(aID->item, vcard)) {
+        return getSynthesisAPI()->setValue(aItemKey, "itemdata", vcard.data(), vcard.size());
     } else {
         return sysync::DB_NotFound;
     }
@@ -870,20 +1339,20 @@ sysync::TSyError PbapSyncSource::readItemAsKey(sysync::cItemID aID, sysync::KeyH
 
 SyncSourceRaw::InsertItemResult PbapSyncSource::insertItemRaw(const std::string &luid, const std::string &item)
 {
-    throwError("writing via PBAP is not supported");
+    throwError(SE_HERE, "writing via PBAP is not supported");
     return InsertItemResult();
 }
 
 void PbapSyncSource::readItemRaw(const std::string &luid, std::string &item)
 {
     if (!m_pullAll) {
-        throwError("logic error: readItemRaw() without preceeding readNextItem()");
+        throwError(SE_HERE, "logic error: readItemRaw() without preceeding readNextItem()");
     }
     pcrecpp::StringPiece vcard;
-    if (m_pullAll->getContact(atoi(luid.c_str()), vcard)) {
+    if (m_pullAll->getContact(luid.c_str(), vcard)) {
         item.assign(vcard.data(), vcard.size());
     } else {
-        throwError(STATUS_NOT_FOUND, string("retrieving item: ") + luid);
+        throwError(SE_HERE, STATUS_NOT_FOUND, string("retrieving item: ") + luid);
     }
 }
 

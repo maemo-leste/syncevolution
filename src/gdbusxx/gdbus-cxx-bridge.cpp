@@ -276,6 +276,10 @@ void DBusConnectionPtr::setDisconnect(const Disconnect_t &func)
                              true);
 }
 
+#ifndef SOCK_CLOEXEC
+#define SOCK_CLOEXEC 0
+#endif
+
 boost::shared_ptr<DBusServerCXX> DBusServerCXX::listen(const NewConnection_t &newConnection, DBusErrorCXX *)
 {
     // Create two fds connected via a two-way stream. The parent
@@ -285,6 +289,21 @@ boost::shared_ptr<DBusServerCXX> DBusServerCXX::listen(const NewConnection_t &ne
     int retval = socketpair(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0, fds);
     if (retval) {
         SE_THROW(StringPrintf("socketpair: %s", strerror(errno)));
+    }
+
+    if(SOCK_CLOEXEC == 0) {
+	int flags;
+	int i;
+	for(i = 0; i < 2; i++) {
+	    flags = fcntl(fds[i], F_GETFD);
+	    if (flags == -1){
+		SE_THROW(StringPrintf("fcntl: %s", strerror(errno)));
+	    }
+	    flags |= FD_CLOEXEC;
+	    if (fcntl(fds[i], F_SETFD, flags) == -1){
+		SE_THROW(StringPrintf("fcntl: %s", strerror(errno)));
+	    }
+	}
     }
     GuardFD parentfd(fds[0]);
     GuardFD childfd(fds[1]);

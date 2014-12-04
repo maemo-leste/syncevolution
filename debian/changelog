@@ -1,3 +1,9 @@
+syncevolution (1.4.99.4-3) unstable; urgency=medium
+
+  * Use TLS instead of SSLv3 in SyncML server script (Closes: #772040)
+
+ -- Tino Mettler <tino+debian@tikei.de>  Thu, 04 Dec 2014 22:44:49 +0100
+
 syncevolution (1.4.99.4-2) unstable; urgency=medium
 
   * Fix FTBFS on kfreebsd due to missing SOCK_CLOEXEC

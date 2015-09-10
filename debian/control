@@ -49,7 +49,7 @@ Description: Sync personal information data using SyncML and CalDAV/CardDAV (GTK
 
 Package: syncevolution-common
 Architecture: all
-Depends: ${misc:Depends}, libsynthesis0 (>= 3.4.0.16.8)
+Depends: ${misc:Depends}, libsynthesis0v5 (>= 3.4.0.16.8)
 Conflicts: sync-ui (<<1.1+ds1-1~), syncevolution (<<1.1+ds1-1~)
 Replaces: sync-ui (<<1.1+ds1-1~), syncevolution (<<1.1+ds1-1~)
 Description: Sync personal information data using SyncML and CalDAV/CardDAV

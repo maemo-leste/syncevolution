@@ -1,3 +1,9 @@
+syncevolution (1.4.99.4-4) UNRELEASED; urgency=medium
+
+  * Fix libsynthesis depencency after GCC5 transition (Closes: #797966)
+
+ -- Tino Mettler <tino+debian@tikei.de>  Thu, 10 Sep 2015 11:39:50 +0200
+
 syncevolution (1.4.99.4-3) unstable; urgency=medium
 
   * Use TLS instead of SSLv3 in SyncML server script (Closes: #772040)

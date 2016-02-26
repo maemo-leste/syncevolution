@@ -1,8 +1,8 @@
-syncevolution (1.4.99.4-4) UNRELEASED; urgency=medium
+syncevolution (1.4.99.4-4) unstable; urgency=medium
 
   * Fix libsynthesis depencency after GCC5 transition (Closes: #797966)
 
- -- Tino Mettler <tino+debian@tikei.de>  Thu, 10 Sep 2015 11:39:50 +0200
+ -- Tino Mettler <tino+debian@tikei.de>  Fri, 26 Feb 2016 11:56:50 +0100
 
 syncevolution (1.4.99.4-3) unstable; urgency=medium
 

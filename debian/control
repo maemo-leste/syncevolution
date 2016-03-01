@@ -140,23 +140,6 @@ Description: Sync personal information data using SyncML and CalDAV/CardDAV (HTT
  This package provides a python script to make SyncEvolution act as a HTTP(S)
  server for other SyncML clients.
 
-Package: syncevolution-dbg
-Architecture: any
-Section: debug
-Priority: extra
-Depends: ${misc:Depends},  syncevolution (= ${binary:Version}),
-	 sync-ui (= ${binary:Version}), 
-	 syncevolution-dbus (= ${binary:Version})
-Description: Sync personal information data using SyncML and CalDAV/CardDAV (debugging)
- SyncEvolution synchronizes contact, calendar and task items via SyncML and
- CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server
- to sync PIM data in Evolution, but a plain file storage is also supported.
- Data exchange can happen via HTTP(S) and Bluetooth. Full, one-way and
- incremental synchronization of items are supported. SyncEvolution can act as
- a SyncML/DAV client and SyncML server.
- .
- This package provides debugging symbols
-
 Package: libsyncevolution0
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, syncevolution-common (= ${source:Version}), dbus

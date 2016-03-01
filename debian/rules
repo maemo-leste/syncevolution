@@ -35,7 +35,7 @@ override_dh_install:
 	dh_install -X"*.pl"
 
 override_dh_strip:
-	dh_strip --dbg-package=syncevolution-dbg
+	dh_strip --dbgsym-migration='syncevolution-dbg'
 
 override_dh_auto_clean:
 	rm -f INSTALL compile po/LINGUAS src/backends/backends.am \

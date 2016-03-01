@@ -10,6 +10,7 @@
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/find.hpp>
 #include <boost/scoped_ptr.hpp>
+#include <boost/lambda/lambda.hpp>
 
 #include <syncevo/LogRedirect.h>
 #include <syncevo/IdentityProvider.h>
@@ -620,7 +621,7 @@ void WebDAVSource::contactServer()
         m_session = Neon::Session::create(m_settings);
         SE_LOG_INFO(getDisplayName(), "using configured database=%s", database.c_str());
         // force authentication via username/password or OAuth2
-        m_session->forceAuthorization(m_settings->getAuthProvider());
+        m_session->forceAuthorization(Neon::Session::AUTH_HTTPS, m_settings->getAuthProvider());
         return;
     }
 
@@ -684,6 +685,7 @@ class Candidate {
 public:
     enum Flags {
         LIST = (1u << 0),       // Also list all members to find more candidates.
+        FORCE_AUTH = (1u << 1), // Force authentication for this candidate.
         NONE = 0
     };
 
@@ -1063,7 +1065,7 @@ bool WebDAVSource::findCollections(const boost::function<bool (const std::string
                     // Use OAuth2, if available.
                     boost::shared_ptr<AuthProvider> authProvider = m_settings->getAuthProvider();
                     if (authProvider->methodIsSupported(AuthProvider::AUTH_METHOD_OAUTH2)) {
-                        m_session->forceAuthorization(authProvider);
+                        m_session->forceAuthorization(Neon::Session::AUTH_HTTPS, authProvider);
                     }
                     Neon::Session::PropfindPropCallback_t callback =
                         boost::bind(&WebDAVSource::openPropCallback,
@@ -1102,7 +1104,10 @@ bool WebDAVSource::findCollections(const boost::function<bool (const std::string
             // http://tools.ietf.org/html/rfc4918#appendix-E
             // http://lists.w3.org/Archives/Public/w3c-dist-auth/2005OctDec/0243.html
             // http://thread.gmane.org/gmane.comp.web.webdav.neon.general/717/focus=719
-            m_session->forceAuthorization(m_settings->getAuthProvider());
+            m_session->forceAuthorization((candidate.m_flags & Candidate::FORCE_AUTH) ?
+                                          Neon::Session::AUTH_ALWAYS : // we really mean it, do it also for http
+                                          Neon::Session::AUTH_HTTPS,   // only when auth header is protected by https
+                                          m_settings->getAuthProvider());
             davProps.clear();
             // Avoid asking for CardDAV properties when only using CalDAV
             // and vice versa, to avoid breaking both when the server is only
@@ -1359,7 +1364,25 @@ bool WebDAVSource::findCollections(const boost::function<bool (const std::string
                 // TODO:
                 // xmlns:d="DAV:"
                 // <d:current-user-principal><d:href>/m8/carddav/principals/__uids__/patrick.ohly@googlemail.com/</d:href></d:current-user-principal>
-                if (tried.isNew(principal)) {
+
+                if (principal.m_uri.m_path.empty()) {
+                    // Happens for example with Apple Calendar server and http:
+                    // <current-user-principal>
+                    //   <unauthenticated/>
+                    // </current-user-principal>
+                    // We get the property, but it contains no href.
+                    // Try again with authentication, even if not challenged to do so
+                    // at the HTTP level.
+                    // TODO (?): detect the <unauthenticated/> tag.
+                    Candidate withAuth(candidate);
+                    withAuth.m_flags |= Candidate::FORCE_AUTH;
+                    bool retry = tried.isNew(withAuth);
+                    SE_LOG_DEBUG(NULL, "empty current-user-prinicipal: %s",
+                                 retry ? "retry current URL with authentication" : "ignore it");
+                    if (retry) {
+                        next = withAuth;
+                    }
+                } else if (tried.isNew(principal)) {
                     next = principal;
                     SE_LOG_DEBUG(NULL, "follow current-user-prinicipal to %s", next.m_uri.toURL().c_str());
                 }
@@ -1557,15 +1580,90 @@ void WebDAVSource::openPropCallback(Props_t &davProps,
     }
 }
 
+static const ne_propname getetag[] = {
+    { "DAV:", "getetag" },
+    { "DAV:", "resourcetype" },
+    { NULL, NULL }
+};
+
+static int FoundItem(bool &isEmpty,
+                     const std::string &href,
+                     const std::string &etag,
+                     const std::string &status)
+{
+    if (isEmpty) {
+        Neon::Status parsed;
+        // Err on the side of caution: if unsure about status, include item.
+        if (parsed.parse(status.c_str()) ||
+            parsed.klass == 2) {
+            isEmpty = false;
+        }
+    }
+    return isEmpty ? 0 : 100;
+}
+
 bool WebDAVSource::isEmpty()
 {
     contactServer();
 
-    // listing all items is relatively efficient, let's use that
-    // TODO: use truncated result search
-    RevisionMap_t revisions;
-    listAllItems(revisions);
-    return revisions.empty();
+    bool isEmpty;
+    if (!getContentMixed()) {
+        // Can use simple PROPFIND because we do not have to
+        // double-check that each item really contains the right data.
+        bool failed = false;
+        RevisionMap_t revisions;
+        Timespec deadline = createDeadline();
+        m_session->propfindURI(m_calendar.m_path, 1, getetag,
+                               boost::bind(&WebDAVSource::listAllItemsCallback,
+                                           this, _1, _2, boost::ref(revisions),
+                                           boost::ref(failed)),
+                               deadline);
+        if (failed) {
+            SE_THROW("incomplete listing of all items");
+        }
+        isEmpty = revisions.empty();
+    } else {
+        // Have to filter items on the server and set result to false
+        // when we get items back.
+        isEmpty = true;
+        const std::string query =
+            "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n"
+            "<C:calendar-query xmlns:D=\"DAV:\"\n"
+            "xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\n"
+            "<D:prop>\n"
+            "<D:getetag/>\n"
+            "</D:prop>\n"
+            // Only get items of the right kind. In listAllItems() we
+            // don't trust the server to implement this correctly and
+            // double-check by downloading the data and looking into
+            // it, but here we are less concerned. It is less important
+            // to have reliable "is empty" information as long as we
+            // err on the side of returning "not empty" too often.
+            "<C:filter>\n"
+            "<C:comp-filter name=\"VCALENDAR\">\n"
+            "<C:comp-filter name=\"" + getContent() + "\">\n"
+            "</C:comp-filter>\n"
+            "</C:comp-filter>\n"
+            "</C:filter>\n"
+            "</C:calendar-query>\n";
+        Timespec deadline = createDeadline();
+        getSession()->startOperation("REPORT 'check for items'", deadline);
+        while (true) {
+            Neon::XMLParser parser;
+            parser.initAbortingReportParser(boost::bind(FoundItem,
+                                                        boost::ref(isEmpty),
+                                                        _1, _2, _3));
+            Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
+            report.addHeader("Depth", "1");
+            report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
+            if (getSession()->run(report, NULL, !boost::lambda::var(isEmpty))) {
+                break;
+            }
+        }
+    }
+
+    SE_LOG_DEBUG(getDisplayName(), "is %s", isEmpty ? "empty" : "not empty");
+    return isEmpty;
 }
 
 bool WebDAVSource::isUsable()
@@ -1797,13 +1895,6 @@ std::string WebDAVSource::databaseRevision()
     string ctag = davProps[m_calendar.m_path]["http://calendarserver.org/ns/:getctag"];
     return ctag;
 }
-
-
-static const ne_propname getetag[] = {
-    { "DAV:", "getetag" },
-    { "DAV:", "resourcetype" },
-    { NULL, NULL }
-};
 
 void WebDAVSource::listAllItems(RevisionMap_t &revisions)
 {

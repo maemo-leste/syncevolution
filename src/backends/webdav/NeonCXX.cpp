@@ -16,6 +16,7 @@
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/bind.hpp>
+#include <boost/lambda/lambda.hpp>
 
 #include <syncevo/util.h>
 #include <syncevo/Logging.h>
@@ -189,9 +190,8 @@ std::string Status2String(const ne_status *status)
 }
 
 Session::Session(const boost::shared_ptr<Settings> &settings) :
-    m_forceAuthorizationOnce(false),
+    m_forceAuthorizationOnce(AUTH_ON_DEMAND),
     m_credentialsSent(false),
-    m_oauthTokenRejections(0),
     m_settings(settings),
     m_debugging(false),
     m_session(NULL),
@@ -324,9 +324,10 @@ int Session::getCredentials(void *userdata, const char *realm, int attempt, char
     }
 }
 
-void Session::forceAuthorization(const boost::shared_ptr<AuthProvider> &authProvider)
+void Session::forceAuthorization(ForceAuthorization forceAuthorization,
+                                 const boost::shared_ptr<AuthProvider> &authProvider)
 {
-    m_forceAuthorizationOnce = true;
+    m_forceAuthorizationOnce = forceAuthorization;
     m_authProvider = authProvider;
 }
 
@@ -355,8 +356,9 @@ void Session::preSend(ne_request *req, ne_buffer *header)
     // Only do this once when using normal username/password.
     // Always do it when using OAuth2.
     bool useOAuth2 = m_authProvider && m_authProvider->methodIsSupported(AuthProvider::AUTH_METHOD_OAUTH2);
-    if (m_forceAuthorizationOnce || useOAuth2) {
-        m_forceAuthorizationOnce = false;
+    bool forceAlways = m_forceAuthorizationOnce == AUTH_ALWAYS;
+    if (m_forceAuthorizationOnce != AUTH_ON_DEMAND || useOAuth2) {
+        m_forceAuthorizationOnce = AUTH_ON_DEMAND;
         bool haveAuthorizationHeader = boost::starts_with(header->data, "Authorization:") ||
             strstr(header->data, "\nAuthorization:");
 
@@ -369,7 +371,7 @@ void Session::preSend(ne_request *req, ne_buffer *header)
             m_credentialsSent = true;
             // SmartPtr<char *> blob(ne_base64((const unsigned char *)m_oauth2Bearer.c_str(), m_oauth2Bearer.size()));
             ne_buffer_concat(header, "Authorization: Bearer ", m_oauth2Bearer.c_str() /* blob.get() */, "\r\n", (const char *)NULL);
-        } else if (m_uri.m_scheme == "https") {
+        } else if (forceAlways || m_uri.m_scheme == "https") {
             // append "Authorization: Basic" header if not present already
             if (!haveAuthorizationHeader) {
                 Credentials creds = m_authProvider->getCredentials();
@@ -601,6 +603,12 @@ bool Session::checkError(int error, int code, const ne_status *status,
         }
     }
 
+    // Detect 403 returned by Google for a bad access token and treat that like
+    // 401 = NE_AUTH. Neon itself doesn't do that.
+    if (m_authProvider && error == NE_ERROR && code == 403) {
+        error = NE_AUTH;
+    }
+
     switch (error) {
     case NE_OK:
         // request itself completed, but might still have resulted in bad status
@@ -640,29 +648,29 @@ bool Session::checkError(int error, int code, const ne_status *status,
                 SE_LOG_DEBUG(NULL, "credentials accepted");
                 m_settings->setCredentialsOkay(true);
             }
-            m_oauthTokenRejections = 0;
 
             return true;
         }
         break;
     case NE_AUTH: {
-        // Retry OAuth2-based request if we still have a valid token.
-        bool useOAuth2 = m_authProvider && m_authProvider->methodIsSupported(AuthProvider::AUTH_METHOD_OAUTH2);
-        if (useOAuth2) {
-            // Try again with new token? Need to restore the counter,
-            // because it is relevant for getOAuth2Bearer() in preSend().
-            if (m_oauthTokenRejections < 2) {
-                if (!m_oauth2Bearer.empty() && m_credentialsSent) {
-                    SE_LOG_DEBUG(NULL, "discarding used and rejected OAuth2 token '%s'", m_oauth2Bearer.c_str());
-                    m_oauthTokenRejections++;
-                    m_oauth2Bearer.clear();
-                } else {
-                    SE_LOG_DEBUG(NULL, "OAuth2 token '%s' not used?!", m_oauth2Bearer.c_str());
-                }
+        if (m_authProvider) {
+            // The m_oauth2Bearer is empty if the getOAuth2Bearer() method
+            // raised an exception, and in that case we should not retry
+            // invoking that method again.
+            if (!m_oauth2Bearer.empty()) {
                 retry = true;
-                SE_LOG_DEBUG(NULL, "OAuth2 retry after %d failed tokens", m_oauthTokenRejections);
+            }
+
+            // If we have been using this OAuth token and we got NE_AUTH, it
+            // means that the token is invalid (probably it's expired); we must
+            // tell the AuthProvider to invalidate its cache so that next time
+            // we'll hopefully get a new working token.
+            if (m_credentialsSent) {
+                SE_LOG_DEBUG(NULL, "discarding used and rejected OAuth2 token '%s'", m_oauth2Bearer.c_str());
+                m_authProvider->invalidateCachedSecrets();
+                m_oauth2Bearer.clear();
             } else {
-                SE_LOG_DEBUG(NULL, "too many failed OAuth2 tokens, giving up");
+                SE_LOG_DEBUG(NULL, "OAuth2 token '%s' not used?!", m_oauth2Bearer.c_str());
             }
         }
 
@@ -887,7 +895,7 @@ int XMLParser::reset(std::string &buffer)
     return 0;
 }
 
-void XMLParser::initReportParser(const ResponseEndCB_t &responseEnd)
+void XMLParser::initAbortingReportParser(const ResponseEndCB_t &responseEnd)
 {
     pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "multistatus", _2, _3));
     pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "response", _2, _3),
@@ -897,11 +905,31 @@ void XMLParser::initReportParser(const ResponseEndCB_t &responseEnd)
     pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "href", _2, _3),
                 boost::bind(Neon::XMLParser::append, boost::ref(m_href), _2, _3));
     pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "propstat", _2, _3));
-    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "status", _2, _3) /* check status? */);
+    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "status", _2, _3),
+                boost::bind(Neon::XMLParser::append, boost::ref(m_status), _2, _3));
     pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "prop", _2, _3));
     pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "getetag", _2, _3),
                 boost::bind(Neon::XMLParser::append, boost::ref(m_etag), _2, _3));
 }
+
+static int VoidResponseEndCBWrapper(const XMLParser::VoidResponseEndCB_t &responseEnd,
+				    const std::string &href,
+				    const std::string &etag,
+				    const std::string &status)
+{
+    responseEnd(href, etag, status);
+    return 0;
+}
+
+void XMLParser::initReportParser(const VoidResponseEndCB_t &responseEnd)
+{
+    if (responseEnd) {
+        initAbortingReportParser(boost::bind(VoidResponseEndCBWrapper, responseEnd, _1, _2, _3));
+    } else {
+        initAbortingReportParser(ResponseEndCB_t());
+    }
+}
+
 
 Request::Request(Session &session,
                  const std::string &method,
@@ -957,8 +985,7 @@ void Session::checkAuthorization()
         // Count the number of times we asked for new tokens. This helps
         // the provider determine whether the token that it returns are valid.
         try {
-            m_oauth2Bearer = m_authProvider->getOAuth2Bearer(m_oauthTokenRejections,
-                                                             boost::bind(&Settings::updatePassword, m_settings, _1));
+            m_oauth2Bearer = m_authProvider->getOAuth2Bearer(boost::bind(&Settings::updatePassword, m_settings, _1));
             SE_LOG_DEBUG(NULL, "got new OAuth2 token '%s' for next request", m_oauth2Bearer.c_str());
         } catch (...) {
             std::string explanation;
@@ -972,7 +999,7 @@ void Session::checkAuthorization()
     }
 }
 
-bool Session::run(Request &request, const std::set<int> *expectedCodes)
+bool Session::run(Request &request, const std::set<int> *expectedCodes, const boost::function<bool ()> &aborted)
 {
     int error;
 
@@ -988,6 +1015,11 @@ bool Session::run(Request &request, const std::set<int> *expectedCodes)
         error = ne_request_dispatch(req);
     } else {
         error = ne_xml_dispatch_request(req, request.getParser()->get());
+    }
+
+    // Was request intentionally aborted?
+    if (error && aborted && aborted()) {
+        return true;
     }
 
     return checkError(error, request.getStatus()->code, request.getStatus(),

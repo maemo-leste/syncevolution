@@ -1009,6 +1009,14 @@ Use check=lambda: (expr1, expr2, ...) when more than one check is needed.
             logging.printf("starting to kill unresponsive processes at %s: %s", time.asctime(), str(children))
         killed = []
         for pid, name in children.iteritems():
+            stacktrace = subprocess.Popen(['gdb',
+                                           '-ex', 'thread apply all bt',
+                                           '-ex', 'detach',
+                                           '-p', '%d' % pid],
+                                          stdout=subprocess.PIPE,
+                                          stderr=subprocess.STDOUT)
+            (out, err) = stacktrace.communicate()
+            logging.printf("stack backtrace for %d %s: %s", pid, name, out)
             if TryKill(pid, signal.SIGKILL):
                 logging.printf("killed %d %s", pid, name)
                 killed.append("%d %s" % (pid, name))
@@ -4256,6 +4264,8 @@ END:VCARD''')
         loop.run()
         self.assertEqual(DBusUtil.quit_events, ["session " + self.sessionpath + " done"])
         self.checkSync()
+        input = open(xdg_root + "/client/0", "r")
+        self.assertIn("FN:John Doe", input.read())
         input = open(xdg_root + "/server/0", "r")
         self.assertIn("FN:John Doe", input.read())
 
@@ -8434,6 +8444,7 @@ Comparison was impossible.
 [INFO] @default/addressbook: started
 [INFO] @default/addressbook: sent 1
 [INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: adding "John Doe"
 [INFO remote@client] @client/addressbook: received 1/1
 [INFO] @default/addressbook: first time sync done successfully
 [INFO remote@client] @client/addressbook: first time sync done successfully
@@ -8762,6 +8773,7 @@ END:VCARD                                END:VCARD
 [INFO] @default/addressbook: started
 [INFO] @default/addressbook: sent 1
 [INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: updating "Joan Doe"
 [INFO remote@client] @client/addressbook: received 1/1
 [INFO] @default/addressbook: normal sync done successfully
 [INFO remote@client] @client/addressbook: normal sync done successfully
@@ -8859,6 +8871,7 @@ END:VCARD                              <
 [INFO] @default/addressbook: started
 [INFO] @default/addressbook: sent 1
 [INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: deleting <0>
 [INFO remote@client] @client/addressbook: received 1/1
 [INFO] @default/addressbook: normal sync done successfully
 [INFO remote@client] @client/addressbook: normal sync done successfully
@@ -8972,6 +8985,7 @@ Comparison was impossible.
 [INFO] @default/calendar: started
 [INFO] @default/addressbook: sent 1
 [INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: adding "John Doe"
 [INFO remote@client] @client/addressbook: received 1/1
 [INFO remote@client] @client/calendar: started
 [INFO] @default/addressbook: first time sync done successfully
@@ -9205,6 +9219,7 @@ no changes
 [INFO] @default/calendar: started
 [INFO] @default/addressbook: sent 1
 [INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: updating "Joan Doe"
 [INFO remote@client] @client/addressbook: received 1/1
 [INFO remote@client] @client/calendar: started
 [INFO] @default/addressbook: normal sync done successfully
@@ -9327,6 +9342,7 @@ no changes
 [INFO] @default/calendar: started
 [INFO] @default/addressbook: sent 1
 [INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: deleting <0>
 [INFO remote@client] @client/addressbook: received 1/1
 [INFO remote@client] @client/calendar: started
 [INFO] @default/addressbook: normal sync done successfully
@@ -9481,6 +9497,113 @@ no changes
 (.*\n)*progress: 100, \{addressbook: \(, -1, -1, -1, -1, -1, -1\), calendar: \(, -1, -1, -1, -1, -1, -1\)\}
 (.*\n)*status: done, .*''')
         self.checkSync(numReports=5)
+
+    @property("debug", False)
+    @timeout(usingValgrind() and 600 or 200)
+    def testSyncOutputBadData(self):
+        """TestCmdline.testSyncOutputBadData - run syncs between local dirs and check output using data which is not quite valid"""
+        self.setUpLocalSyncConfigs()
+        self.session.Detach()
+        os.makedirs(xdg_root + "/server")
+        item = xdg_root + "/server/0"
+        output = open(item, "w")
+        output.write('''BEGIN:VCARD
+VERSION:3.0
+FN:John\377 Doe
+N:Doe;John\377
+END:VCARD''')
+        output.close()
+        os.makedirs(xdg_root + "/client")
+        item = xdg_root + "/client/0"
+        output = open(item, "w")
+        output.write('''BEGIN:VCARD
+VERSION:3.0
+FN:Joan Doe\377
+N:Doe\377;Joan
+END:VCARD''')
+        output.close()
+        item = xdg_root + "/client/1"
+        output = open(item, "w")
+        output.write('''BEGIN:VCARD
+VERSION:3.0
+FN:J\377\377 D'Arc\377
+N:D'Arc\377;J\377\377
+END:VCARD''')
+        output.close()
+
+        out, err, code = self.runCmdline(["--sync", "slow", "server"],
+                                         sessionFlags=[],
+                                         preserveOutputOrder=True)
+        self.assertEqual(err, None)
+        self.assertEqual(0, code)
+        out = self.stripSyncTime(out)
+        self.assertEqualDiff('''[INFO remote@client] target side of local sync ready
+[INFO remote@client] @client/addressbook: starting first time sync, two-way (peer is server)
+[INFO remote@client] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
+@client data changes to be applied during synchronization:
+*** @client/addressbook ***
+Comparison was impossible.
+
+[INFO remote@client] @client/addressbook: sent 2/2
+[INFO] @default/addressbook: starting first time sync, two-way (peer is client)
+[INFO] creating complete data backup of datastore addressbook before sync (enabled with dumpData and needed for printChanges)
+@default data changes to be applied during synchronization:
+*** @default/addressbook ***
+Comparison was impossible.
+
+[INFO] @default/addressbook: started
+[INFO] @default/addressbook: adding "Joan Doe?"
+[INFO] @default/addressbook: adding "J?? D'Arc?"
+[INFO] @default/addressbook: received 2
+[INFO] @default/addressbook: sent 1
+[INFO remote@client] @client/addressbook: started
+[INFO remote@client] @client/addressbook: adding "John? Doe"
+[INFO remote@client] @client/addressbook: received 1/1
+[INFO] @default/addressbook: first time sync done successfully
+[INFO remote@client] @client/addressbook: first time sync done successfully
+[INFO remote@client] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+
+Synchronization successful.
+
+Changes applied during synchronization (remote@client):
++---------------|-----------------------|-----------------------|-CON-+
+|               |        @client        |       @default        | FLI |
+|        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+|   addressbook |  1  |  0  |  0  |  0  |  2  |  0  |  0  |  0  |  0  |
+|   slow, 0 KB sent by client, 0 KB received                          |
+|   item(s) in database backup: 2 before sync, 3 after it             |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+| start xxx, duration a:bcmin |
+|               synchronization completed successfully                |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+
+Data modified @client during synchronization:
+*** @client/addressbook ***
+Comparison was impossible.
+
+[INFO] creating complete data backup after sync (enabled with dumpData and needed for printChanges)
+
+Synchronization successful.
+
+Changes applied during synchronization:
++---------------|-----------------------|-----------------------|-CON-+
+|               |       @default        |        @client        | FLI |
+|        Source | NEW | MOD | DEL | ERR | NEW | MOD | DEL | ERR | CTS |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+|   addressbook |  2  |  0  |  0  |  0  |  1  |  0  |  0  |  0  |  0  |
+|   slow, 0 KB sent by client, 0 KB received                          |
+|   item(s) in database backup: 1 before sync, 3 after it             |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+| start xxx, duration a:bcmin |
+|               synchronization completed successfully                |
++---------------+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+
+Data modified @default during synchronization:
+*** @default/addressbook ***
+Comparison was impossible.
+
+''', out)
 
 
 class TestHTTP(CmdlineUtil, unittest.TestCase):

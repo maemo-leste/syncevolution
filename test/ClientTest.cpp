@@ -3128,12 +3128,14 @@ void SyncTests::doCopy() {
     CT_ASSERT_NO_THROW(deleteAll());
     accessClientB->deleteAll();
 
+    bool allowLocalUpdate = getenv("CLIENT_TEST_MAY_COPY_BACK") != NULL;
+
     // insert into first database, copy to server
     CT_ASSERT_NO_THROW(allSourcesInsert());
     doSync(__FILE__, __LINE__,
            "send",
            SyncOptions(SYNC_TWO_WAY,
-                       CheckSyncReport(0,0,0, 1,0,0, true, SYNC_TWO_WAY)));
+                       CheckSyncReport(0, allowLocalUpdate? -1 : 0, 0, 1,0,0, true, SYNC_TWO_WAY)));
 
     // copy into second database
     accessClientB->doSync(__FILE__, __LINE__,
@@ -6042,9 +6044,11 @@ void SyncTests::testTimeout()
     close(fd);
     if (!skipped) {
         CT_ASSERT_EQUAL(STATUS_TRANSPORT_FAILURE, report.getStatus());
-        CT_ASSERT(end - start >= 19);
-        CT_ASSERT(end - start < 40); // needs to be sufficiently larger than 20s timeout
-                                     // because under valgrind the startup time is considerable
+        std::string delta = StringPrintf("%lds", (long)(end - start));
+        CT_ASSERT_MESSAGE(delta, end - start >= 19);
+        // needs to be sufficiently larger than 20s timeout
+        // because under valgrind the startup time is considerable
+        CT_ASSERT_MESSAGE(delta, end - start < 50);
     }
 }
 

@@ -239,7 +239,7 @@ template<class C> class TrackGLib : public boost::intrusive_ptr<C> {
     TrackGLib(const TrackGLib &other) : Base_t(other) {}
     operator C * () const { return Base_t::get(); }
     operator bool () const { return Base_t::get() != NULL; }
-    C * ref() const { return static_cast<C *>(g_object_ref(Base_t::get())); }
+    C * ref() const { return static_cast<C *>(intrusive_ptr_add_ref(Base_t::get())); }
 
     static  TrackGLib steal(C *ptr) { return TrackGLib(ptr, TRANSFER_REF); }
 };
@@ -317,6 +317,7 @@ SE_GOBJECT_TYPE(GFileMonitor)
 SE_GLIB_TYPE(GMainLoop, g_main_loop)
 SE_GLIB_TYPE(GAsyncQueue, g_async_queue)
 SE_GLIB_TYPE(GHashTable, g_hash_table)
+SE_GLIB_TYPE(GIOChannel, g_io_channel)
 
 SE_BEGIN_CXX
 
@@ -626,6 +627,7 @@ class PlainGStr : public boost::shared_ptr<gchar>
         PlainGStr(const PlainGStr &other) : boost::shared_ptr<gchar>(other) {}    
         operator const gchar *() const { return &**this; }
         const gchar *c_str() const { return &**this; }
+        void reset(gchar *str) { *this = PlainGStr(str); }
 };
 
 /**

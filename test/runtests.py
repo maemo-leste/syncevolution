@@ -2147,6 +2147,8 @@ test = SyncEvolutionTest("filekde",
                          "CLIENT_TEST_PEER_CAN_RESTART=1 "
 
                          "CLIENT_TEST_FAILURES="
+                         # Neither client nor server detect duplicates based on UID/RECURRENCE-ID.
+                         "Client::Sync::file_event::testAddBothSides.*,"
                          # Different vcard flavor, need different test data (just as
                          # in testImport).
                          "Client::Sync::file_contact::testItems,"
@@ -2428,6 +2430,12 @@ memotootest = SyncEvolutionTest("memotoo", compile,
                                   "eds_event",
                                   "eds_task",
                                   "eds_memo" ],
+                                # Under heavy load the timing ends up such that
+                                # the Memotoo server sends an eds_memo item that
+                                # it just got back. That does not happen reliably.
+                                # If it happens, the returned content is the same,
+                                # so allow this to happen although it is redundant.
+                                "CLIENT_TEST_MAY_COPY_BACK=1 "
                                 "CLIENT_TEST_NOCHECK_SYNCMODE=1 "
                                 "CLIENT_TEST_NUM_ITEMS=10 "
                                 "CLIENT_TEST_FAILURES="

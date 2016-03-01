@@ -76,6 +76,7 @@
 #include <boost/algorithm/string/join.hpp>
 #include <boost/tuple/tuple.hpp>
 #include <boost/utility.hpp>
+#include <boost/type_traits/is_signed.hpp>
 
 /* The SyncEvolution exception handler must integrate into the D-Bus
  * C++ wrapper. In contrast to the rest of the code, that handler uses
@@ -1405,48 +1406,70 @@ template<> struct dbus_traits<int8_t> : dbus_traits<uint8_t>
     }
 };
 
-template<> struct dbus_traits<int16_t> :
-    public basic_marshal< int16_t, VariantTypeInt16 >
+/** runtime detection of integer representation */
+template<typename I, bool issigned, size_t bytes> struct dbus_traits_integer_switch {};
+template<typename I> struct dbus_traits_integer_switch<I, true, 2> :
+    public basic_marshal< I, VariantTypeInt16 >
 {
     static std::string getType() { return "n"; }
     static std::string getSignature() {return getType(); }
     static std::string getReply() { return ""; }
 };
-template<> struct dbus_traits<uint16_t> :
-    public basic_marshal< uint16_t, VariantTypeUInt16 >
+template<typename I> struct dbus_traits_integer_switch<I, false, 2> :
+    public basic_marshal< I, VariantTypeUInt16 >
 {
     static std::string getType() { return "q"; }
     static std::string getSignature() {return getType(); }
     static std::string getReply() { return ""; }
 };
-template<> struct dbus_traits<int32_t> :
-    public basic_marshal< int32_t, VariantTypeInt32 >
+template<typename I> struct dbus_traits_integer_switch<I, true, 4> :
+    public basic_marshal< I, VariantTypeInt32 >
 {
     static std::string getType() { return "i"; }
     static std::string getSignature() {return getType(); }
     static std::string getReply() { return ""; }
 };
-template<> struct dbus_traits<uint32_t> :
-    public basic_marshal< uint32_t, VariantTypeUInt32 >
+template<typename I> struct dbus_traits_integer_switch<I, false, 4> :
+    public basic_marshal< I, VariantTypeUInt32 >
 {
     static std::string getType() { return "u"; }
     static std::string getSignature() {return getType(); }
     static std::string getReply() { return ""; }
 };
-template<> struct dbus_traits<int64_t> :
-    public basic_marshal< int64_t, VariantTypeInt64 >
+template<typename I> struct dbus_traits_integer_switch<I, true, 8> :
+    public basic_marshal< I, VariantTypeInt64 >
 {
     static std::string getType() { return "x"; }
     static std::string getSignature() {return getType(); }
     static std::string getReply() { return ""; }
 };
-template<> struct dbus_traits<uint64_t> :
-    public basic_marshal< uint64_t, VariantTypeUInt64 >
+template<typename I> struct dbus_traits_integer_switch<I, false, 8> :
+    public basic_marshal< I, VariantTypeUInt64 >
 {
     static std::string getType() { return "t"; }
     static std::string getSignature() {return getType(); }
     static std::string getReply() { return ""; }
 };
+
+template<typename I> struct dbus_traits_integer : public dbus_traits_integer_switch<I, boost::is_signed<I>::value, sizeof(I)> {};
+
+// Some of these types may have the same underlying representation, but they are
+// still considered different types by the compiler and thus we must have dbus_traits
+// for all of them.
+template<> struct dbus_traits<signed short> : public dbus_traits_integer<signed short> {};
+template<> struct dbus_traits<unsigned short> : public dbus_traits_integer<unsigned short> {};
+template<> struct dbus_traits<signed int> : public dbus_traits_integer<signed int> {};
+template<> struct dbus_traits<unsigned int> : public dbus_traits_integer<unsigned int> {};
+template<> struct dbus_traits<signed long> : public dbus_traits_integer<signed long> {};
+template<> struct dbus_traits<unsigned long> : public dbus_traits_integer<unsigned long> {};
+
+// Needed for int64_t and uint64. Not used internally, but occurs in
+// external D-Bus APIs (for example, Bluez5 obexd). The assumption here
+// is that "long long" is a valid type. If that assumption doesn't hold
+// on some platform, then we need a configure check and ifdefs here.
+template<> struct dbus_traits<signed long long> : public dbus_traits_integer<signed long long> {};
+template<> struct dbus_traits<unsigned long long> : public dbus_traits_integer<unsigned long long> {};
+
 template<> struct dbus_traits<double> :
     public basic_marshal< double, VariantTypeDouble >
 {
@@ -1507,7 +1530,43 @@ template<> struct dbus_traits<std::string> : public dbus_traits_base
 
     static void append(GVariantBuilder &builder, const std::string &value)
     {
-        g_variant_builder_add_value(&builder, g_variant_new_string(value.c_str()));
+        // g_variant_new_string() will log an assertion and/or return NULL
+        // (as in FDO #90118) when the string contains non-UTF-8 content.
+        // We must check in advance to avoid the assertion, even if that
+        // means duplicating the check (once here and once inside g_variant_new_string().
+        //
+        // Strictly speaking, this is something that the caller should
+        // have checked for, but as this should only happen for
+        // invalid external data (like broken iCalendar 2.0 events,
+        // see FDO #90118) and the only reasonable error handling in
+        // SyncEvolution would consist of filtering the data, so it is
+        // less intrusive overall to do that here: a question mark
+        // substitutes all invalid bytes.
+        const char *start = value.c_str(),
+            *end = value.c_str() + value.size();
+        const gchar *invalid;
+        bool valid = g_utf8_validate(start, end - start, &invalid);
+        GVariant *tmp;
+        if (valid) {
+            tmp = g_variant_new_string(value.c_str());
+        } else {
+            std::string buffer;
+            buffer.reserve(value.size());
+            while (true) {
+                if (valid) {
+                    buffer.append(start, end - start);
+                    // Empty string is valid, so we end up here in all cases.
+                    break;
+                } else {
+                    buffer.append(start, invalid - start);
+                    buffer.append("?");
+                    start = invalid + 1;
+                }
+                valid = g_utf8_validate(start, end - start, &invalid);
+            }
+            tmp = g_variant_new_string(buffer.c_str());
+        }
+        g_variant_builder_add_value(&builder, tmp);
     }
 
     typedef std::string host_type;

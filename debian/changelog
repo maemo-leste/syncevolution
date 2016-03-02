@@ -1,8 +1,17 @@
-syncevolution (1.5.1-1) UNRELEASED; urgency=medium
+syncevolution (1.5.1-1) unstable; urgency=medium
 
-  * New upstream release
+  * New upstream release (Closes: #803416)
+  * Fix FTBFS with libical2 (Closes: #824426)
+  * Remove 0002-Use-TLS-instead-of-SSLv3-in-SyncML-server-script.patch
+    which was merged upstream
+  * Update Vcs-* fields to new URLs
+  * Bump standards version, no changes needed
+  * Add dh_auto_clean quirk to make the package build twice in a row
+  * Upstream generates a manpage, remove outdated and obsolete own version
+  * Remove old debug package definition, use the new dbgsym packages
+  * Depend on recent libsynthesis package
 
- -- Tino Mettler <tino+debian@tikei.de>  Tue, 01 Mar 2016 10:11:33 +0100
+ -- Tino Mettler <tino+debian@tikei.de>  Thu, 19 May 2016 11:41:07 +0200
 
 syncevolution (1.4.99.4-5) unstable; urgency=medium
 

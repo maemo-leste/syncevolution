@@ -1,3 +1,4 @@
+
 # ==23596== Conditional jump or move depends on uninitialised value(s)
 # ==23596==    at 0x9A404E7: ??? (in /usr/lib/x86_64-linux-gnu/libdb-5.1.so)
 # ==23596==    by 0x9A41CB1: __log_put (in /usr/lib/x86_64-linux-gnu/libdb-5.1.so)
@@ -74,6 +75,37 @@
    fun:__libc_dlopen_mode
    fun:__nss_lookup_function
    obj:/lib/libnss_compat-2.6.1.so
+}
+
+# ==7775== Invalid write of size 8
+# ==7775==    at 0x400A811: do_lookup_x (dl-lookup.c:249)
+# ==7775==    by 0x403E55F: ???
+# ==7775==    by 0xFFEFFD33F: ???
+# ==7775==    by 0xFFEFFD2DF: ???
+# ==7775==    by 0xFFEFFD3FF: ???
+# ==7775==    by 0x4016534: _dl_runtime_resolve (dl-trampoline.S:45)
+# ==7775==    by 0x57E149A: SyncEvo::SyncConfig::addPeers(std::string const&, std::string const&, std::list<std::pair<std::string, std::string>, std::allocator<std::pair<std::string, std::string> > >&) (SyncConfig.cpp:763)
+# ==7775==    by 0x57E0730: SyncEvo::SyncConfig::getConfigs() (SyncConfig.cpp:810)
+# ==7775==    by 0x57E0CC0: SyncEvo::SyncConfig::normalizeConfigString(std::string const&, SyncEvo::SyncConfig::NormalizeFlags) (SyncConfig.cpp:251)
+# ==7775==    by 0x57E3C52: SyncEvo::SyncConfig::SyncConfig(std::string const&, boost::shared_ptr<SyncEvo::ConfigTree>, std::string const&) (SyncConfig.cpp:457)
+# ==7775==    by 0x57F04CF: SyncEvo::SyncConfig::createPeerTemplate(std::string const&) (SyncConfig.cpp:943)
+# ==7775==    by 0x56BD9E4: SyncEvo::Cmdline::run() (Cmdline.cpp:873)
+# ==7775==    by 0x45ADA1: SyncEvo::CmdlineWrapper::run() (cmdline-wrapper.h:66)
+# ==7775==    by 0x45053B: SyncEvo::SessionHelper::doExecute(std::vector<std::string, std::allocator<std::string> > const&, std::map<std::string, std::string, std::less<std::string>, std::allocator<std::pair<std::string const, std::string> > > const&, boost::shared_ptr<GDBusCXX::Result1<bool> > const&) (session-helper.cpp:314)
+# ==7775==    by 0x44FBC7: operator() (function_template.hpp:767)
+# ==7775==    by 0x44FBC7: SyncEvo::SessionHelper::run() (session-helper.cpp:202)
+# ==7775==    by 0x443827: main (sync-helper.cpp:187)
+# ==7775==  Address 0xffeffce88 is on thread 1's stack
+# ==7775==  in frame #0, created by do_lookup_x (dl-lookup.c:82)
+# ==7775==
+#
+# First seen on Ubuntu Vivid.
+{
+   _dl_runtime_resolve
+   Memcheck:Addr8
+   fun:do_lookup_x
+   ...
+   fun:_dl_runtime_resolve
 }
 
 # ==10992== 156 (36 direct, 120 indirect) bytes in 1 blocks are definitely lost in loss record 7 of 29
@@ -1088,6 +1120,33 @@
    fun:_g_dbus_worker_close
    fun:_g_dbus_worker_stop
    fun:g_dbus_connection_dispose
+}
+
+# ==18093== 1,934 (48 direct, 1,886 indirect) bytes in 1 blocks are definitely lost in loss record 8,719 of 8,806
+# ==18093==    at 0x4C2A5B0: calloc (vg_replace_malloc.c:618)
+# ==18093==    by 0x9C65A41: g_malloc0 (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==18093==    by 0x97275C8: _g_dbus_worker_send_message (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==18093==    by 0x9714D7A: g_dbus_connection_send_message_unlocked (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==18093==    by 0x9717AEF: g_dbus_connection_send_message (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==18093==    by 0x6AE9CE: GDBusCXX::EmitSignalHelper<false>::sendMsg(GDBusCXX::DBusMessagePtr const&) (gdbus-cxx-bridge.h:686)
+# ==18093==    by 0x69FC32: SyncEvo::Server::logOutput(GDBusCXX::DBusObject_t const&, SyncEvo::Logger::Level, std::string const&, std::string const&) (gdbus-cxx-bridge.h:905)
+# ==18093==    by 0x6C7F8F: SyncEvo::Logging2Server(SyncEvo::Server&, GDBusCXX::DBusObject_t const&, std::string const&, std::string const&, std::string const&) (session.cpp:974)
+# ==18093==    by 0x6D96E1: boost::detail::function::void_function_obj_invoker3<boost::_bi::bind_t<void, void (*)(SyncEvo::Server&, GDBusCXX::DBusObject_t const&, std::string const&, std::string const&, std::string const&), boost::_bi::list5<boost::reference_wrapper<SyncEvo::Server>, boost::_bi::value<char const*>, boost::arg<1>, boost::arg<2>, boost::arg<3> > >, void, std::string const&, std::string const&, std::string const&>::invoke(boost::detail::function::function_buffer&, std::string const&, std::string const&, std::string const&) (bind.hpp:525)
+# ==18093==    by 0x6DDC03: GDBusCXX::SignalWatch3<std::string, std::string, std::string>::internalCallback(_GDBusConnection*, char const*, char const*, char const*, char const*, _GVariant*, void*) (function_template.hpp:767)
+# ==18093==    by 0x97133A3: emit_signal_instance_in_idle_cb (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==18093==    by 0x9C5FDDC: g_main_context_dispatch (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==18093==    by 0x9C601B7: g_main_context_iterate.isra.29 (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==18093==    by 0x9C604E1: g_main_loop_run (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==18093==    by 0x6A0DAF: SyncEvo::Server::run() (server.cpp:543)
+# ==18093==    by 0x65FDE3: main (main.cpp:221)
+# ==18093== 
+{
+   pending log messages
+   Memcheck:Leak
+   ...
+   fun:_g_dbus_worker_send_message
+   ...
+   fun:*logOutput*
 }
 
 # ==658== 53,621 (1,512 direct, 52,109 indirect) bytes in 7 blocks are definitely lost in loss record 4,703 of 4,713
@@ -2227,4 +2286,36 @@
    fun:*EDSRegistryLoader*dispose*
    ...
    fun:__run_exit_handlers
+}
+
+# ==168== 40 bytes in 1 blocks are definitely lost in loss record 2,829 of 5,551
+# ==168==    at 0x4C284C0: malloc (vg_replace_malloc.c:291)
+# ==168==    by 0x88A0FDB: _g_locale_get_charset_aliases.part.0 (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==168==    by 0x88A137E: _g_locale_charset_unalias (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==168==    by 0x8835BF9: g_get_charset (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==168==    by 0x887896A: g_strerror (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==168==    by 0x82B1DE1: g_pollable_input_stream_default_read_nonblocking (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==168==    by 0x82A3082: read_async_pollable (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==168==    by 0x82A4AEA: g_input_stream_real_read_async (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==168==    by 0x82A3D98: g_input_stream_read_async (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==168==    by 0x8320E4B: _g_dbus_worker_do_read_unlocked (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==168==    by 0x8320E7C: _g_dbus_worker_do_initial_read (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==168==    by 0x8859DDC: g_main_context_dispatch (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==168==    by 0x885A1B7: g_main_context_iterate.isra.29 (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==168==    by 0x885A4E1: g_main_loop_run (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==168==    by 0x8320EA5: gdbus_shared_thread_func (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.4000.0)
+# ==168==    by 0x8880AA4: g_thread_proxy (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.4000.0)
+# ==168==    by 0x9B040A3: start_thread (pthread_create.c:309)
+# ==168==    by 0xA620C2C: clone (clone.S:111)
+# ==168== 
+#
+# Seen in ./client-test SyncEvo::ForkExecTest::testNotFound on Debian Testing Jessie.
+{
+   g_locale_get_charset_aliases in g_strerror
+   Memcheck:Leak
+   fun:malloc
+   fun:_g_locale_get_charset_aliases*
+   fun:_g_locale_charset_unalias
+   fun:g_get_charset
+   fun:g_strerror
 }

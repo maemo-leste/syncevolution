@@ -247,17 +247,73 @@ struct URI {
 std::string Status2String(const ne_status *status);
 
 /**
+ * Wrapper around ne_status which manages ownership of the reason_phrase string.
+ */
+class Status : public ne_status
+{
+public:
+    Status() { memset(this, 0, sizeof(ne_status)); }
+    ~Status() { if (reason_phrase) free(reason_phrase); }
+    Status(const ne_status &other) :
+        ne_status(other)
+    {
+        if (other.reason_phrase) {
+            reason_phrase = strdup(other.reason_phrase);
+        }
+    }
+    Status &operator = (const ne_status &other)
+    {
+        if (this != &other) {
+            if (reason_phrase) {
+                free(reason_phrase);
+            }
+            *this = other;
+            if (other.reason_phrase) {
+                reason_phrase = strdup(other.reason_phrase);
+            }
+        }
+        return *this;
+    }
+
+    /** true if set */
+    operator bool () const { return klass != 0; }
+
+    /** parse and store result in current instance */
+    int parse(const char *status)
+    {
+        ne_status parsed;
+        memset(&parsed, 0, sizeof(parsed));
+        int result = ne_parse_statusline(status, &parsed);
+        if (!result) {
+            if (reason_phrase) {
+                free(reason_phrase);
+            }
+            memcpy(this, &parsed, sizeof(parsed));
+        }
+        return result;
+    }
+};
+
+/**
  * Wraps all session related activities.
  * Throws transport errors for fatal problems.
  */
 class Session {
+ public:
+    enum ForceAuthorization {
+        AUTH_ON_DEMAND,
+        AUTH_HTTPS,
+        AUTH_ALWAYS
+    };
+
+ private:
     /**
      * @param settings    must provide information about settings on demand
      */
     Session(const boost::shared_ptr<Settings> &settings);
     static boost::shared_ptr<Session> m_cachedSession;
 
-    bool m_forceAuthorizationOnce;
+    ForceAuthorization m_forceAuthorizationOnce;
     boost::shared_ptr<AuthProvider> m_authProvider;
 
     /**
@@ -268,14 +324,6 @@ class Session {
      * server doesn't check them.
      */
     bool m_credentialsSent;
-
-    /**
-     * Count the number of consecutive times that an OAuth2 token
-     * failed to get accepted. This can happen when the current one
-     * expired and needs to be refreshed or we need re-authorization
-     * by the user.
-     */
-    int m_oauthTokenRejections;
 
     /**
      * Cached token for OAuth2. Obtained before starting the request in run(),
@@ -367,7 +415,8 @@ class Session {
      *
      * @return result of Session::checkError()
      */
-    bool run(Request &request, const std::set<int> *expectedCodes);
+    bool run(Request &request, const std::set<int> *expectedCodes,
+             const boost::function<bool ()> &aborted = boost::function<bool ()>());
 
     /**
      * to be called after each operation which might have produced debugging output by neon;
@@ -382,7 +431,7 @@ class Session {
      * (when username/password are provided by AuthProvider) or all
      * requests to use OAuth2 authentication.
      */
-    void forceAuthorization(const boost::shared_ptr<AuthProvider> &authProvider);
+    void forceAuthorization(ForceAuthorization forceAuthorization, const boost::shared_ptr<AuthProvider> &authProvider);
 
  private:
     boost::shared_ptr<Settings> m_settings;
@@ -508,12 +557,15 @@ class XMLParser
     static int reset(std::string &buffer);
 
     /**
-     * called once a response is completely parse
+     * Called each time a response is completely parsed.
      *
      * @param href     the path for which the response was sent
      * @param etag     it's etag, empty if not requested or available
+     * @param status   it's status line, empty if not requested or unavailable
+     * @return non-zero for aborting the parsing
      */
-    typedef boost::function<void (const std::string &, const std::string &)> ResponseEndCB_t;
+    typedef boost::function<int (const std::string &, const std::string &, const std::string &)> ResponseEndCB_t;
+    typedef boost::function<void (const std::string &, const std::string &, const std::string &)> VoidResponseEndCB_t;
 
     /**
      * Setup parser for handling REPORT result.
@@ -531,7 +583,8 @@ class XMLParser
      *                      when expecting only one response, the callback
      *                      is not needed
      */
-    void initReportParser(const ResponseEndCB_t &responseEnd = ResponseEndCB_t());
+    void initReportParser(const VoidResponseEndCB_t &responseEnd = VoidResponseEndCB_t());
+    void initAbortingReportParser(const ResponseEndCB_t &responseEnd);
 
  private:
     ne_xml_parser *m_parser;
@@ -550,16 +603,18 @@ class XMLParser
     std::list<Callbacks> m_stack;
 
     /** buffers for initReportParser() */
-    std::string m_href, m_etag;
+    std::string m_href, m_etag, m_status;
 
     int doResponseEnd(const ResponseEndCB_t &responseEnd) {
+        int abort = 0;
         if (responseEnd) {
-            responseEnd(m_href, m_etag);
+            abort = responseEnd(m_href, m_etag, m_status);
         }
         // clean up for next response
         m_href.clear();
         m_etag.clear();
-        return 0;
+        m_status.clear();
+        return abort;
     }
 
     static int startCB(void *userdata, int parent,

@@ -1,3 +1,11 @@
+syncevolution (1.5.1-2) unstable; urgency=medium
+
+  * Add 0003-Add-missing-casts-from-shared_ptr-to-bool-to-fix-FTB.patch
+    to add missing casts from shared_ptr to bool, fixes FTBFS with GCC 6
+  * Fix remaining FTBFS with GCC 6 by downgrading the C++ dialect to gnu++98
+    (Closes: #811624)
+ -- Tino Mettler <tino+debian@tikei.de>  Mon, 11 Jul 2016 10:17:38 +0200
+
 syncevolution (1.5.1-1) unstable; urgency=medium
 
   * New upstream release (Closes: #803416)

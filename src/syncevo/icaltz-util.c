@@ -162,7 +162,7 @@ typedef struct
 } leap;
 
 #ifndef EVOLUTION_ICAL_COMPATIBILITY
-const char *ical_tzid_prefix = "/freeassociation.sourceforge.net/";
+extern const char *ical_tzid_prefix;
 #endif
 
 static int

@@ -92,6 +92,15 @@ def copyLog(filename, dirname, htaccess, lineFilter=None):
     if os.path.isdir(filename):
         # copy whole directory, without any further processing at the moment
         shutil.copytree(filename, outname, symlinks=True)
+        # fix up permissions so that the content is world-readable
+        for root, dirs, files in os.walk(outname):
+            for entry in dirs:
+                path = os.path.join(root, entry)
+                os.chmod(path, os.stat(path).st_mode | stat.S_IROTH | stat.S_IXOTH | stat.S_IRGRP | stat.S_IXGRP)
+            for entry in files:
+                path = os.path.join(root, entry)
+                os.chmod(path, os.stat(path).st_mode | stat.S_IROTH | stat.S_IRGRP)
+        os.chmod(outname, os.stat(outname).st_mode | stat.S_IROTH | stat.S_IXOTH | stat.S_IRGRP | stat.S_IXGRP)
         return
 
     # .out files are typically small nowadays, so don't compress
@@ -333,6 +342,7 @@ class Action:
                         os.environ['HOME'] = context.stripSchrootDir(home)
                         for old, new, name in mapping:
                             newdir = os.path.join(home, new)
+                            stripped_newdir = context.stripSchrootDir(newdir)
                             olddir = os.path.join(home, old)
                             if not os.path.isdir(olddir):
                                 os.makedirs(olddir)
@@ -340,9 +350,9 @@ class Action:
                             print 'old', olddir, 'new', newdir
                             os.rename(olddir, newdir)
                             # Keep the old names as symlinks, just in case.
-                            os.symlink(newdir, olddir)
+                            os.symlink(stripped_newdir, olddir)
                             # Now use it via XDG env var *without* the schrootdir.
-                            os.environ[name] = context.stripSchrootDir(newdir)
+                            os.environ[name] = stripped_newdir
                     log('=== starting %s ===', self.name)
                     self.execute()
                 except:
@@ -483,7 +493,7 @@ class Context:
         sys.stdout.flush()
         result = os.system(cmdstr)
         if result != 0:
-            raise Exception("%s: failed (return code %d)" % (cmd, result>>8))
+            raise Exception("%s: failed (return code %d)" % (cmdstr, result>>8))
 
     def add(self, action):
         """Add an action for later execution. Order is important, fifo..."""
@@ -530,7 +540,7 @@ class Context:
                 action = self.todo.pop(0)
 
                 # check whether it actually needs to be executed
-                if self.enabled and \
+                if not self.enabled or \
                        not action.name in self.enabled and \
                        not self.required(action.name):
                     # disabled
@@ -1015,7 +1025,7 @@ class SyncEvolutionTest(Action):
 parser = optparse.OptionParser()
 parser.add_option("-e", "--enable",
                   action="append", type="string", dest="enabled", default=[],
-                  help="use this to enable specific actions instead of executing all of them (can be used multiple times and accepts enable=test1,test2 test3,... test lists)")
+                  help="actions must be enabled explicitly (can be used multiple times and accepts enable=test1,test2 test3,... test lists)")
 parser.add_option("-n", "--no-logs",
                   action="store_true", dest="nologs",
                   help="print to stdout/stderr directly instead of redirecting into log files")
@@ -1478,7 +1488,7 @@ class SyncEvolutionDist(AutotoolsBuild):
     def execute(self):
         cd(self.builddir)
         if self.packagesuffix:
-            context.runCommand("%s %s BINSUFFIX=%s deb rpm" % (self.runner, context.make, self.packagesuffix))
+            context.runCommand("%s %s BINSUFFIX=%s deb" % (self.runner, context.make, self.packagesuffix))
 	    put, get = os.popen4("%s dpkg-architecture -qDEB_HOST_ARCH" % (self.runner))
 	    for arch in get.readlines():
 	           if "i386" in arch:
@@ -1817,8 +1827,10 @@ class ActiveSyncTest(SyncEvolutionTest):
         # created during compile. We have to predict the location here.
         if compile.installed:
             self.activesyncd = os.path.join(compile.installdir, "usr", "libexec", "activesyncd")
+            self.activesyncd_schema_dir = ""
         else:
             self.activesyncd =  os.path.join(compile.builddir, "src", "backends", "activesync", "activesyncd", "install", "libexec", "activesyncd")
+            self.activesyncd_schema_dir = os.path.join(compile.builddir, "src", "backends", "activesync", "activesyncd", "install", "share", "glib-2.0", "schemas")
 
         SyncEvolutionTest.__init__(self, name,
                                    compile,
@@ -1856,7 +1868,8 @@ class ActiveSyncTest(SyncEvolutionTest):
 
                                    "CLIENT_TEST_LOG=activesyncd.log "
                                    ,
-                                   testPrefix=" ".join(("env EAS_DEBUG_FILE=activesyncd.log",
+                                   testPrefix=" ".join(("env EAS_DEBUG_FILE=activesyncd.log" + \
+                                                        ((" GSETTINGS_SCHEMA_DIR=%s" % self.activesyncd_schema_dir) if self.activesyncd_schema_dir else ""),
                                                         os.path.join(sync.basedir, "test", "wrappercheck.sh"),
                                                         options.testprefix,
                                                         self.activesyncd,
@@ -1873,6 +1886,8 @@ class ActiveSyncTest(SyncEvolutionTest):
         env['EAS_SOUP_LOGGER'] = '1'
         env['EAS_DEBUG'] = '5'
         env['EAS_DEBUG_DETACHED_RECURRENCES'] = '1'
+        if self.activesyncd_schema_dir:
+            env['GSETTINGS_SCHEMA_DIR'] = self.activesyncd_schema_dir
         activesyncd = subprocess.Popen(args,
                                        env=env)
         try:

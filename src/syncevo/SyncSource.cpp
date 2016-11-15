@@ -332,7 +332,7 @@ RegisterSyncSourceTest::RegisterSyncSourceTest(const string &configName, const s
 
 static class ScannedModules {
 public:
-    ScannedModules() {
+    void init() {
 #ifdef ENABLE_MODULES
         list<pair <string, boost::shared_ptr<ReadDir> > > dirs;
         /* If enviroment variable SYNCEVOLUTION_BACKEND_DIR is set, will search
@@ -403,7 +403,7 @@ public:
                 }
             }
             if (!replacement.empty()) {
-                debug << "Skipping " << basename << " = " << fullpath << " because a more recent version of it was already loaded: " << replacement;
+                debug << "Skipping " << basename << " = " << fullpath << " because a more recent version of it was already loaded: " << replacement << endl;
                 continue;
             }
 
@@ -416,11 +416,11 @@ public:
             void *dlhandle = dlopen(fullpath.c_str(), RTLD_LAZY|RTLD_GLOBAL);
             // remember which modules were found and which were not
             if (dlhandle) {
-                debug<<"Loading backend library "<<basename<<endl;
-                info<<"Loading backend library "<<fullpath<<endl;
+                debug<<"Loaded backend library "<<basename<<endl;
+                info<<"Loaded backend library "<<fullpath<<endl;
                 m_available.push_back(basename);
             } else {
-                debug<<"Loading backend library "<<basename<<"failed "<< dlerror()<<endl;
+                debug<<"Loading backend library "<<basename<<" failed: "<< dlerror()<<endl;
             }
         }
 #endif
@@ -428,6 +428,10 @@ public:
     list<string> m_available;
     std::ostringstream debug, info;
 } scannedModules;
+
+void SyncSource::backendsInit() {
+    scannedModules.init();
+}
 
 string SyncSource::backendsInfo() {
     return scannedModules.info.str();

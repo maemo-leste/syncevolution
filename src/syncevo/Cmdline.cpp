@@ -198,7 +198,7 @@ bool Cmdline::parse(vector<string> &parsed)
             m_template = m_argv[opt];
             m_configure = true;
             string temp = boost::trim_copy (m_template);
-            if (temp.find ("?") == 0){
+            if (boost::starts_with(temp, "?")) {
                 m_printTemplates = true;
                 m_dontrun = true;
                 m_template = temp.substr (1);
@@ -731,11 +731,12 @@ bool Cmdline::run() {
     if (m_usage) {
         usage(true);
     } else if (m_version) {
+        bool debug = atoi(getEnv("SYNCEVOLUTION_DEBUG", "0")) >= 1;
         SE_LOG_SHOW(NULL, "SyncEvolution %s%s\n%s%s",
                     VERSION,
                     SyncContext::isStableRelease() ? "" : " (pre-release)",
-                    EDSAbiWrapperInfo(),
-                    SyncSource::backendsInfo().c_str());
+                    debug ? EDSAbiWrapperDebug() : EDSAbiWrapperInfo(),
+                    debug ? SyncSource::backendsDebug().c_str() : SyncSource::backendsInfo().c_str());
     } else if (m_printServers || boost::trim_copy(m_server) == "?") {
         dumpConfigs("Configured servers:",
                     SyncConfig::getConfigs());
@@ -1731,7 +1732,7 @@ bool Cmdline::run() {
 
 void Cmdline::readLUIDs(SyncSource *source, list<string> &luids)
 {
-    processLUIDs(source, boost::bind(&list<string>::push_back, boost::ref(luids), _1));
+    processLUIDs(source, boost::bind(static_cast<void (list<string>::*)(const string &)>(&list<string>::push_back), boost::ref(luids), _1));
 }
 
 void Cmdline::processLUIDs(SyncSource *source, const boost::function<void (const std::string &)> &process)

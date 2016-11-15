@@ -8,7 +8,7 @@ dnl Invoke autogen.sh to produce a configure script.
 #
 # Starting with the 1.1 release cycle, the rpm-style
 # .99 pseudo-version number is used to mark a pre-release.
-AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.5.1])])
+AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.5.2])])
 # STABLE_VERSION=1.0.1+
 AC_SUBST(STABLE_VERSION)
 
@@ -116,6 +116,12 @@ AC_ARG_WITH(synthesis-revision,
                            [Identifies which source revision to use from --with-synthesis-src repository, empty string stands for latest. Default for default --synthesis-src: SYNTHESISSRC_REVISION]),
             [REVISION="$withval"])
 
+AC_ARG_WITH(extra-core-ldadd,
+            AS_HELP_STRING([--with-extra-core-ldadd=<linker options>],
+                           [Additional linker flags, used to produce more portable syncevolution.org binaries.]),
+            [EXTRACORELDADD="$withval"])
+AC_SUBST(EXTRACORELDADD)
+
 AC_ARG_ENABLE(shared,
               AS_HELP_STRING([--enable-shared],
                              [build backends as dynamically loadable modules]),
@@ -147,10 +153,10 @@ AC_ARG_ENABLE(evolution-compatibility,
 
 AC_ARG_ENABLE(internal-icaltz,
               AS_HELP_STRING([--disable-internal-icaltz],
-                             [libical 1.0 updated its system zone data parsing code so that it produces VTIMEZONEs which are unsuitable for syncing. SyncEvolution ships with a copy of the older code and uses it by default.]),
+                             [libical 1.0 updated its system zone data parsing code so that it produces VTIMEZONEs which are unsuitable for syncing. SyncEvolution ships with a copy of the older code and uses it by default in combination with libical 1.0. Starting with libical v2, icaltzutil_set_exact_vtimezones_support and the code in libical is used again.]),
               [enable_icaltz_util="$enableval"
                test "$enable_icaltz_util" = "yes" || test "$enable_icaltz_util" = "no" || AC_ERROR([invalid value of --disable-internal-icaltz: $enableval])],
-              enable_icaltz_util="yes")
+              [PKG_CHECK_MODULES(LIBICAL2, libical >= 2, [enable_icaltz_util="no"], [enable_icaltz_util="yes"])])
 if test "$enable_icaltz_util" = "yes"; then
    AC_DEFINE(ENABLE_ICALTZ_UTIL, [1], [use internal icaltz-util.c])
    AC_DEFINE(DISABLE_ICALTZUTIL_GET_ZONE_DIRECTORY, [1], [use libical's icaltzutil_get_zone_directory()])
@@ -182,18 +188,11 @@ AC_CHECK_HEADERS(byteswap.h endian.h sys/endian.h unistd.h stdint.h)
 AC_PATH_PROG([CPPUNIT_CONFIG], [cppunit-config], [no])
 
 # cppunit needed?
-if test "x$enable_unit_tests" = 'xyes' || test "x$enable_integration_tests" = 'xyes'; then
-  test "x$CPPUNIT_CONFIG" != 'xno' || AC_MSG_ERROR("cppunit-config not found.")
-fi
-if test "x$CPPUNIT_CONFIG" != 'xno'; then
-  # Export the flags if available, even if not enabled. This allows
-  # "make src/client-test" in cases where "make all" would not build
-  # client-test.
-  CPPUNIT_CXXFLAGS=`$CPPUNIT_CONFIG --cflags`
-  CPPUNIT_LDFLAGS=`$CPPUNIT_CONFIG --libs`
-fi
-AC_SUBST(CPPUNIT_CXXFLAGS)
-AC_SUBST(CPPUNIT_LDFLAGS)
+PKG_CHECK_MODULES(CPPUNIT, cppunit,
+                  [true],
+                  [if test "$enable_unit_tests" = 'yes' || test "$enable_integration_tests" = 'yes'; then
+                      AC_MSG_ERROR("cppunit.pc not found.")
+                   fi])
 
 if test "x$enable_unit_tests" = 'xyes'; then
         AC_DEFINE(ENABLE_UNIT_TESTS, 1, [enable unit tests inside the library's source code])
@@ -543,17 +542,6 @@ if test "$enable_dbus_service" != "no"; then
                                              [AC_DEFINE(HAS_NOTIFY, 1,
                                                         [define if libnotify could be used in dbus service])])
 
-    AC_ARG_ENABLE(notify-compatibility,
-                  AS_HELP_STRING([--enable-notify-compatibility],
-                                 [increase compatibility with binary libnotify installations by loading libnotify.so.1..4 dynamically instead of linking against it]),
-                                 [enable_notify_compat="$enableval"],
-                                 [enable_notify_compat="no"]
-                 )
-    if test "$enable_notify_compat" = "yes"; then
-        AC_DEFINE(NOTIFY_COMPATIBILITY, 1, [dynamically open libnotify])
-        LIBNOTIFY_LIBS="`echo $LIBNOTIFY_LIBS | sed -e 's/\(-lnotify\|[^ ]*libnotify.la\)/-ldl/'`"
-    fi
-
     # Here we're using QtGui too because mlite fails to depend on it,
     # despite using QAction.
     PKG_CHECK_MODULES(MLITE, [mlite QtGui], HAVE_MLITE=yes, HAVE_MLITE=no)
@@ -638,7 +626,6 @@ if test "$enable_dbus_service" != "no"; then
                 ;;
     esac
 fi
-AM_CONDITIONAL([NOTIFY_COMPATIBILITY], [test "$enable_notify_compat" = "yes"])
 AM_CONDITIONAL([COND_DBUS_PIM], [test "$enable_dbus_pim" != "no"])
 
 AC_SUBST(DBUS_CFLAGS)
@@ -1005,9 +992,10 @@ fi
 
 dnl check for libical if needed by backend or icaltz-util.
 if test "$need_ical" = "yes" || test "$enable_icaltz_util" = "yes"; then
-   PKG_CHECK_MODULES(LIBICAL, libical,
-                     [true],
-                     [PKG_CHECK_MODULES(LIBICAL, libecal-1.2)])
+   PKG_CHECK_MODULES(LIBICAL, libical)
+   PKG_CHECK_MODULES(LIBICAL_AVAILABLE, libical >= 0.43,
+                     [AC_DEFINE(HAVE_LIBICAL_R, 1, [have recent enough libical with _r variants])],
+                     [true])
 fi
 
 dnl Use libical in eds_abi_wrapper if and only if required by some backend.
@@ -1059,24 +1047,6 @@ if test "$host" = "arm-apple-darwin"; then
    AC_DEFINE(IPHONE, 1, [compiling for iPhone])
    DEVICE_TYPE=iPhone
 fi
-
-dnl --enable-evolution-compatibility
-if test "$enable_evolution_compatibility" = "yes"; then
-   AC_DEFINE(EVOLUTION_COMPATIBILITY, 1, [avoid hard dependency on Evolution shared objects])
-   # don't link against libs wrapped by eds_abi_wrapper (no longer limited to EDS alone...)
-   ECAL_LIBS=
-   EBOOK_LIBS=
-   EPACKAGE_LIBS=
-   BLUEZ_LIBS=
-fi
-if test "$enable_evolution_compatibility" = "ical" || test "$enable_evolution_compatibility" = "yes"; then
-   AC_DEFINE(EVOLUTION_ICAL_COMPATIBILITY, 1, [work with both libical.so.0 and libical.so.1])
-fi
-AM_CONDITIONAL([ENABLE_EVOLUTION_COMPATIBILITY], [test "$enable_evolution_compatibility" = "yes"])
-PKG_CHECK_MODULES(LIBICAL_AVAILABLE,
-                  libical >= 0.43,
-                  AC_DEFINE(HAVE_LIBICAL_R, 1, [have recent enough libical with _r variants]),
-                  pass)
 
 dnl --enable-developer-mode
 if test "$enable_developer_mode" = "yes"; then
@@ -1158,6 +1128,7 @@ echo "Core SyncEvolution: $enable_core"
 for backend in $BACKENDS; do
     eval echo $backend: \${enable_${backend}}
 done
+echo "libical v1 timezone hack: $enable_icaltz_util"
 echo "DBus service: $enable_dbus_service"
 echo "org._01.pim support in DBus service: $enable_dbus_pim"
 echo "Notifications: $enable_notify"

@@ -103,14 +103,6 @@ void ObexTransportAgent::connect() {
     m_obexReady = false;
     if(m_transType == OBEX_BLUETOOTH) {
         if(m_port == -1) {
-            EDSAbiWrapperInit();
-            // sdp_connect may be a pointer when EVOLUTION_COMPATIBILITY is enabled.
-            // Must check whether we really have an implementation of the sdp_ calls
-            // before using them.
-            if (!SyncEvoHaveLibbluetooth) {
-                SE_THROW_EXCEPTION (TransportException, "no suitable libbluetooth found, try setting Bluetooth channel manually (obex-bt://<mac>+<channel>)");
-            }
-            
             //use sdp to detect the appropriate channel
             //Do not use BDADDR_ANY to avoid a warning
             bdaddr_t bdaddr, anyaddr ={{0,0,0,0,0,0}};
@@ -249,6 +241,15 @@ void ObexTransportAgent::connectReq() {
 }
 
 void ObexTransportAgent::shutdown() {
+    SE_LOG_DEV(NULL, "ObexTransportAgent::shutdown()");
+
+    // This gets called directly after a send() of the final SyncML message.
+    // We must ensure that this final message goes out before cancelling
+    // anything. Strictly speaking, we shouldn't block here. But the state
+    // machine is complex enough already as it is, so better block for the
+    // the (short!) final message to be sent.
+    wait(true);
+
     //reset up obex fd soruce 
     GLibEvent obexEventSource;
     if (m_channel) {
@@ -259,6 +260,7 @@ void ObexTransportAgent::shutdown() {
     }
 
     if (m_handle) {
+        SE_LOG_DEV(NULL, "ObexTransportAgent::shutdown: cancel request");
         /* It might be true there is an ongoing OBEX request undergoing, 
          * must cancel it before sending another cmd */
         OBEX_CancelRequest (m_handle, 0);
@@ -274,6 +276,7 @@ void ObexTransportAgent::shutdown() {
             //add header "connection id"
             obex_headerdata_t header;
             header.bq4 = m_connectId;
+            SE_LOG_DEV(NULL, "ObexTransportAgent::shutdown: send OBEX_CMD_DISCONNECT");
             OBEX_ObjectAddHeader (m_handle, disconnect, OBEX_HDR_CONNECTION, header, sizeof
                                   (m_connectId), OBEX_FL_FIT_ONE_PACKET);
             if (OBEX_Request (m_handle, disconnect) <0) {
@@ -289,7 +292,7 @@ void ObexTransportAgent::shutdown() {
  * Send the request to peer
  */
 void ObexTransportAgent::send(const char *data, size_t len) {
-    SE_LOG_DEV(NULL, "ObexTransport send is called");
+    SE_LOG_DEV(NULL, "ObexTransport send is called (%ld bytes)", (long)len);
     cxxptr<Socket> sockObj = m_sock;
     GIOChannelPtr channel = m_channel;
     if(m_connectStatus != CONNECTED) {
@@ -364,7 +367,10 @@ void ObexTransportAgent::cancel() {
  * Runs the main loop manually so that it does not block other components.
  */
 TransportAgent::Status ObexTransportAgent::wait(bool noReply) {
+    SE_LOG_DEV(NULL, "ObexTransportAgent::wait(%s)", noReply ? "no reply" : "reply");
+
     while (!m_obexReady) {
+        SE_LOG_DEV(NULL, "ObexTransportAgent::wait(): iteration");
         g_main_context_iteration (m_context, TRUE);
         if (m_status == FAILED ||
             m_status == CANCELED) {
@@ -380,6 +386,7 @@ TransportAgent::Status ObexTransportAgent::wait(bool noReply) {
             }
         }
     }
+    SE_LOG_DEV(NULL, "ObexTransportAgent::wait(): is ready");
 
     //remove the obex event source here
     //only at this point we can be sure obexEvent is propertely set up
@@ -511,7 +518,7 @@ void ObexTransportAgent::sdp_callback_impl (uint8_t type, uint16_t status, uint8
 
 	    int seqSize = 0;
         uint8_t dtdp;
-#if defined(HAVE_BLUEZ_SAFE) || defined(EVOLUTION_COMPATIBILITY)
+#if defined(HAVE_BLUEZ_SAFE)
         scanned = sdp_extract_seqtype_safe(rsp, bufSize, &dtdp, &seqSize);
 #elif defined(HAVE_BLUEZ_BUFSIZE)
         scanned = sdp_extract_seqtype(rsp, bufSize, &dtdp, &seqSize);
@@ -530,7 +537,7 @@ void ObexTransportAgent::sdp_callback_impl (uint8_t type, uint16_t status, uint8
             int recSize;
 
             recSize = 0;
-#if defined(HAVE_BLUEZ_SAFE) || defined(EVOLUTION_COMPATIBILITY) 
+#if defined(HAVE_BLUEZ_SAFE)
             rec = sdp_extract_pdu_safe(rsp, bufSize, &recSize);
 #elif defined(HAVE_BLUEZ_BUFSIZE)
             rec = sdp_extract_pdu(rsp, bufSize, &recSize);
@@ -646,9 +653,10 @@ void ObexTransportAgent::obex_callback (obex_object_t *object, int mode, int eve
     try {
         switch (event) {
             case OBEX_EV_PROGRESS:
-                SE_LOG_DEV(NULL, "OBEX progress");
+                SE_LOG_DEV(NULL, "OBEX_EV_PROGRESS");
                 break;
             case OBEX_EV_REQDONE:
+                SE_LOG_DEV(NULL, "OBEX_EV_REQDONE");
                 m_obexReady = true;
                 m_requestStart = 0;
                 if (obex_rsp != OBEX_RSP_SUCCESS) {
@@ -723,10 +731,14 @@ void ObexTransportAgent::obex_callback (obex_object_t *object, int mode, int eve
                                 m_status = GOT_REPLY;
                                 break;
                             }
+                        case OBEX_CMD_PUT:
+                            SE_LOG_DEV(NULL, "ObexTransport send completed");
+                            break;
                     }
                 }//else
                 break;
             case OBEX_EV_LINKERR:
+                SE_LOG_DEV(NULL, "OBEX_EV_LINKERR");
                 {
                     if (obex_rsp == 0 && m_disconnecting) {
                         //disconnct event
@@ -743,7 +755,10 @@ void ObexTransportAgent::obex_callback (obex_object_t *object, int mode, int eve
                     break;
                 }
             case OBEX_EV_STREAMEMPTY:
+                SE_LOG_DEV(NULL, "OBEX_EV_STREAMEMPTY");
+                break;
             case OBEX_EV_STREAMAVAIL:
+                SE_LOG_DEV(NULL, "OBEX_EV_STREAMAVAIL");
                 break;
         }
     } catch (...) {

@@ -1691,7 +1691,7 @@ boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainl
         InitializeTransport(agent, timeout);
         return agent;
 #endif
-    } else if (url.find("obex-bt://") ==0) {
+    } else if (boost::starts_with(url, "obex-bt://")) {
 #ifdef ENABLE_BLUETOOTH
         std::string btUrl = url.substr (strlen ("obex-bt://"), std::string::npos);
         boost::shared_ptr<ObexTransportAgent> agent(new ObexTransportAgent(ObexTransportAgent::OBEX_BLUETOOTH,
@@ -3256,6 +3256,9 @@ void SyncContext::initMain(const char *appname)
     } else {
         SySync_ConsolePrintf = nopPrintf;
     }
+
+    // Load backends.
+    SyncSource::backendsInit();
 
     // invoke optional init parts, for example KDE KApplication init
     // in KDE backend

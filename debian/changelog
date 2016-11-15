@@ -1,3 +1,14 @@
+syncevolution (1.5.2-1) UNRELEASED; urgency=medium
+
+  * New upstream version
+  * Remove patch for GCC6 build failures, as they are fixed upstream
+  * Remove flags to downgrade the C++ dialect, fixed upstream
+  * Remove 0002-Fix-FTBFS-with-libical2.patch, fixed upstream
+  * Use HTTPS for URL to git web view
+  * Improve short descriptions
+
+ -- Tino Mettler <tino+debian@tikei.de>  Tue, 15 Nov 2016 12:33:35 +0100
+
 syncevolution (1.5.1-2) unstable; urgency=medium
 
   * Add 0003-Add-missing-casts-from-shared_ptr-to-bool-to-fix-FTB.patch

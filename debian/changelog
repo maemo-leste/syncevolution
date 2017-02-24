@@ -1,3 +1,9 @@
+syncevolution (1.5.2-2) unstable; urgency=medium
+
+  * Add missing service file for syncevo-dbus-server (Closes: #854941)
+
+ -- Tino Mettler <tino+debian@tikei.de>  Fri, 24 Feb 2017 12:17:56 +0100
+
 syncevolution (1.5.2-1) unstable; urgency=medium
 
   * New upstream version

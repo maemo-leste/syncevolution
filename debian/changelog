@@ -1,3 +1,19 @@
+syncevolution (1.5.2-3) unstable; urgency=medium
+
+  [ Patrick Ohly ]
+  * libical: support libical v3 (Closes: #884158)
+  * GNOME: replace gnome-keyring with libsecret
+
+  [ Tino Mettler ]
+  * Change build dependencies for libgtk and glade to use GTK3 for sync-ui
+    (Closes: #884162)
+  * Add Build-Dep on libjson-c-dev (Closes: #884170)
+  * Handle C++ conversion operator name mangling in GCC 7 (Closes: #871284)
+  * Build depend on libsecret-1-dev instead of deprecated libgnome-keyring-dev
+    (Closes: #867944)
+
+ -- Tino Mettler <tino+debian@tikei.de>  Thu, 04 Jan 2018 12:24:58 +0100
+
 syncevolution (1.5.2-2) unstable; urgency=medium
 
   * Add missing service file for syncevo-dbus-server (Closes: #854941)

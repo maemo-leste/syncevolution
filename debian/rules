@@ -29,7 +29,8 @@ override_dh_auto_configure:
 			--libexecdir=/usr/lib/$(DEB_HOST_MULTIARCH)/syncevolution \
 			--enable-gui \
 			--enable-kwallet --enable-akonadi \
-			--with-rst2man --with-rst2html --enable-dav
+			--with-rst2man --with-rst2html --enable-dav \
+			--enable-oauth2
 
 override_dh_install:
 	dh_install -X"*.pl"
@@ -41,6 +42,9 @@ override_dh_auto_clean:
 	rm -f INSTALL compile po/LINGUAS src/backends/backends.am \
 	      src/synthesis-includes/Makefile.in test-driver
 	dh_auto_clean
+
+override_dh_makeshlibs:
+	dh_makeshlibs -V'libsyncevolution0 (>= 1.5.2-3~)'
 
 get-orig-source: 
 	git archive --format=tar ${UPSTREAMTAG} --prefix=${SOURCEPKG}_${UPSTREAM}/ | gzip -9 > ../${ORIG}

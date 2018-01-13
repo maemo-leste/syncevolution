@@ -8,7 +8,7 @@ dnl Invoke autogen.sh to produce a configure script.
 #
 # Starting with the 1.1 release cycle, the rpm-style
 # .99 pseudo-version number is used to mark a pre-release.
-AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.5.2])])
+AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.5.3])])
 # STABLE_VERSION=1.0.1+
 AC_SUBST(STABLE_VERSION)
 
@@ -62,6 +62,14 @@ dnl check for programs.
 AC_PROG_CXX
 AC_PROG_MAKE_SET
 
+dnl Use the most recent C++ standard that is supported by the code.
+dnl We can fall back to older versions, but not below C++11.
+dnl Akonadi/Qt don't work with C++17 yet, so we can't enable that.
+AX_CXX_COMPILE_STDCXX_14(noext, optional)
+if test "$HAVE_CXX14" -ne 1; then
+    AX_CXX_COMPILE_STDCXX_11(noext, mandatory)
+fi
+
 # Boost headers: boost/foreach.hpp is needed (1.33/Debian Etch
 # doesn't have it, 1.34/Ubuntu 8.10 Hardy does). 1.35 is available
 # as Debian Etch backport.
@@ -70,8 +78,13 @@ AX_BOOST_BASE(1.34)
 # TODO: Fix code to pass with -pedantic -Wextra.
 # -Wno-unknown-pragmas needed because icalstrdup.h
 # currently uses the "#pragma }" trick. Should remove that.
-# Fix code to work without deprecated methods: G GDK GDK_PIXBUF CAIRO PANGO GTK
 DK_ARG_ENABLE_WARNINGS([SYNCEVO_WFLAGS],
+                       [-Wall -Wno-unknown-pragmas],
+                       [-Wall -Wno-unknown-pragmas],
+                       [])
+
+# Fix code to work without deprecated methods: G GDK GDK_PIXBUF CAIRO PANGO GTK
+DK_ARG_ENABLE_WARNINGS([SYNCEVO_WFLAGS_DEPRECATED],
                        [-Wall -Wno-unknown-pragmas -Wno-deprecated-declarations],
                        [-Wall -Wno-unknown-pragmas -Wno-deprecated-declarations],
                        [])
@@ -223,12 +236,9 @@ else
     have_libcurl="no"
 fi
 
-PKG_CHECK_MODULES(LIBSOUP, libsoup-gnome-2.4,
-                  [have_libsoup="yes"
-                   AC_DEFINE(HAVE_LIBSOUP_SOUP_GNOME_FEATURES_H, 1, [enable GNOME specific libsoup])],
-                  [PKG_CHECK_MODULES(LIBSOUP, libsoup-2.4,
-                                     have_libsoup="yes",
-                                     have_libsoup="no")])
+PKG_CHECK_MODULES(LIBSOUP, libsoup-2.4 >= 2.42,
+                           have_libsoup="yes",
+                           have_libsoup="no")
 
 PKG_CHECK_MODULES(LIBOPENOBEX, openobex, have_obex="yes", have_obex="no")
 have_bluetooth="no"
@@ -477,6 +487,18 @@ AC_ARG_ENABLE(core,
               enable_core="$enableval",
               enable_core="yes")
 AM_CONDITIONAL([COND_CORE], [test "$enable_core" = "yes"])
+AC_ARG_ENABLE(cmdline,
+              AS_HELP_STRING([--enable-cmdline],
+                             [enables building the SyncEvolution command line tool, syncevolution]),
+              enable_cmdline="$enableval",
+              enable_cmdline="yes")
+AM_CONDITIONAL([COND_CMDLINE], [test "$enable_cmdline" = "yes"])
+AC_ARG_ENABLE(local-sync,
+              AS_HELP_STRING([--enable-local-sync],
+                             [enables building the local synchronization support, in particular syncevo-local-sync]),
+              enable_local_sync="$enableval",
+              enable_local_sync="yes")
+AM_CONDITIONAL([COND_LOCAL_SYNC], [test "$enable_local_sync" = "yes"])
 
 AC_ARG_ENABLE(dbus-service,
               AS_HELP_STRING([--enable-dbus-service=args],

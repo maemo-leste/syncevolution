@@ -1,3 +1,15 @@
+syncevolution (1.5.3-1) unstable; urgency=medium
+
+  * New upstream release
+  * Fix override_dh_makeshlibs to handle all packages with public shared libs
+    (Closes: #887043)
+  * Remove obsolete Conflicts:/Breaks:/Replaces: sync-ui (<<1.1+ds1-1~)
+  * Change debhelper compatibility to 11, which is recommended
+  * Bump standards version to 4.1.3, no changes needed
+  * Fix several lintian warnings
+
+ -- Tino Mettler <tino+debian@tikei.de>  Sat, 13 Jan 2018 22:47:44 +0100
+
 syncevolution (1.5.2-3) unstable; urgency=medium
 
   [ Patrick Ohly ]
@@ -7,12 +19,14 @@ syncevolution (1.5.2-3) unstable; urgency=medium
   [ Tino Mettler ]
   * Change build dependencies for libgtk and glade to use GTK3 for sync-ui
     (Closes: #884162)
-  * Add Build-Dep on libjson-c-dev (Closes: #884170)
+  * Add Build-Dep on libjson-c-dev, enable and include oauth2 backend
+    (Closes: #884170)
+
   * Handle C++ conversion operator name mangling in GCC 7 (Closes: #871284)
   * Build depend on libsecret-1-dev instead of deprecated libgnome-keyring-dev
     (Closes: #867944)
 
- -- Tino Mettler <tino+debian@tikei.de>  Thu, 04 Jan 2018 12:24:58 +0100
+ -- Tino Mettler <tino+debian@tikei.de>  Thu, 04 Jan 2018 22:21:57 +0100
 
 syncevolution (1.5.2-2) unstable; urgency=medium
 
@@ -208,7 +222,7 @@ syncevolution (1.1.99.4+ds1-1) experimental; urgency=low
 syncevolution (1.1.99.3+ds1-1) experimental; urgency=low
 
   * New upstream (pre-release) version
-  * Remove two s390 related patches, now contained in upstream 
+  * Remove two s390 related patches, now contained in upstream
     commit 63d76f874270cbafb2.
 
  -- David Bremner <bremner@debian.org>  Tue, 08 Mar 2011 16:05:30 -0400
@@ -224,7 +238,7 @@ syncevolution (1.1+ds1-5) unstable; urgency=low
 
 syncevolution (1.1+ds1-4) experimental; urgency=low
 
-  * Remove build dependency on libopenobex1-dev on hurd-i386, because it is not 
+  * Remove build dependency on libopenobex1-dev on hurd-i386, because it is not
     available there. The package is already built without it on kfreebsd.
   * Explicitly translate between sysync::memSize and size_t. Thanks to
     Patrick Ohly for the patch.
@@ -254,7 +268,7 @@ syncevolution (1.1+ds1-1) experimental; urgency=low
   * Add -dbg package to hold debugging symbols
   * Recommend evolution-data-server instead of evolution
   * Update Standards-Version to 3.9.1 (No changes).
-  
+
   [ Thomas Bechtold ]
   * Split source package into syncevolution-common, syncevolution and
     sync-ui.
@@ -276,7 +290,7 @@ syncevolution (1.0+ds1~beta2a-1) unstable; urgency=low
 syncevolution (1.0+ds1~a1-2) experimental; urgency=low
 
   * Don't build depend on libopenobex1-dev on kfreebsd-*. This avoids
-    trying to compile bluetooth support, which relies on bluez 
+    trying to compile bluetooth support, which relies on bluez
     (Closes: #566940)
 
  -- David Bremner <bremner@unb.ca>  Tue, 26 Jan 2010 23:28:44 -0400
@@ -304,6 +318,6 @@ syncevolution (0.9+ds1-2) unstable; urgency=low
 
 syncevolution (0.9+ds1-1) unstable; urgency=low
 
-  * Initial release (Closes: #404942)  
+  * Initial release (Closes: #404942)
 
  -- David Bremner <bremner@unb.ca>  Sun, 16 Aug 2009 23:53:47 -0300

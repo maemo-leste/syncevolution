@@ -1,4 +1,3 @@
 # debian/source/git-patches exported from git by quilt-patches-deb-export-hook
 0001-Fix-FTBFS-on-kfreebsd-due-to-missing-SOCK_CLOEXEC.patch
-0002-libical-support-libical-v3.patch
-0003-GNOME-replace-gnome-keyring-with-libsecret.patch
+0002-Disable-the-usage-of-CA-certificates-if-the-user-dis.patch

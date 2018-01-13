@@ -1,10 +1,8 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
-UPSTREAMTAG=upstream/1.5.2
 
-SOURCEPKG=$(shell dpkg-parsechangelog | sed  -n 's/^Source: \(.*\)/\1/p')
-UPSTREAM=$(shell dpkg-parsechangelog |  sed -n 's/^Version: \(.*\)-[^-]*/\1/p')
-ORIG=${SOURCEPKG}_${UPSTREAM}.orig.tar.gz
+include /usr/share/dpkg/pkg-info.mk
+ORIG=${DEB_SOURCE}_${DEB_VERSION_UPSTREAM}
 
 DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
@@ -14,7 +12,7 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
 export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
 
-%: 
+%:
 	dh $@ --parallel
 
 override_dh_auto_install:
@@ -22,7 +20,7 @@ override_dh_auto_install:
 	install --mode=0755 --owner=root test/syncevo-http-server.py \
 		$(CURDIR)/debian/tmp/usr/bin/syncevo-http-server
 
-override_dh_auto_configure: 
+override_dh_auto_configure:
 	sh autogen.sh
 	dh_auto_configure -- --with-synthesis-src=none --prefix=/usr \
 			--sysconfdir=/etc \
@@ -44,10 +42,14 @@ override_dh_auto_clean:
 	dh_auto_clean
 
 override_dh_makeshlibs:
-	dh_makeshlibs -V'libsyncevolution0 (>= 1.5.2-3~)'
+	dh_makeshlibs -V'libsyncevolution0 (>= 1.5.2-3~)' -plibsyncevolution0
+	dh_makeshlibs -V'libsyncevo-dbus0 (>= 1.5.2-3~)' -plibsyncevo-dbus0
+	dh_makeshlibs -V'libgdbussyncevo0 (>= 1.5.2-3~)' -plibgdbussyncevo0
+	dh_makeshlibs --remaining-packages
 
-get-orig-source: 
-	git archive --format=tar ${UPSTREAMTAG} --prefix=${SOURCEPKG}_${UPSTREAM}/ | gzip -9 > ../${ORIG}
+
+get-orig-source:
+	git archive --format=tar upstream/${DEB_VERSION_UPSTREAM} --prefix=${ORIG}/ | gzip -9 > ../${ORIG}.orig.tar.gz
 
 PATCH_EXPORT_SCRIPT=/usr/share/gitpkg/hooks/quilt-patches-deb-export-hook
 export-patches:

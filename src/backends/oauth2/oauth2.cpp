@@ -23,6 +23,7 @@
 #include <syncevo/GLibSupport.h>
 #include <syncevo/GVariantSupport.h>
 #include <syncevo/SoupTransportAgent.h>
+#include <syncevo/CurlTransportAgent.h>
 #include <json.h>
 
 #include <syncevo/declarations.h>
@@ -54,10 +55,10 @@ public:
         m_refreshToken(refreshToken)
     {
 #ifdef ENABLE_LIBSOUP
-        boost::shared_ptr<SoupTransportAgent> agent(new SoupTransportAgent(static_cast<GMainLoop *>(NULL)));
-        m_agent = agent;
+        m_agent = SoupTransportAgent::create(static_cast<GMainLoop *>(NULL));
 #elif defined(ENABLE_LIBCURL)
-        m_agent = new CurlTransportAgent();
+        boost::shared_ptr<CurlTransportAgent> agent(new CurlTransportAgent());
+        m_agent = agent;
 #endif
     }
 

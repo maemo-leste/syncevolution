@@ -1,3 +1,9 @@
+syncevolution (1.5.3-2) unstable; urgency=medium
+
+  * Remove libgconf2-dev build-dep (Closes: #897258)
+
+ -- Tino Mettler <tino+debian@tikei.de>  Thu, 21 Jun 2018 21:19:04 +0200
+
 syncevolution (1.5.3-1) unstable; urgency=medium
 
   * New upstream release

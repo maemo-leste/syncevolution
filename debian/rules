@@ -26,9 +26,10 @@ override_dh_auto_configure:
 			--sysconfdir=/etc \
 			--libexecdir=/usr/lib/$(DEB_HOST_MULTIARCH)/syncevolution \
 			--enable-gui \
-			--enable-kwallet --enable-akonadi \
+			--enable-kwallet \
 			--with-rst2man --with-rst2html --enable-dav \
-			--enable-oauth2
+			--enable-oauth2 \
+			--enable-maemocal
 
 override_dh_install:
 	dh_install -X"*.pl"

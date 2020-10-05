@@ -124,7 +124,6 @@ Makefile.in
 # src/gtk-ui
 /src/gtk-ui/sync-ui
 /src/gtk-ui/sync.desktop
-/src/gtk-ui/ui.xml
 
 # src/syncevo
 /src/syncevo-phone-config

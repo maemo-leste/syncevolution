@@ -1,2 +1,3 @@
 # debian/source/git-patches exported from git by quilt-patches-deb-export-hook
 0001-Fix-FTBFS-on-kfreebsd-due-to-missing-SOCK_CLOEXEC.patch
+0002-Add-dbus-flags-for-maemo.patch

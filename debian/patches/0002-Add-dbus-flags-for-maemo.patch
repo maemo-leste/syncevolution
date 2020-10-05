@@ -1,0 +1,14 @@
+diff --git a/src/backends/maemo/maemo.am b/src/backends/maemo/maemo.am
+index 9c31b8d..aaad0fe 100644
+--- a/src/backends/maemo/maemo.am
++++ b/src/backends/maemo/maemo.am
+@@ -15,7 +15,7 @@ src_backends_maemo_src = \
+ 
+ src_backends_maemo_syncmaemocal_la_SOURCES = $(src_backends_maemo_src)
+ src_backends_maemo_syncmaemocal_la_LIBADD = $(MCALB_LIBS) $(SYNCEVOLUTION_LIBS)
+-src_backends_maemo_syncmaemocal_la_LDFLAGS = -module -avoid-version
+-src_backends_maemo_syncmaemocal_la_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(SYNCEVO_WFLAGS)
++src_backends_maemo_syncmaemocal_la_LDFLAGS = -module -avoid-version `pkg-config dbus-1 --libs`
++src_backends_maemo_syncmaemocal_la_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(SYNCEVO_WFLAGS) `pkg-config --cflags dbus-1`
+ src_backends_maemo_syncmaemocal_la_CPPFLAGS = $(SYNCEVOLUTION_CFLAGS) -I$(top_srcdir)/test $(BACKEND_CPPFLAGS)
+ src_backends_maemo_syncmaemocal_la_DEPENDENCIES = src/syncevo/libsyncevolution.la

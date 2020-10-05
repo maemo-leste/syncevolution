@@ -1,0 +1,285 @@
+    <!-- define script macros for scripts that are used by both vCalendar 1.0 and iCalendar 2.0 -->
+
+    <macro name="VCALENDAR_INCOMING_SCRIPT"><![CDATA[
+      STRING MATCHES[];
+      STRING CAT,CN,EM;
+      INTEGER i;
+      // Remove UID/RECURRENCE-ID from servers which do not support
+      // the semantic properly (for example, Funambol supports
+      // UID but drops RECURRENCE-ID, causing conflicts).
+      if (SESSIONVAR("stripUID")) {
+          UID = UNASSIGNED;
+          ORIGSTART = UNASSIGNED;
+      }
+      // make sure we have all trailing and leading spaces eliminated
+      DESCRIPTION=NORMALIZED(DESCRIPTION);
+      SUMMARY=NORMALIZED(SUMMARY);
+      // eliminate description that is the same as summary
+      if (DESCRIPTION==SUMMARY) DESCRIPTION=EMPTY;
+      // calendar or todo
+      if (ISEVENT) {
+        // VEVENT
+        // - handle duration cases
+        if (ISDURATION(DURATION)) {
+          if (DTEND==EMPTY) DTEND = DTSTART + DURATION;
+          if (DTSTART==EMPTY) DTSTART = DTEND - DURATION;
+        }
+        // - detect alldays in vCalendar 1.0 (0:00-0:00 or 23:59 localtime)
+        i = ALLDAYCOUNT(DTSTART,DTEND,TRUE);
+        if (ITEMDATATYPE()=="vCalendar10" && i>0) {
+          // DTSTART and DTEND represent allday event, make them date-only values
+          // - convert start to user zone (or floating) so it represents midnight
+          DTSTART = CONVERTTOUSERZONE(DTSTART);
+          MAKEALLDAY(DTSTART,DTEND,i);
+          if (RR_END != EMPTY) {
+             RR_END = DATEONLY(CONVERTTOUSERZONE(RR_END));
+          }
+        }
+        else {
+          // iCalendar 2.0 - only if DTSTART is a date-only value this really is an allday
+          if (ISDATEONLY(DTSTART)) {
+            // reshape to make sure we don't have invalid zero-duration alldays (old OCS 9 servers)
+            MAKEALLDAY(DTSTART,DTEND,i);
+          }
+        }
+
+        // Make sure that all EXDATE times are in the same timezone as the start
+        // time. Some servers send them as UTC, which is all fine and well, but
+        // only if the timezone definition doesn't change. Also, libical does not
+        // handle such UTC EXDATEs, so let's convert it while the UTC and
+        // time zone definition (hopefully) are in sync.
+        if (TIMEZONE(DTSTART) != "UTC" && !ISFLOATING(DTSTART)) {
+          i = 0;
+          timestamp exdate;
+          while (i<SIZE(EXDATES)) {
+            exdate = EXDATES[i];
+            if (!ISDATEONLY(exdate) &&
+                (TIMEZONE(exdate) == "UTC" || ISFLOATING(exdate))) {
+              // "unfloat" floating time stamps: not sure whether that occcurs
+              // in practice, but it looks as wrong as UTC EXDATEs
+              EXDATES[i] = CONVERTTOZONE(exdate,DTSTART,TRUE);
+            }
+            i=i+1;
+          }
+        }
+        // vCalendar1.0 has no VALUE=DATE EXDATEs, so convert back to that if
+        // the event is all-day.
+        if (ITEMDATATYPE()=="vCalendar10" && ISDATEONLY(DTSTART)) {
+          timestamp exdate;
+          i = 0;
+          while (i<SIZE(EXDATES)) {
+            exdate = EXDATES[i];
+            if (!ISDATEONLY(exdate)) {
+              exdate = CONVERTTOUSERZONE(exdate);
+              EXDATES[i] = DATEONLY(exdate);
+            }
+            i=i+1;
+          }  
+        }
+
+        // Transform absolute alarm time back to relative time (mirrors the code in
+        // VCALENDAR_OUTGOING_SCRIPT, see also BMC #11233). This applies to all
+        // events, recurring or not, if the "alarmTimeToUTC" workaround is applied.
+        // With a peer which cannot distinguish between absolute and relative
+        // alarms we better treat all alarms as relative, because that is presented
+        // more nicely to the user on the local side.
+        if (ITEMDATATYPE()=="vCalendar10" &&
+            ALARM_TIME!=EMPTY &&
+            !ISDURATION(ALARM_TIME) &&
+            SESSIONVAR("alarmTimeToUTC")) { 
+            ALARM_TIME = ALARM_TIME - DTSTART;
+        }
+
+        // - shape attendees (and make sure ATTENDEES[] is assigned even for empty email addresses)
+        i=0;
+        while(i<SIZE(ATTENDEES) || i<SIZE(ATTENDEE_CNS)) {
+          PARSEEMAILSPEC(ATTENDEES[i], CN, EM);
+          ATTENDEES[i] = EM; // pure email address
+          // in case we have no specific common name, use the one extracted from the email
+          // This catches the vCalendar 1.0 case and eventually ill-formed iCalendar 2.0 as well
+          if (ATTENDEE_CNS[i]==EMPTY)
+            ATTENDEE_CNS[i]=CN;
+          // default participation status to needs-action
+          if (ATTENDEE_PARTSTATS[i]==EMPTY)
+            ATTENDEE_PARTSTATS[i]=1; // 1=needs action
+          i=i+1;
+        }
+        // - shape organizer
+        PARSEEMAILSPEC(ORGANIZER, CN, EM);
+        ORGANIZER = EM; // pure email address
+        if (ORGANIZER_CN==EMPTY)
+          ORGANIZER_CN=CN;
+      }
+      else {
+        // VTODO
+        // - make sure we have at least a summary
+        if (SUMMARY==EMPTY) SUMMARY=DESCRIPTION; // use description if we don't have a summary
+        if (SUMMARY==EMPTY) SUMMARY="unnamed"; // set dummy summary if we still don't have one
+        // due shaping for non-iCalendar 2.0
+        if (ITEMDATATYPE()=="vCalendar10" && ALLDAYCOUNT(DUE,DUE,TRUE,TRUE)>0) {
+          DUE = CONVERTTOUSERZONE(DUE);
+          DUE = DATEONLY(DUE);
+        }
+        if (ITEMDATATYPE()=="vCalendar10") {
+          $VCALENDAR_10TO20_PRIORITY_CONVERSION;
+        }
+      }
+      // a workaround for funambol: adding 'action' for 'alarm'
+      // if item data type is vCalendar1.0, also add 'action' for 'alarm'.
+      // This is a workaround for Mobical.net, which uses vCalendar1.0.
+      if (ALARM_TIME!=EMPTY && ALARM_ACTION==EMPTY) {
+          ALARM_ACTION = "DISPLAY";
+      }
+    ]]></macro>
+
+
+    <macro name="VCALENDAR_OUTGOING_SCRIPT"><![CDATA[
+      // set UTC time of generation for iCalendar 2.0 DTSTAMP
+      DGENERATED = NOW();
+      // make sure we have all trailing and leading spaces eliminated
+      DESCRIPTION=NORMALIZED(DESCRIPTION);
+      SUMMARY=NORMALIZED(SUMMARY);
+      if (ISEVENT) {
+        // VEVENT
+        // - combine attendee email address and common name into single string for vCalendar 1.0
+        if (ITEMDATATYPE()=="vCalendar10") {
+          i=0;
+          while(i<SIZE(ATTENDEES)) {
+            ATTENDEES[i] = MAKEEMAILSPEC(ATTENDEE_CNS[i], ATTENDEES[i]);
+            i=i+1;
+          }
+          ORGANIZER = MAKEEMAILSPEC(ORGANIZER_CN, ORGANIZER);
+        }
+      }
+      else {
+        // VTODO 
+        // interal representation is iCalendar20
+        if (ITEMDATATYPE()=="vCalendar10") {
+          $VCALENDAR_20TO10_PRIORITY_CONVERSION;
+        }
+      }
+      // make sure we have at least a summary
+      if (SUMMARY==EMPTY) SUMMARY=SUBSTR(DESCRIPTION,0,32); // derive from description
+      if (SUMMARY==EMPTY) SUMMARY="unnamed"; // in case description is empty as well
+      // make sure that we have a DESCRIPTION, because some peers only support that;
+      // can be avoided for peers where we are certain (from CtCaps) that they can
+      // receive the text as part of the summary; don't do this for VJOURNAL
+      if (ISAVAILABLE(SUMMARY)!=TRUE && DESCRIPTION==EMPTY && ISEVENT != 2) DESCRIPTION=SUMMARY;
+      // do NOT send duration (some servers crash when doing so)
+      DURATION = UNASSIGNED;
+      // shape alarm
+      if (ALARM_TIME!=EMPTY) {
+        if (ITEMDATATYPE()=="iCalendar20") {
+          if (ALARM_ACTION==EMPTY) ALARM_ACTION = "AUDIO";
+        }
+        else {
+          if (ALARM_MSG==EMPTY) ALARM_MSG="alarm";
+        }
+      }
+
+      // for 'ALARM_TIME', convert duration time to UTC time
+      // This workaround is for Mobical.net which can't understand duration time.
+      // Also used with phones. The interpretation at least by Nokia
+      // is that the absolute alarm time repeats together with the
+      // event (BMC #11233). VCALENDAR_INCOMING_SCRIPT has the
+      // corresponding transformation back (important for recurring events).
+      if (SESSIONVAR("alarmTimeToUTC") && ITEMDATATYPE()=="vCalendar10"
+            && ALARM_TIME!=EMPTY && ISDURATION(ALARM_TIME)) {
+        TIMESTAMP ts;
+        if (ALARM_REL==2)
+          ts = DTEND; // relative to end
+        else {
+          if (ISEVENT)
+            ts = DTSTART; // relative to start for events
+          else
+            ts = DUE; // relative to due for todos
+        }
+
+        ALARM_TIME = CONVERTTOUSERZONE(POINTINTIME(ts), TRUE) + ALARM_TIME;
+        ALARM_TIME = CONVERTTOZONE(ALARM_TIME, "UTC");
+      }
+    ]]></macro>
+
+    <macro name="FIX_EXDATE_SCRIPT"><![CDATA[
+      // Add time zone information to EXDATEs: necessary for
+      // the Maemo calendar storages because it uses EXDATE
+      // without TZID.
+      if (!ISFLOATING(DTSTART)) {
+        STRING tz;
+        tz = TIMEZONE(DTSTART);
+        if (tz != "UTC") {
+          INTEGER i;
+          i = 0;
+          while (i<SIZE(EXDATES)) {
+            if (ISFLOATING(EXDATES[i])) {
+              SETTIMEZONE(EXDATES[i], tz);
+            }
+            i=i+1;
+          }
+        }
+      }
+    ]]></macro>
+
+    <!-- Uses the UID/RECURRENCE-ID fields as the only criteria for
+         comparing calendar data if the parameter $1 (see GLOBALIDS in <initscript>)
+         is true, else does a normal comparison of the
+         fields. That comparison is based on the datatype definition
+         and ignores UID because it is not trusted to be
+         preserved and/or implemented by peers.
+
+         In case of a UID match, the DMODIFIED fields are compared
+         to determine the older item.
+    -->
+    <macro name="VCALENDAR_COMPARE_SCRIPT"><![CDATA[
+    INTEGER RES;
+    if (COMPARISONMODE() != "age" && SYNCMODESUPPORTED("1122583000")) {
+        if (TARGET.UID == REFERENCE.UID &&
+            TARGET.ORIGSTART == REFERENCE.ORIGSTART) {
+            RES = 0;
+        } else {
+            RES = -999;
+        }
+    } else {
+        RES = COMPAREFIELDS();
+    }
+    return RES;
+    ]]></macro>
+
+    <!-- invoked when reading plain text memo from storage or receiving from peer -->
+    <macro name="MEMO_INCOMING_SCRIPT"><![CDATA[
+    ISEVENT = 2;
+
+    // Copy summary into description. It is not 100% certain whether that is
+    // necessary (the summary might be completely unrelated to the description text),
+    // but this way it is consistent with the way how the EDS backend used to handle
+    // it and symmetric with MEMO_OUTGOING_SCRIPT.
+    if (SUMMARY != EMPTY && DESCRIPTION != EMPTY) {
+        DESCRIPTION = SUMMARY + "\n" + DESCRIPTION;
+    }
+    ]]></macro>
+
+    <!-- invoked before writing plain text memo into storage or sending to peer -->
+    <macro name="MEMO_OUTGOING_SCRIPT"><![CDATA[
+    // remove SUMMARY from start of DESCRIPTION before writing if text matches,
+    // because sending as plain text will concatenate them again
+    integer lensummary, lendescr;
+    lensummary = LENGTH(SUMMARY);
+    lendescr = LENGTH(DESCRIPTION);
+    if (lendescr >= lensummary &&
+        SUBSTR(DESCRIPTION, 0, lensummary) == SUMMARY &&
+        (lensummary == lendescr || SUBSTR(DESCRIPTION, lensummary, 1) == "\n")) {
+        DESCRIPTION = SUBSTR(DESCRIPTION, lensummary + 1, lendescr - lensummary - 1);
+    }
+    ]]></macro>
+
+    <macro name="CALENDAR_BEFOREWRITE_SCRIPT"><![CDATA[
+      if (UID == EMPTY) { UID = newuid(); }
+
+      // set UTC time of generation for iCalendar 2.0 DTSTAMP
+      DGENERATED = NOW();
+      // ensure that there is a DMODIFIED = LAST-MODIFIED property,
+      // not all storages add it
+      if (!DMODIFIED) {
+         DMODIFIED = DGENERATED;
+      }
+    ]]></macro>

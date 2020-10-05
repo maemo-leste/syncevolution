@@ -1,0 +1,141 @@
+    <!-- list of internal fields representing vCard data -->
+    <fieldlist name="contacts">
+      <field name="SYNCLVL" type="integer" compare="never"/>
+      <field name="REV" type="timestamp" compare="never" age="yes"/>
+
+      <!-- If we knew that both sides have reliable UID support, we could use
+       it for pairing. But we don't know that and thus cannot rely on it. -->
+      <field name="UID" type="string" compare="never"/>
+
+      <!-- The group tags used to combine instances of different repeating properties. -->
+      <field name="GROUP_TAG" array="yes" type="string" compare="never"/>
+
+      <!-- Name elements -->
+      <field name="N_LAST" type="string" compare="always"/>
+      <field name="N_FIRST" type="string" compare="always"/>
+      <field name="N_MIDDLE" type="string" compare="always"/>
+      <field name="N_PREFIX" type="string" compare="conflict"/>
+      <field name="N_SUFFIX" type="string" compare="conflict"/>
+      <field name="NICKNAME" type="string" compare="conflict"/>
+      <field name="TITLE" type="string" compare="conflict" merge="fillempty"/>
+
+      <field name="FN" type="string" compare="conflict" merge="fillempty"/>
+      <field name="FILE_AS" type="string" compare="conflict" merge="fillempty"/>
+
+      <field name="GENDER" type="string" compare="conflict" merge="fillempty"/>
+
+      <!-- categories and classification -->
+      <field name="CATEGORIES" array="yes" type="string" compare="conflict"/>
+
+      <!-- organisation -->
+      <field name="ORG_NAME" type="string" compare="slowsync" merge="fillempty"/>
+      <field name="ORG_DIVISION" type="string" compare="conflict" merge="fillempty"/>
+      <field name="ORG_OFFICE" type="string" compare="conflict" merge="fillempty"/>
+      <field name="ORG_TEAM" type="string" compare="conflict" merge="fillempty"/>
+      <field name="ROLE" type="string" compare="conflict" merge="fillempty"/>
+
+      <!-- Birthday and anniversary (not necessarily the same). BDAY is always used,
+           ANNIVERSARY only by some profiles. -->
+      <field name="BDAY" type="date" compare="conflict" merge="fillempty"/>
+      <field name="ANNIVERSARY" type="date" compare="conflict" merge="fillempty"/>
+
+      <!-- Generic storage for special dates, including anniversary. Mapped to X-ABDATE + X-ABLabel. -->
+      <!-- Beware, don't use "DATE", it conflicts with builtin function name. -->
+      <field name="XDATE" array="yes" type="date" compare="conflict"/>
+
+      <!-- telephone numbers -->
+      <field name="TEL"         array="yes" type="telephone" compare="conflict"/>
+      <field name="TEL_FLAGS"   array="yes" type="integer"   compare="conflict"/>
+      <field name="TEL_SLOT"    array="yes" type="integer"   compare="never"/>
+
+      <!-- emails -->
+      <field name="EMAIL"       array="yes" type="multiline" compare="conflict"/>
+      <field name="EMAIL_FLAGS" array="yes" type="integer"   compare="conflict"/>
+      <field name="EMAIL_SLOT"  array="yes" type="integer"   compare="never"/>
+
+      <!-- web addresses -->
+      <field name="WEB"         array="yes" type="string" compare="conflict"/>
+      <field name="WEB_FLAGS"   array="yes" type="integer"   compare="conflict"/>
+
+      <!-- would be nicer to have as part of WEB, but parser/encoder does not support mapping
+           with more than one property per field -->
+      <field name="CALURI"      array="yes" type="string" compare="conflict"/>
+      <field name="FBURL"       array="yes" type="string" compare="conflict"/>
+      <field name="BLOGURL"     array="yes" type="string" compare="conflict"/>
+      <field name="VIDEOURL"    array="yes" type="string" compare="conflict"/>
+
+      <!-- generic replacement for MANAGER/ASSISTANT/SPOUSE -->
+      <field name="RELATEDNAMES" array="yes" type="string" compare="conflict"/>
+
+      <!-- related persons: should be turned into array, like WEB and CALURI/FBURL -->
+      <field name="MANAGER"    type="string" compare="conflict"/>
+      <field name="ASSISTANT"  type="string" compare="conflict"/>
+      <field name="SPOUSE"     type="string" compare="conflict"/>
+
+      <!-- does this person want HTML mails? Valid values are TRUE/FALSE; a "boolean"
+           type would be useful, maybe add that later. -->
+      <field name="WANTS_HTML"  type="string" compare="conflict"/>
+
+      <!-- RFC 4770 chat handles, used internally *instead* of the individual handles below. -->
+      <field name="IMPP" array="yes" type="string" compare="conflict"/> <!-- includes protocol: xmpp:google%20talk -->
+      <field name="IMPP_SERVICE" array="yes" type="string" compare="conflict"/> <!-- GoogleTalk -->
+      <field name="IMPP_SLOT" array="yes" type="string" compare="conflict"/> <!-- Evolution UI slot -->
+
+      <!-- Individual chat handles: used as temporary storage when exchanging data via legacy profiles. -->
+      <field name="AIM_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="AIM_SLOT"          array="yes" type="string" compare="conflict"/>
+      <field name="GADUGADU_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="GADUGADU_SLOT"          array="yes" type="string" compare="conflict"/>
+      <field name="GROUPWISE_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="GROUPWISE_SLOT"          array="yes" type="string" compare="conflict"/>
+      <field name="ICQ_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="ICQ_SLOT"          array="yes" type="string" compare="conflict"/>
+      <field name="JABBER_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="JABBER_SLOT"          array="yes" type="string" compare="conflict"/>
+      <field name="MSN_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="MSN_SLOT"          array="yes" type="string" compare="conflict"/>
+      <field name="YAHOO_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="YAHOO_SLOT"          array="yes" type="string" compare="conflict"/>
+      <field name="SKYPE_HANDLE"      array="yes" type="string" compare="conflict"/>
+      <field name="SKYPE_SLOT"        array="yes" type="string" compare="conflict"/>
+      <field name="SIP_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="SIP_SLOT"          array="yes" type="string" compare="conflict"/>
+      <field name="IM_ADDRESS"        array="yes" type="string" compare="conflict"/>
+      <field name="MEANWHILE_HANDLE"  array="yes" type="string" compare="conflict"/>
+      <field name="IRC_HANDLE"        array="yes" type="string" compare="conflict"/>
+      <field name="SMS_HANDLE"        array="yes" type="string" compare="conflict"/>
+
+      <!-- home address -->
+      <field name="ADR_STREET"        array="yes" type="multiline" compare="conflict"/>
+      <field name="ADR_ADDTL"         array="yes" type="multiline" compare="conflict"/>
+      <field name="ADR_STREET_FLAGS"  array="yes" type="integer"   compare="conflict"/>
+      <field name="ADR_POBOX"         array="yes" type="multiline" compare="conflict"/>
+      <field name="ADR_CITY"          array="yes" type="multiline" compare="conflict"/>
+      <field name="ADR_REG"           array="yes" type="multiline" compare="conflict"/>
+      <field name="ADR_ZIP"           array="yes" type="multiline" compare="conflict"/>
+      <field name="ADR_COUNTRY"       array="yes" type="multiline" compare="conflict"/>
+
+      <!-- Note -->
+      <field name="NOTE" type="multiline" compare="conflict" merge="lines"/>
+
+      <!-- Photo -->
+      <field name="PHOTO" type="string" compare="conflict" merge="fillempty"/>
+      <field name="PHOTO_TYPE" type="string" compare="never" merge="fillempty"/>
+      <field name="PHOTO_VALUE" type="string" compare="never" merge="fillempty"/>
+
+      <!-- Location -->
+      <field name="GEO_LAT" type="string" compare="conflict"/>
+      <field name="GEO_LONG" type="string" compare="conflict"/>
+
+      <!-- Crypto fields for KAddressbook -->
+      <field name="CRYPTOENCRYPTPREF" type="string" compare="conflict"/>
+      <field name="CRYPTOPROTOPREF" array="yes" type="string" compare="conflict"/>
+      <field name="CRYPTOSIGNPREF" type="string" compare="conflict"/>
+      <field name="OPENPGPFP" type="string" compare="conflict"/>
+
+      <!-- Custom labels. Mapped to either X-ABProperty via group tag (WebDAV) or X-ABLabel parameter (internal). -->
+      <field name="LABEL" array="yes" type="string" compare="conflict"/>
+
+      <!-- store extensions that don't match any of the other fields -->
+      <field name="XPROPS" array="yes" type="string" compare="never"/>
+    </fieldlist>

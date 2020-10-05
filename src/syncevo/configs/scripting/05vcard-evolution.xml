@@ -1,0 +1,121 @@
+   <macro name="VCARD_BEFOREWRITE_SCRIPT_EVOLUTION"><![CDATA[
+     // a wordaround for cellphone in evolution. for incoming contacts, if there is only one CELL,
+     // strip the HOME or WORK flag from it. Evolution then should show it. */
+     INTEGER i, wanted, cell_phones;
+     i = 0;
+     cell_phones = 0;
+     while(i < SIZE(TEL_FLAGS)) {
+       // 0x10 is the flag of 'cell' type of telephone
+       if(TEL_FLAGS[i] & 0x10) {
+         cell_phones = cell_phones + 1;
+         wanted = i;
+       }
+       i = i + 1;
+     }
+     if(cell_phones == 1) {
+       TEL_FLAGS[wanted] = 0x10;
+     }
+
+     // Google sends TYPE=WORK and TYPE=HOME when it means
+     // normal VOICE phone numbers. Add that flag when
+     // importing into Evolution, because Evolution does not
+     // display the numbers without VOICE.
+     i = 0;
+     while(i < SIZE(TEL_FLAGS)) {
+       if(TEL_FLAGS[i] == 1 || TEL_FLAGS[i] == 2) {
+         TEL_FLAGS[i] = TEL_FLAGS[i] | 8;
+       }
+       i = i + 1;
+     }
+
+     if (N_LAST == EMPTY && N_FIRST == EMPTY && N_MIDDLE == EMPTY) {
+         // split full name (FN) into first/middle/last components (N)
+         // when those are empty, because Evolution and MeeGo UX depend on them
+         integer i;
+         // split at spaces
+         string words[];
+         integer numwords;
+         string name;
+         integer start;
+         integer space;
+         integer namelen;
+         name = NORMALIZED(FN);
+         namelen = SIZE(name);
+         start = 0;
+         numwords = 0;
+         while (TRUE) {
+            space = FIND(name, " ", start);
+            if (space) {
+               words[numwords] = SUBSTR(name, start, space - start);
+               numwords = numwords + 1;
+               start = space + 1;
+               name;
+               while (SUBSTR(name, start, 1) == " ") {
+                   start = start + 1;
+               }
+            } else {
+               if (start < namelen) {
+                  words[numwords] = SUBSTR(name, start);
+                  numwords = numwords + 1;
+               }
+               break;
+            }
+         }
+
+         if (numwords == 0) {
+             // use email address, phone number, etc. as fallback
+             N_FIRST = EMAIL[0];
+             if (N_FIRST == EMPTY) {
+                N_FIRST = TEL[0];
+             }
+         } else if (numwords == 1) {
+             N_FIRST = words[0];
+         } else {
+             // start and end index of middle name(s), both inclusive
+             integer startmiddle;
+             integer endmiddle;
+             name = words[0];
+             namelen = SIZE(name);
+             // last name given first as in "Doe, John"?
+             if (SUBSTR(name, namelen - 1, 1) == ",") {
+                 N_LAST = SUBSTR(name, 0, namelen - 1);
+                 N_FIRST = words[1];
+                 startmiddle = 2;
+                 endmiddle = numwords - 1;
+             } else {
+                 N_FIRST = name;
+                 startmiddle = 1;
+                 endmiddle = numwords - 2;
+                 N_LAST = words[numwords - 1];
+             }
+
+             if (endmiddle >= startmiddle) {
+                 N_MIDDLE = words[startmiddle];
+                 startmiddle = startmiddle + 1;
+                 while (endmiddle >= startmiddle) {
+                    N_MIDDLE = N_MIDDLE + " " + words[startmiddle];
+                    startmiddle = startmiddle + 1;
+                 }
+             }
+         }
+     }
+
+     // Ensure that FILE-AS is set. Some EDS versions will set it,
+     // so we need to do the same to ensure that incoming items
+     // match DB items during a slow sync.
+     if (FILE_AS == EMPTY) {
+        FILE_AS = N_LAST;
+        if (N_FIRST != EMPTY) {
+           if (FILE_AS != EMPTY) {
+              FILE_AS = FILE_AS + ", ";
+           }
+           FILE_AS = FILE_AS + N_FIRST;
+        }
+     }
+
+     $VCARD_OUTGOING_PHOTO_VALUE_SCRIPT;
+   ]]></macro>
+
+   <macro name="VCARD_AFTERREAD_SCRIPT_EVOLUTION"><![CDATA[
+     $VCARD_INCOMING_PHOTO_VALUE_SCRIPT;
+   ]]></macro>

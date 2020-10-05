@@ -1,0 +1,64 @@
+    <!-- vCalendar 1.0 datatype, using vCalendar profile defined above -->
+    <datatype name="vCalendar10" basetype="vcalendar">
+      <version>1.0</version>
+      <use mimeprofile="vCalendar"/>
+
+      <incomingscript><![CDATA[
+        $VCALENDAR_INCOMING_SCRIPT
+      ]]></incomingscript>
+
+      <outgoingscript><![CDATA[
+        $VCALENDAR_OUTGOING_SCRIPT
+      ]]></outgoingscript>
+
+      <comparescript><![CDATA[
+        $VCALENDAR_COMPARE_SCRIPT
+      ]]></comparescript>
+    </datatype>
+
+
+    <!-- iCalendar 2.0 datatype, using vCalendar profile defined above -->
+    <datatype name="iCalendar20" basetype="vcalendar">
+      <version>2.0</version>
+      <use mimeprofile="vCalendar"/>
+
+      <incomingscript><![CDATA[
+        $VCALENDAR_INCOMING_SCRIPT
+      ]]></incomingscript>
+
+      <outgoingscript><![CDATA[
+        $VCALENDAR_OUTGOING_SCRIPT
+      ]]></outgoingscript>
+
+      <comparescript><![CDATA[
+        $VCALENDAR_COMPARE_SCRIPT
+      ]]></comparescript>
+    </datatype>
+
+    <datatype name="journaltext10" basetype="text">
+      <use profile="JournalText"/>
+      <typestring>text/plain</typestring>
+      <versionstring>1.0</versionstring>
+
+      <incomingscript><![CDATA[
+        $MEMO_INCOMING_SCRIPT
+      ]]></incomingscript>
+
+      <outgoingscript><![CDATA[
+        $MEMO_OUTGOING_SCRIPT
+      ]]></outgoingscript>
+    </datatype>
+
+    <datatype name="journaltext11" basetype="text">
+      <use profile="JournalText"/>
+      <typestring>text/plain</typestring>
+      <versionstring>1.1</versionstring>
+
+      <incomingscript><![CDATA[
+        $MEMO_INCOMING_SCRIPT
+      ]]></incomingscript>
+
+      <outgoingscript><![CDATA[
+        $MEMO_OUTGOING_SCRIPT
+      ]]></outgoingscript>
+    </datatype>

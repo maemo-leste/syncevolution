@@ -1,0 +1,92 @@
+dnl -*- mode: Autoconf; -*-
+dnl Invoke autogen.sh to produce a configure script.
+
+anymissing="
+Please install the development packages of Evolution and/or
+set the PKG_CONFIG_PATH variable so that it points towards
+the .pc files of libedataserver, libecal and libebook (the
+latter two are optional).
+
+You can check that these packages are available by running
+pkg-config --list-all."
+
+evomissing="No compatible evolution-data-server was found.
+$anymissing"
+
+dnl check for Evolution packages
+PKG_CHECK_MODULES(EPACKAGE, libedataserver-1.2, EDSFOUND=yes, [EDSFOUND=no])
+PKG_CHECK_MODULES(ECAL, libecal-1.2, ECALFOUND=yes, [ECALFOUND=no])
+PKG_CHECK_MODULES(EBOOK, libebook-1.2, EBOOKFOUND=yes, [EBOOKFOUND=no])
+
+PKG_CHECK_MODULES(EBOOK_VERSION, [libebook-1.2 >= 3.3],
+                  [AC_DEFINE(HAVE_E_CONTACT_INLINE_LOCAL_PHOTOS, 1, [have e_contact_inline_local_photos()])],
+                  [true])
+
+SE_ARG_ENABLE_BACKEND(ebook, evolution,
+                      [AS_HELP_STRING([--disable-ebook],
+                                      [disable access to Evolution addressbooks (must be used to compile without it)])],
+                      [enable_ebook="$enableval"],
+                      [test "$EBOOKFOUND" = "yes" && enable_ebook="yes" ||
+                       AC_MSG_ERROR([libebook not found. Use --disable-ebook to compile without or install the necessary development files.])]
+                     )
+SE_ARG_ENABLE_BACKEND(ecal, evolution,
+                      [AS_HELP_STRING([--disable-ecal],
+                                      [disable access to Evolution calendars and tasks (must be used to compile without it)])],
+                      [enable_ecal="$enableval"],
+                      [test "$ECALFOUND" = "yes" && enable_ecal="yes" ||
+                       AC_MSG_ERROR([libecal not found. Use --disable-ecal to compile without or install the necessary development files.])]
+                     )
+
+enable_evo="no"
+if test "$enable_ebook" = "yes"; then
+        test "x${EBOOKFOUND}" = "xyes" || AC_MSG_ERROR([--enable-ebook requires pkg-config information for libebook, which was not found])
+        AC_DEFINE(ENABLE_EBOOK, 1, [libebook available])
+        enable_evo="yes"
+else
+        EBOOK_CFLAGS=
+        EBOOK_LIBS=
+fi
+
+AM_CONDITIONAL([ENABLE_ECAL], [test "$enable_ecal" = "yes"])
+if test "$enable_ecal" = "yes"; then
+        need_ical="yes"
+        test "x${ECALFOUND}" = "xyes" || AC_MSG_ERROR([--enable-ecal requires pkg-config information for libecal, which was not found"])
+        AC_DEFINE(ENABLE_ECAL, 1, [libecal available])
+        enable_evo="yes"
+else
+        ECAL_CFLAGS=
+        ECAL_LIBS=
+fi
+
+if test "$enable_evo" = "yes"; then
+        need_glib="yes"
+        if test "$EDSFOUND" = "yes"; then
+                AC_DEFINE(HAVE_EDS, 1, [evolution-dataserver available])
+        else
+                AC_MSG_ERROR($evomissing)
+        fi
+        # Only the EClient code supports the API in EDS 3.5.x.
+        PKG_CHECK_MODULES(EDS_VERSION, [libedataserver-1.2 >= 3.5],
+                          [AC_DEFINE(USE_EDS_CLIENT, 1, [use e_book/cal_client_* calls])
+                           # Was used for a while (ESourceBackendSummarySetup), but not anymore.
+                           # Don't depend on it, it wasn't in 3.6 yet.
+                           # PKG_CHECK_MODULES(EBOOKCONTACTS, libebook-contacts-1.2)
+                           AC_CHECK_LIB(ebook-1.2, e_book_client_new_direct,
+                                        [AC_DEFINE(HAVE_E_BOOK_CLIENT_NEW_DIRECT, 1, [use e_book_client_new_direct])],
+                                        [true],
+                                        [$EDS_VERSION_LIBS])
+                           AC_CHECK_LIB(ebook-1.2, e_book_client_connect_direct_sync,
+                                        [AC_DEFINE(HAVE_E_BOOK_CLIENT_CONNECT_DIRECT_SYNC, 1, [use e_book_client_connect_direct_sync])],
+                                        [true],
+                                        [$EDS_VERSION_LIBS])
+                          ],
+        [CFLAGS_old="$CFLAGS"
+        CFLAGS="$CFLAGS $EPACKAGE_CFLAGS"
+        AC_CHECK_HEADERS(libedataserver/eds-version.h)
+        CFLAGS="$CFLAGS_old"])
+else
+        EPACKAGE_CFLAGS=
+        EPACKAGE_LIBS=
+fi
+
+BACKEND_CPPFLAGS="$BACKEND_CPPFLAGS $EPACKAGE_CFLAGS $ECAL_CFLAGS $EBOOK_CFLAGS $EBOOKCONTACTS_CFLAGS"

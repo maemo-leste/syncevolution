@@ -1,0 +1,2 @@
+This is the C wrapper for the SyncEvolution DBus API. It is used by the GTK ui.
+

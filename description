@@ -1,0 +1,8 @@
+
+SyncEvolution synchronizes personal information management (PIM) data
+via various protocols (SyncML, CalDAV/CardDAV, ActiveSync). It syncs
+contacts, appointments, tasks and memos. It syncs to web services or
+to SyncML-capable phones via Bluetooth.
+
+Binaries are available for Linux desktops (using GNOME Evolution, or
+KDE's Akonadi), for MeeGo and for Maemo 5 (Nokia N900).

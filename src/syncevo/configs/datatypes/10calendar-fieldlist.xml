@@ -1,0 +1,86 @@
+    <!-- common field list for events and todos (both represented by vCalendar/iCalendar) -->
+    <fieldlist name="calendar">
+      <field name="SYNCLVL" type="integer" compare="never"/>
+      <field name="ISEVENT" type="integer" compare="always"/>
+
+      <field name="DMODIFIED" type="timestamp" compare="never" age="yes"/>
+      <field name="DCREATED" type="timestamp" compare="never"/>
+
+      <field name="DGENERATED" type="timestamp" compare="never"/>
+
+      <field name="UID" type="string" compare="never"/>
+
+      <field name="CATEGORIES" array="yes" type="string" compare="conflict" merge="fillempty"/>
+      <field name="CLASS" type="integer" compare="conflict" merge="fillempty"/>
+      <field name="TRANSP" type="integer" compare="conflict" merge="fillempty"/>
+
+      <field name="SUMMARY" type="multiline" compare="always"/>
+      <field name="DESCRIPTION" type="multiline" compare="slowsync" merge="lines"/>
+      <field name="LOCATION" type="multiline" compare="slowsync" merge="lines"/>
+      <field name="URL" type="url" compare="conflict" merge="fillempty"/>
+
+      <!-- recurrence rule block, fields must be in that order, including
+           DTSTART as last field !! -->
+      <field name="RR_FREQ" type="string" compare="conflict"/>
+      <field name="RR_INTERVAL" type="integer" compare="conflict"/>
+      <field name="RR_FMASK" type="integer" compare="conflict"/>
+      <field name="RR_LMASK" type="integer" compare="conflict"/>
+      <field name="RR_END" type="timestamp" compare="conflict"/>
+
+      <!-- Note: DTSTART/DTEND are compared in the <comparescript>,
+                 therefore compare is set no "never" here -->
+      <field name="DTSTART" type="timestamp" compare="never"/>
+      <field name="DTEND" type="timestamp" compare="never"/>
+      <field name="DURATION" type="timestamp" compare="never"/>
+      <field name="COMPLETED" type="timestamp" compare="never"/>
+      <field name="DUE" type="timestamp" compare="never"/>
+
+      <field name="GEO_LAT" type="string" compare="never"/>
+      <field name="GEO_LONG" type="string" compare="never"/>
+
+      <field name="PRIORITY" type="integer" compare="conflict"/>
+      <field name="STATUS" type="integer" compare="conflict" merge="fillempty"/>
+      <field name="PERCENT_COMPLETE" type="integer" compare="conflict"/>
+
+      <field name="ALARM_TIME" type="timestamp" compare="conflict"/>
+      <field name="ALARM_SNOOZE" type="string" compare="conflict"/>
+      <field name="ALARM_REPEAT" type="string" compare="conflict"/>
+      <field name="ALARM_MSG" type="string" compare="conflict"/>
+      <field name="ALARM_ACTION" type="string" compare="conflict"/>
+      <field name="ALARM_REL" type="integer" compare="never"/>
+      <field name="ALARM_UID" type="string" compare="never" merge="fillempty"/>
+
+      <!-- non-standard -->
+      <field name="PARENT_UID" type="string" compare="never"/>
+
+      <!-- for events -->
+      <field name="EXDATES" array="yes" type="timestamp" compare="never"/>
+
+      <!-- EXDATEs for detached recurrences: meant to be used for the
+           RECURRENCE-IDs of all detached recurrences.
+
+           Can be ignored when dealing with only iCalendar 2.0 aware
+           peers, because these EXDATEs are implied for detached
+           recurrences and don't have to be specified explicitly. Can
+           be used to create additional EXDATEs for non-iCalendar 2.0
+           peers. For that, EXDATES_DETACHED must be populated by the
+           backend creating the parent event, because the engine
+           itself doesn't have the necessary
+           information. X-SYNCEVOLUTION-EXDATE-DETACHED can be used
+           for that in serialized calendar events. -->
+      <field name="EXDATES_DETACHED" array="yes" type="timestamp" compare="never"/>
+
+      <field name="ORIGSTART" array="no" type="timestamp" compare="never"/>
+      <field name="SEQNO" array="no" type="integer" compare="never"/>
+
+      <field name="ATTENDEES" array="yes" type="string" compare="never"/>
+      <field name="ATTENDEE_CNS" array="yes" type="string" compare="never"/>
+      <field name="ATTENDEE_PARTSTATS" array="yes" type="integer" compare="never"/>
+      <field name="ATTENDEE_ROLE" array="yes" type="integer" compare="never"/>
+      <field name="ATTENDEE_RSVP" array="yes" type="integer" compare="never"/>
+      <field name="ATTENDEE_LANG" array="yes" type="string" compare="never"/>
+      <field name="ATTENDEE_CUTYPE" array="yes" type="integer" compare="never"/>
+      <field name="ORGANIZER" array="no" type="string" compare="never"/>
+      <field name="ORGANIZER_CN" array="no" type="string" compare="never"/>
+
+    </fieldlist>

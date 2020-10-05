@@ -1,0 +1,5 @@
+2009-02-27  Patrick Ohly <patrick.ohly@intel.com>
+
+	* SyncEvolution moved from Subversion to Git. If you are reading
+	this then you should use `git log` to read the changes from the
+	commit messages.

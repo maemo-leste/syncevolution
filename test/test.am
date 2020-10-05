@@ -1,0 +1,170 @@
+dist_noinst_DATA += \
+  test/abort-redirect.cpp \
+  test/ClientTest.h \
+  test/ClientTestAssert.h \
+  test/ClientTest.cpp \
+  test/client-test-main.cpp \
+  test/test.h \
+  test/test.cpp
+
+dist_noinst_SCRIPTS += \
+  test/Algorithm/Diff.pm \
+  test/syncevo-http-server.py \
+  test/syncevo-phone-config.py \
+  test/synccompare.pl \
+  test/log2html.py \
+  test/run_src_client_test.sh
+
+test_testcases = \
+  test/testcases/eds_event.ics \
+  test/testcases/eds_event.ics.local \
+  test/testcases/eds_task.ics \
+  test/testcases/vcal10.ics \
+  test/testcases/carddav.vcf \
+  test/testcases/eds_contact.vcf \
+  test/testcases/eds_memo.ics \
+  test/testcases/google_event.ics \
+  test/testcases/yahoo_contact.vcf \
+  test/testcases/lcs/file1.txt \
+  test/testcases/lcs/file2.txt \
+  test/testcases/local.png \
+  test/testcases/templates/clients/phone/nokia/S40/7210c.ini \
+  test/testcases/templates/clients/SyncEvolution.ini \
+  test/testcases/synctests/apple/eds_contact/testUpload/local-synced \
+  test/testcases/synctests/apple/eds_contact/testUpload/local \
+  test/testcases/synctests/apple/eds_contact/testUpload/modify-remote \
+  test/testcases/synctests/apple/eds_contact/testUpload/remote \
+  test/testcases/synctests/apple/eds_contact/testDownload/modify-local \
+  test/testcases/synctests/apple/eds_contact/testDownload/local \
+  test/testcases/synctests/apple/eds_contact/testDownload/remote \
+  test/testcases/synctests/apple/eds_contact/testDownload/remote-synced \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpload/local-synced \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpload/local \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpload/modify-remote \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpload/remote \
+  test/testcases/synctests/googlecontacts/eds_contact/testDownload/modify-local \
+  test/testcases/synctests/googlecontacts/eds_contact/testDownload/local \
+  test/testcases/synctests/googlecontacts/eds_contact/testDownload/remote \
+  test/testcases/synctests/googlecontacts/eds_contact/testDownload/remote-synced \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateRemoteWins/modify-local \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateRemoteWins/local-synced \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateRemoteWins/local \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateRemoteWins/modify-remote \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateRemoteWins/remote-synced \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateLocalWins/modify-local \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateLocalWins/local-synced \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateLocalWins/local \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateLocalWins/modify-remote \
+  test/testcases/synctests/googlecontacts/eds_contact/testUpdateLocalWins/remote-synced \
+  $(NOP)
+
+dist_noinst_DATA += \
+  $(test_testcases) \
+  test/COPYING \
+  test/Algorithm/Artistic \
+  test/Algorithm/COPYING \
+  test/Algorithm/README \
+  test/syncevo-http-server-logging.conf \
+  $(wildcard test/testcases/*.patch)
+
+# generic D-Bus client/server tests
+if COND_DBUS
+noinst_PROGRAMS += test/dbus-client-server
+test_dbus_client_server_SOURCES = test/dbus-client-server.cpp
+test_dbus_client_server_CPPFLAGS = -I$(gdbus_dir) -I$(top_srcdir)/src
+test_dbus_client_server_CXXFLAGS = $(CPPUNIT_CFLAGS) $(SYNCEVOLUTION_CXXFLAGS) $(SYNCEVO_WFLAGS) $(BACKEND_CPPFLAGS) $(DBUS_CFLAGS) $(GLIB_CFLAGS) $(GOBJECT_CFLAGS) $(PCRECPP_CFLAGS)
+test_dbus_client_server_LDFLAGS = $(CPPUNIT_LIBS)
+test_dbus_client_server_LDADD = $(gdbus_build_dir)/libgdbussyncevo.la src/syncevo/libsyncevolution.la $(DBUS_LIBS) $(GLIB_LIBS) $(GOBJECT_LIBS) $(PCRECPP_LIBS)  $(EXTRACORELDADD)
+test_dbus_client_server_DEPENDENCIES = $(gdbus_build_dir)/libgdbussyncevo.la src/syncevo/libsyncevolution.la
+
+if ENABLE_UNIT_TESTS
+test_dbus_client_server_SOURCES += test/test.cpp
+endif
+
+endif
+
+if ENABLE_TESTING
+test_SCRIPTS += \
+	test/__init__.py \
+	test/test-dbus.py \
+	test/testdbus.py \
+	$(NOP)
+
+# Install symbolic links, to ensure that testing in the testdir
+# uses the right SyncEvolution without depending on the PATH.
+# client-test should have been installed in testdir already as
+# normal executable, see src.am.
+all_install_exec_hooks += install-test-files
+install-test-files:
+	mkdir -p $(DESTDIR)/$(testdir)
+	ln -f -s $(bindir)/syncevolution $(DESTDIR)/$(testdir)
+	ln -f -s $(bindir)/synccompare $(DESTDIR)/$(testdir)
+	ln -f -s $(libexecdir)/syncevo-dbus-server $(DESTDIR)/$(testdir)
+	ln -f -s $(bindir)/synclog2html $(DESTDIR)/$(testdir)
+	ln -f -s $(bindir)/syncevo-webdav-lookup $(DESTDIR)/$(testdir)
+	cp config.h $(top_srcdir)/src/syncevo/SyncConfig.h src/ClientTest.cpp.html $(DESTDIR)/$(testdir) # needed by test-dbus.py
+
+all_uninstall_hooks += uninstall-test-files
+uninstall-test-files:
+	rm -f $(DESTDIR)/$(testdir)/syncevolution \
+		$(DESTDIR)/$(testdir)/synccompare \
+		$(DESTDIR)/$(testdir)/syncevo-dbus-server \
+		$(DESTDIR)/$(testdir)/synclog2html \
+		$(DESTDIR)/$(testdir)/syncevo-webdav-lookup \
+		$(DESTDIR)/$(testdir)/SyncConfig.h \
+		$(DESTDIR)/$(testdir)/ClientTests.cpp.html \
+		$(DESTDIR)/$(testdir)/config.h \
+		$(NOP)
+
+test_DATA += \
+	test/Makefile \
+	$(NOP)
+
+nobase_testparent_DATA += \
+	$(test_testcases) \
+	test/test-dbus/templates/templates/clients/phone/nokia/S40/7210c.ini \
+	test/test-dbus/templates/templates/clients/SyncEvolution.ini \
+	test/test-dbus/auto-sync/config/syncevolution/.internal.ini \
+	test/test-dbus/auto-sync/config/syncevolution/default/.internal.ini \
+	test/test-dbus/auto-sync/config/syncevolution/default/config.ini \
+	test/test-dbus/auto-sync/config/syncevolution/default/peers/scheduleworld/.internal.ini \
+	test/test-dbus/auto-sync/config/syncevolution/default/peers/scheduleworld/config.ini \
+	test/test-dbus/auto-sync/config/syncevolution/config.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/todo.after.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/todo.current/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/addressbook.before.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/calendar.before.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/todo.current.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/memo.current.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/memo.after/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/memo.after/2 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/status.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/memo.before/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/todo.after/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/addressbook.current/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/calendar.after.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/calendar.after/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/calendar.after/3 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/calendar.after/2 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/memo.after.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/memo.before.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/addressbook.current.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/addressbook.after/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/memo.current/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/memo.current/2 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/addressbook.after.ini \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/calendar.before/1 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/calendar.before/3 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/calendar.before/2 \
+	test/test-dbus/restore/cache/syncevolution/dummy_+test-2009-12-21-13-19/todo.before.ini \
+	test/test-dbus/reports/cache/syncevolution/dummy_+test-2009-11-18-12-57/status.ini \
+	test/test-dbus/reports/cache/syncevolution/dummy-2009-11-18-13-00/status.ini \
+	test/test-dbus/reports/cache/syncevolution/dummy_+test-2009-11-18-12-55/status.ini \
+	test/test-dbus/reports/cache/syncevolution/dummy_+test-2009-11-18-13-01/status.ini \
+	test/test-dbus/reports/cache/syncevolution/dummy_+test-2009-11-18-12-59/status.ini \
+	test/test-dbus/reports/cache/syncevolution/dummy_+test-2009-11-18-12-58/status.ini \
+	test/test-dbus/reports/cache/syncevolution/dummy_+test@context-2010-01-20-10-10/status.ini \
+	test/test-dbus/reports/cache/syncevolution/dummy__test-2009-11-18-12-56/status.ini \
+	$(NOP)
+
+endif # ENABLE_TESTING

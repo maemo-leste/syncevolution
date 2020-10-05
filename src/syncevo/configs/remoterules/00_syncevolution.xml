@@ -1,0 +1,34 @@
+    <remoterule name="SyncEvolution">
+      <manufacturer>Patrick Ohly</manufacturer>
+      <model>SyncEvolution</model>
+
+      <!-- enable reordering when talking to ourselves, enables asynchronous and batched execution -->
+      <strictexecordering>no</strictexecordering>
+
+      <!-- No need to send empty properties, we don't need them to indicate when
+       something isn't present because we use CtCap for that. -->
+      <noemptyproperties>yes</noemptyproperties>
+
+      <include rule="HAVE-SYNCEVOLUTION-EXDATE-DETACHED"/>
+      <include rule="HAVE-EVOLUTION-UI-SLOT"/>
+      <include rule="HAVE-ABLABEL-PARAMETER"/>
+
+      <!-- Merging between SyncEvolution instances is expected to work
+           well, so allow the engine to update items on both
+           sides also in the "non-first" slow sync case.
+
+           This is turned off by default for other clients
+           because small changes would propagate to other
+           clients of the server. Hopefully with SyncEvolution as
+           client we'll have not much such changes. -->
+      <updateclientinslowsync>yes</updateclientinslowsync>
+      <updateserverinslowsync>yes</updateserverinslowsync>
+
+      <!--
+          unconditionally disable the standard-compliant "skip map phase"
+          behavior in favor of letting the client choose to restart the
+          sync session if it has more changes
+      -->
+      <completefromclientonly>yes</completefromclientonly>
+    </remoterule>
+

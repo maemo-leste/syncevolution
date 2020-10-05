@@ -13,6 +13,7 @@ Build-Depends: debhelper (>= 11), libedataserver1.2-dev,
  python-docutils, libical-dev, libneon27-gnutls-dev, libpcre3-dev,
  libcppunit-dev, kdepimlibs5-dev, kdelibs5-dev,
  libjson-c-dev,
+ calendar-backend-dev,
  g++ (>= 4:7)
 Standards-Version: 4.1.3
 Homepage: http://www.syncevolution.org

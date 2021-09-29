@@ -12,7 +12,7 @@ SE_BEGIN_CXX
 // TODO: use EDS backend icalstrdup.c
 #define ical_strdup(_x) (_x)
 
-typedef boost::shared_ptr<TransportStatusException> BatchReadFailure;
+typedef std::shared_ptr<TransportStatusException> BatchReadFailure;
 
 class CardDAVCache : public std::map< std::string, boost::variant<std::string, BatchReadFailure> >
 {
@@ -20,7 +20,7 @@ class CardDAVCache : public std::map< std::string, boost::variant<std::string, B
 
 
 CardDAVSource::CardDAVSource(const SyncSourceParams &params,
-                             const boost::shared_ptr<Neon::Settings> &settings) :
+                             const std::shared_ptr<Neon::Settings> &settings) :
     WebDAVSource(params, settings),
     m_readAheadOrder(READ_NONE),
     m_cacheMisses(0),
@@ -53,7 +53,7 @@ std::string CardDAVSource::getDescription(const string &luid)
 void CardDAVSource::readItemInternal(const std::string &luid, std::string &item, bool raw)
 {
     if (m_cardDAVCache) {
-        CardDAVCache::const_iterator it = m_cardDAVCache->find(luid);
+        auto it = m_cardDAVCache->find(luid);
         if (it != m_cardDAVCache->end()) {
             const std::string *data = boost::get<const std::string>(&it->second);
             if (data) {
@@ -100,7 +100,7 @@ static size_t MaxBatchSize()
     return maxBatchSize;
 }
 
-boost::shared_ptr<CardDAVCache> CardDAVSource::readBatch(const std::string &luid)
+std::shared_ptr<CardDAVCache> CardDAVSource::readBatch(const std::string &luid)
 {
     static size_t maxBatchSize = MaxBatchSize();
     BatchLUIDs luids;
@@ -113,7 +113,7 @@ boost::shared_ptr<CardDAVCache> CardDAVSource::readBatch(const std::string &luid
         const Items_t &items = getAllItems();
         const Items_t &newItems = getNewItems();
         const Items_t &updatedItems = getUpdatedItems();
-        Items_t::const_iterator it = items.find(luid);
+        auto it = items.find(luid);
 
         // Always read the requested item, even if not found in item list.
         luids.push_back(&luid);
@@ -167,7 +167,7 @@ boost::shared_ptr<CardDAVCache> CardDAVSource::readBatch(const std::string &luid
         break;
     }
 
-    boost::shared_ptr<CardDAVCache> cache;
+    std::shared_ptr<CardDAVCache> cache;
     if (m_readAheadOrder != READ_NONE &&
         !found) {
         // The requested contact was not on our list. Consider this
@@ -196,7 +196,7 @@ boost::shared_ptr<CardDAVCache> CardDAVSource::readBatch(const std::string &luid
                 "<C:address-data/>\n"
                 "</D:prop>\n"
                 ;
-            BOOST_FOREACH(const std::string *luid, luids) {
+            for (const std::string *luid: luids) {
                 query << "<D:href>" << luid2path(*luid) << "</D:href>\n";
             }
             query << "</C:addressbook-multiget>";
@@ -207,11 +207,42 @@ boost::shared_ptr<CardDAVCache> CardDAVSource::readBatch(const std::string &luid
             // The purpose of that is two-fold: don't request data again that
             // we already got when resending, and detect missing 404 status errors
             // with Google.
-            parser.initReportParser(boost::bind(&CardDAVSource::addItemToCache, this,
-                                                cache, boost::ref(luids),
-                                                _1, _2, boost::ref(data)));
-            parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:carddav", "address-data", _2, _3),
-                               boost::bind(Neon::XMLParser::append, boost::ref(data), _2, _3));
+            auto process = [this, &luids, &data, &cache] (const std::string &href, const std::string &etag, const std::string &status) {
+                std::string luid = path2luid(href);
+
+                // TODO: error checking
+                CardDAVCache::mapped_type result;
+                if (!data.empty()) {
+                    result = data;
+                    SE_LOG_DEBUG(getDisplayName(), "batch response: got %ld bytes of data for %s",
+                                 (long)data.size(), luid.c_str());
+                } else {
+                    SE_LOG_DEBUG(getDisplayName(), "batch response: unknown failure for %s",
+                                 luid.c_str());
+                }
+
+                (*cache)[luid] = result;
+                bool found = false;
+                for (auto it = luids.begin();
+                     it != luids.end();
+                     ++it) {
+                    if (**it == luid) {
+                        luids.erase(it);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    SE_LOG_DEBUG(getDisplayName(), "batch response: unexpected item: %s = %s",
+                                 href.c_str(), luid.c_str());
+                }
+
+                // reset data for next item
+                data.clear();
+            };
+            parser.initReportParser(process);
+            parser.pushHandler(Neon::XMLParser::accept("urn:ietf:params:xml:ns:carddav", "address-data"),
+                               Neon::XMLParser::append(data));
             std::string request = query.str();
             Neon::Request req(*getSession(), "REPORT", getCalendar().m_path,
                               request, parser);
@@ -222,11 +253,11 @@ boost::shared_ptr<CardDAVCache> CardDAVSource::readBatch(const std::string &luid
                 // Google CardDAV doesn't due that at the time of implementing the
                 // batched read. As a workaround assume that any remaining item
                 // isn't available.
-                BOOST_FOREACH(const std::string *luid, luids) {
-                    boost::shared_ptr<TransportStatusException> failure(new TransportStatusException(__FILE__,
-                                                                                                     __LINE__,
-                                                                                                     StringPrintf("%s: not contained in multiget response", luid->c_str()),
-                                                                                                     STATUS_NOT_FOUND));
+                for (const std::string *luid: luids) {
+                    auto failure = std::make_shared<TransportStatusException>(__FILE__,
+                                                                              __LINE__,
+                                                                              StringPrintf("%s: not contained in multiget response", luid->c_str()),
+                                                                              STATUS_NOT_FOUND);
                     (*cache)[*luid] = failure;
                 }
                 break;
@@ -234,45 +265,6 @@ boost::shared_ptr<CardDAVCache> CardDAVSource::readBatch(const std::string &luid
         }
     }
     return cache;
-}
-
-void CardDAVSource::addItemToCache(boost::shared_ptr<CardDAVCache> &cache,
-                                   BatchLUIDs &luids,
-                                   const std::string &href,
-                                   const std::string &etag,
-                                   std::string &data)
-{
-    std::string luid = path2luid(href);
-
-    // TODO: error checking
-    CardDAVCache::mapped_type result;
-    if (!data.empty()) {
-        result = data;
-        SE_LOG_DEBUG(getDisplayName(), "batch response: got %ld bytes of data for %s",
-                     (long)data.size(), luid.c_str());
-    } else {
-        SE_LOG_DEBUG(getDisplayName(), "batch response: unknown failure for %s",
-                     luid.c_str());
-    }
-
-    (*cache)[luid] = result;
-    bool found = false;
-    for (BatchLUIDs::iterator it = luids.begin();
-         it != luids.end();
-         ++it) {
-        if (**it == luid) {
-            luids.erase(it);
-            found = true;
-            break;
-        }
-    }
-    if (!found) {
-        SE_LOG_DEBUG(getDisplayName(), "batch response: unexpected item: %s = %s",
-                     href.c_str(), luid.c_str());
-    }
-
-    // reset data for next item
-    data.clear();
 }
 
 CardDAVSource::InsertItemResult CardDAVSource::insertItem(const string &luid, const std::string &item, bool raw)
@@ -322,7 +314,7 @@ void CardDAVSource::getReadAheadOrder(ReadAheadOrder &order,
 void CardDAVSource::invalidateCachedItem(const std::string &luid)
 {
     if (m_cardDAVCache) {
-        CardDAVCache::iterator it = m_cardDAVCache->find(luid);
+        auto it = m_cardDAVCache->find(luid);
         if (it != m_cardDAVCache->end()) {
             SE_LOG_DEBUG(getDisplayName(), "reading: remove contact %s from cache because of remove or update", luid.c_str());
             // If we happen to read that contact (unlikely), it'll be
@@ -337,7 +329,7 @@ void CardDAVSource::invalidateCachedItem(const std::string &luid)
 
 bool CardDAVSource::typeMatches(const StringMap &props) const
 {
-    StringMap::const_iterator it = props.find("DAV::resourcetype");
+    auto it = props.find("DAV::resourcetype");
     if (it != props.end()) {
         const std::string &type = it->second;
         // allow parameters (no closing bracket)

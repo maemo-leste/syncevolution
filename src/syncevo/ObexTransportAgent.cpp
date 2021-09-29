@@ -49,7 +49,7 @@ ObexTransportAgent::ObexTransportAgent (OBEX_TRANS_TYPE type, GMainLoop *loop) :
                                  g_main_context_default())),
     m_address(""),
     m_port(-1),
-    m_buffer(NULL),
+    m_buffer(nullptr),
     m_bufferSize(0),
     m_timeoutSeconds(0),
     m_disconnecting(false),
@@ -233,7 +233,8 @@ void ObexTransportAgent::connectReq() {
     header.bs = (unsigned char *) "SYNCML-SYNC";
     OBEX_ObjectAddHeader(m_handle, connect, OBEX_HDR_TARGET, header, strlen ((char *) header.bs), OBEX_FL_FIT_ONE_PACKET);
     m_obexReady = false;
-    m_requestStart = time (NULL);
+    m_requestStart = time (nullptr);
+    SE_LOG_DEV(NULL, "ObexTransportAgent: OBEX_Request for OBEX_CMD_CONNECT");
     if (OBEX_Request (m_handle, connect) <0) {
         SE_THROW_EXCEPTION (TransportException, "ObexTransport: OBEX connect init failed");
     }
@@ -276,7 +277,7 @@ void ObexTransportAgent::shutdown() {
             //add header "connection id"
             obex_headerdata_t header;
             header.bq4 = m_connectId;
-            SE_LOG_DEV(NULL, "ObexTransportAgent::shutdown: send OBEX_CMD_DISCONNECT");
+            SE_LOG_DEV(NULL, "ObexTransportAgent::shutdown: OBEX_Request for OBEX_CMD_DISCONNECT");
             OBEX_ObjectAddHeader (m_handle, disconnect, OBEX_HDR_CONNECTION, header, sizeof
                                   (m_connectId), OBEX_FL_FIT_ONE_PACKET);
             if (OBEX_Request (m_handle, disconnect) <0) {
@@ -320,8 +321,9 @@ void ObexTransportAgent::send(const char *data, size_t len) {
 
     //send the request
     m_status = ACTIVE;
-    m_requestStart = time (NULL);
+    m_requestStart = time (nullptr);
     m_obexReady = false;
+    SE_LOG_DEV(NULL, "ObexTransportAgent: OBEX_Request for OBEX_CMD_PUT");
     if (OBEX_Request (m_handle, put) < 0) {
         SE_THROW_EXCEPTION (TransportException, "ObexTransport: send failed");
     }
@@ -408,6 +410,7 @@ TransportAgent::Status ObexTransportAgent::wait(bool noReply) {
 
         //send the request
         m_obexReady = false;
+        SE_LOG_DEV(NULL, "ObexTransportAgent: OBEX_Request for OBEX_CMD_GET");
         if (OBEX_Request (m_handle, get) < 0) {
             SE_THROW_EXCEPTION (TransportException, "ObexTransport: get failed");
         }
@@ -480,15 +483,15 @@ gboolean ObexTransportAgent::sdp_source_cb_impl (GIOChannel *io, GIOCondition co
             uuid_t uuid;
             sdp_list_t *services, *attrs;
             sdp_uuid128_create(&uuid, syncml_client_uuid);
-            services = sdp_list_append(NULL, &uuid);
-            attrs = sdp_list_append(NULL, &range);
+            services = sdp_list_append(nullptr, &uuid);
+            attrs = sdp_list_append(nullptr, &range);
             if (sdp_service_search_attr_async(m_sdp, services, SDP_ATTR_REQ_RANGE, attrs) < 0) {
-                sdp_list_free (attrs, NULL);
-                sdp_list_free (services, NULL);
+                sdp_list_free (attrs, nullptr);
+                sdp_list_free (services, nullptr);
                 SE_THROW_EXCEPTION(TransportException, "ObexTransport: Bluetooth sdp service search failed");
             }
-            sdp_list_free(attrs, NULL);
-            sdp_list_free(services, NULL);
+            sdp_list_free(attrs, nullptr);
+            sdp_list_free(services, nullptr);
             return TRUE;
         } else if ((cond &G_IO_IN) && m_connectStatus == SDP_REQ) {
             sdp_process (m_sdp);
@@ -554,8 +557,8 @@ void ObexTransportAgent::sdp_callback_impl (uint8_t type, uint16_t status, uint8
             if (!sdp_get_access_protos(rec, &protos)) {
                 channel = sdp_get_proto_port(protos, RFCOMM_UUID);
                 sdp_list_foreach(protos,
-                        (sdp_list_func_t) sdp_list_free, NULL);
-                sdp_list_free(protos, NULL);
+                        (sdp_list_func_t) sdp_list_free, nullptr);
+                sdp_list_free(protos, nullptr);
             }
             sdp_record_free(rec);
             if (channel > 0) {
@@ -611,7 +614,7 @@ gboolean ObexTransportAgent::obex_fd_source_cb_impl (GIOChannel *io, GIOConditio
             }
         }
 
-        time_t now = time(NULL);
+        time_t now = time(nullptr);
         if (m_timeoutSeconds &&
             (m_requestStart != 0) &&
             (now >= m_timeoutSeconds +m_requestStart)) {
@@ -625,6 +628,7 @@ gboolean ObexTransportAgent::obex_fd_source_cb_impl (GIOChannel *io, GIOConditio
             return TRUE;
         }
 
+        SE_LOG_DEV(NULL, "ObexTransportAgent: OBEX_HandleInput");
         if (OBEX_HandleInput (m_handle, OBEX_POLL_INTERVAL) <0 && errno != EINTR) {
             //transport error
             //no way to recovery, simply abort
@@ -785,7 +789,7 @@ obex_object_t* ObexTransportAgent::newCmd(uint8_t cmd) {
     if(!cmdObject) {
         m_status = FAILED;
         SE_LOG_ERROR(NULL, "ObexTransport: OBEX Object New failed");
-        return NULL;
+        return nullptr;
     } else {
         return cmdObject;
     }

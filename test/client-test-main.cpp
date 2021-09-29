@@ -55,8 +55,6 @@
 
 #include <boost/algorithm/string/split.hpp>
 
-#include <pcrecpp.h>
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -71,10 +69,10 @@
 
 #include <string>
 #include <stdexcept>
+#include <regex>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
-using namespace std;
 
 void simplifyFilename(string &filename)
 {
@@ -125,7 +123,7 @@ public:
         memset(&action, 0, sizeof(action));
         action.sa_handler = alarmTriggered;
         action.sa_flags = SA_NOMASK;
-        sigaction(SIGALRM, &action, NULL);
+        sigaction(SIGALRM, &action, nullptr);
 #endif
     }
 
@@ -141,7 +139,7 @@ public:
         m_currentTest = test->getName();
         std::cout << m_currentTest << std::flush;
         if (!getenv("SYNCEVOLUTION_DEBUG")) {
-            string logfile = m_currentTest + ".log";
+            string logfile = m_currentTest + ".txt";
             simplifyFilename(logfile);
             m_logger.reset(new LogRedirect(LogRedirect::STDERR_AND_STDOUT, logfile.c_str()));
             m_logger->setLevel(Logger::DEBUG);
@@ -177,8 +175,8 @@ public:
             formatter.printFailureReport();
             failure = output.str();
             bool failed = true;
-            BOOST_FOREACH (const std::string &re, m_allowedFailures) {
-                if (pcrecpp::RE(re).FullMatch(m_currentTest)) {
+            for (const std::string &re: m_allowedFailures) {
+                if (std::regex_match(m_currentTest, std::regex(re))) {
                     result = "*** failure ignored ***";
                     failed = false;
                     break;
@@ -198,12 +196,12 @@ public:
         }
         m_logger.reset();
 
-        string logfile = m_currentTest + ".log";
+        string logfile = m_currentTest + ".txt";
         simplifyFilename(logfile);
         
         const char* compareLog = getenv("CLIENT_TEST_COMPARE_LOG");
         if(compareLog && strlen(compareLog)) {
-            int fd = open("____compare.log", O_RDONLY);
+            int fd = open("____compare.txt", O_RDONLY);
             if (fd >= 0) {
                 int out = open(logfile.c_str(), O_WRONLY|O_APPEND);
                 if (out >= 0) {
@@ -223,7 +221,7 @@ public:
                         }
                     }
                     if (len < 0) {
-                        perror("reading ____compare.log");
+                        perror("reading ____compare.txt");
                     }
                     close(out);
                 }
@@ -327,7 +325,7 @@ static void handler(int sig)
     struct sigaction act;
     memset(&act, 0, sizeof(act));
     act.sa_handler = SIG_DFL;
-    sigaction(SIGABRT, &act, NULL);
+    sigaction(SIGABRT, &act, nullptr);
     abort();
 }
 
@@ -340,9 +338,9 @@ int main(int argc, char* argv[])
 
   memset(&act, 0, sizeof(act));
   act.sa_handler = handler;
-  sigaction(SIGABRT, &act, NULL);
-  sigaction(SIGSEGV, &act, NULL);
-  sigaction(SIGILL, &act, NULL);
+  sigaction(SIGABRT, &act, nullptr);
+  sigaction(SIGSEGV, &act, nullptr);
+  sigaction(SIGILL, &act, nullptr);
 
   // Get the top level suite from the registry
   CppUnit::Test *suite = CppUnit::TestFactoryRegistry::getRegistry().makeTest();
@@ -382,7 +380,7 @@ int main(int argc, char* argv[])
       std::list<std::string> tests;
       if (argc <= 1) {
           // All tests.
-          addEnabledTests(suite, true, NULL, NULL, tests);
+          addEnabledTests(suite, true, nullptr, nullptr, tests);
       } else {
           // Some selected tests.
           addEnabledTests(suite, false, argv + 1, argv + argc, tests);
@@ -398,7 +396,7 @@ int main(int argc, char* argv[])
           // recursively for each test. This way we keep running
           // even if one test crashes hard, valgrind can check
           // each test individually and uses less memory.
-          BOOST_FOREACH (const std::string &name, tests) {
+          for (const std::string &name: tests) {
 #ifdef USE_SYSTEM
               if (system(StringPrintf("%s %s", argv[0], name.c_str()).c_str())) {
                   failed = true;
@@ -433,7 +431,7 @@ int main(int argc, char* argv[])
                   perror("fork");
               } else {
                   // Use the test name also as name of the process.
-                  execlp(argv[0], name.c_str(), name.c_str(), (char *)NULL);
+                  execlp(argv[0], name.c_str(), name.c_str(), nullptr);
                   perror("execlp");
                   _exit(1);
               }
@@ -447,7 +445,7 @@ int main(int argc, char* argv[])
       }
       ClientTest::shutdown();
       return failed;
-  } catch (invalid_argument e) {
+  } catch (const invalid_argument &e) {
       // Test path not resolved
       std::cout << std::endl
                 << "ERROR: " << e.what()

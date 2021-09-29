@@ -74,14 +74,12 @@ private:
         NetworkManagerProperties(NetworkManagerClient& manager);
 
         void get();
-        void getCallback(const boost::variant<uint32_t, std::string> &prop,
-                         const std::string &error);
     private:
         NetworkManagerClient &m_manager;
     };
 
     Server &m_server;
-    GDBusCXX::SignalWatch1<uint32_t> m_stateChanged;
+    GDBusCXX::SignalWatch<uint32_t> m_stateChanged;
     NetworkManagerProperties m_properties;
 };
 

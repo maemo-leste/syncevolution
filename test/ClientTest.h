@@ -22,12 +22,11 @@
 #ifndef INCL_TESTSYNCCLIENT
 #define INCL_TESTSYNCCLIENT
 
+#include <functional>
+#include <list>
+#include <memory>
 #include <string>
 #include <vector>
-#include <list>
-
-#include <boost/function.hpp>
-#include <boost/shared_ptr.hpp>
 
 #include <SyncML.h>
 #include <TransportAgent.h>
@@ -79,7 +78,7 @@ class CheckSyncReport {
         restarts(0),
         mustSucceed(mstSucceed),
         syncMode(mode),
-        m_report(NULL)
+        m_report(nullptr)
         {}
 
     int clientAdded, clientUpdated, clientDeleted,
@@ -139,15 +138,15 @@ struct SyncOptions {
     int m_retryDuration;
     int m_retryInterval;
 
-    boost::shared_ptr<SuspendFlags::StateBlocker> m_isSuspended;
-    boost::shared_ptr<SuspendFlags::StateBlocker> m_isAborted;
+    std::shared_ptr<SuspendFlags::StateBlocker> m_isSuspended;
+    std::shared_ptr<SuspendFlags::StateBlocker> m_isAborted;
 
     /**
      * Callback to be invoked after setting up local sources, but
      * before running the engine. May throw exception to indicate
      * error and return true to stop sync without error.
      */
-    typedef boost::function<bool (SyncContext &,
+    typedef std::function<bool (SyncContext &,
                                   SyncOptions &)> Callback_t;
     Callback_t m_startCallback;
 
@@ -157,7 +156,7 @@ struct SyncOptions {
      */
     Callback_t m_prepareCallback;
 
-    boost::shared_ptr<TransportAgent> m_transport;
+    std::shared_ptr<TransportAgent> m_transport;
 
     SyncOptions(SyncMode syncMode = SYNC_NONE,
                 const CheckSyncReport &checkReport = CheckSyncReport(),
@@ -165,9 +164,8 @@ struct SyncOptions {
                 long maxObjSize = DEFAULT_MAX_OBJ_SIZE, // 1GB = basically unlimited...
                 bool loSupport = false,
                 bool isWBXML = defaultWBXML(),
-                Callback_t startCallback = EmptyCallback,
-                boost::shared_ptr<TransportAgent> transport =
-                boost::shared_ptr<TransportAgent>()) :
+                const Callback_t &startCallback = [] (SyncContext &, SyncOptions &) { return false; },
+                const std::shared_ptr<TransportAgent> &transport = {}) :
         m_syncMode(syncMode),
         m_checkReport(checkReport),
         m_maxMsgSize(maxMsgSize),
@@ -190,11 +188,8 @@ struct SyncOptions {
     SyncOptions &setRetryInterval(int retryInterval) { m_retryInterval = retryInterval; return *this; }
     SyncOptions &setStartCallback(const Callback_t &callback) { m_startCallback = callback; return *this; }
     SyncOptions &setPrepareCallback(const Callback_t &callback) { m_prepareCallback = callback; return *this; }
-    SyncOptions &setTransportAgent(const boost::shared_ptr<TransportAgent> transport)
+    SyncOptions &setTransportAgent(const std::shared_ptr<TransportAgent> &transport)
                                   {m_transport = transport; return *this;}
-
-    static bool EmptyCallback(SyncContext &,
-                              SyncOptions &) { return false; }
 
     /** if CLIENT_TEST_XML=1, then XML, otherwise WBXML */
     static bool defaultWBXML();
@@ -377,7 +372,7 @@ class ClientTest : private boost::noncopyable {
     virtual int getLocalSourcePosition (const string &configName) =0;
 
     /**
-     * The instance to use as second client. Returning NULL disables
+     * The instance to use as second client. Returning nullptr disables
      * all checks which require a second client. The returned pointer
      * must remain valid throughout the life time of the tests.
      *
@@ -450,7 +445,7 @@ public:
         source(sourceParam),
         isSourceA(isSourceAParam) {}
 
-    TestingSyncSource *operator() () const {
+    std::unique_ptr<TestingSyncSource> operator() () const {
         CPPUNIT_ASSERT(createSource);
         return createSource(client, client.getClientID(), source, isSourceA);
     }
@@ -521,7 +516,7 @@ public:
      * @param uniqueUIDSuffix    gets added to UID of the inserted item if unique UIDs are necessary
      * @return the LUID of the inserted item
      */
-    virtual std::string insert(const CreateSource &createSource, const std::string &data, bool relaxed = false, std::string *inserted = NULL, const std::string &uniqueUIDSuffix = "");
+    virtual std::string insert(const CreateSource &createSource, const std::string &data, bool relaxed = false, std::string *inserted = nullptr, const std::string &uniqueUIDSuffix = "");
 
     /**
      * assumes that exactly one element is currently inserted and updates it with the given item
@@ -545,7 +540,7 @@ public:
      * takes two databases, exports them,
      * then compares them using synccompare
      *
-     * @param refFile      existing file with source reference items, NULL uses a dump of sync source A instead
+     * @param refFile      existing file with source reference items, nullptr uses a dump of sync source A instead
      * @param copy         a sync source which contains the copied items, begin/endSync will be called
      * @param raiseAssert  raise assertion if comparison yields differences (defaults to true)
      * @return true if the two databases are equal
@@ -569,7 +564,7 @@ public:
                              const std::list<std::string> &items);
 
     /**
-     * compare data in source with vararg list of std::string pointers, NULL terminated
+     * compare data in source with vararg list of std::string pointers, nullptr terminated
      */
     void compareDatabases(TestingSyncSource *copy, ...);
 
@@ -743,7 +738,7 @@ protected:
      * or first client.  The reference file(s) must follow the naming
      * scheme <reFileBase><source name>.dat
      */
-    virtual bool compareDatabases(const char *refFileBase = NULL,
+    virtual bool compareDatabases(const char *refFileBase = nullptr,
                                   bool raiseAssert = true);
 
     /** deletes all items locally and on server */
@@ -797,9 +792,6 @@ protected:
     void doOneWayFromLocal(SyncMode oneWayFromLocal);
     void testOneWayFromClient();
     void testOneWayFromLocal();
-    bool doConversionCallback(bool *success,
-                              SyncContext &client,
-                              SyncOptions &options);
     virtual void testConversion();
     virtual void testItems();
     virtual void testItemsXML();
@@ -821,7 +813,7 @@ protected:
     virtual void testLinkedItemsChildParent();
 
     virtual void doInterruptResume(int changes,
-                  boost::shared_ptr<TransportWrapper> wrapper); 
+                  std::shared_ptr<TransportWrapper> wrapper); 
 
     /**
      * CLIENT_ = change made on client B before interrupting
@@ -944,16 +936,15 @@ protected:
 class TransportWrapper : public TransportAgent {
 protected:
     int m_interruptAtMessage, m_messageCount;
-    boost::shared_ptr<TransportAgent> m_wrappedAgent;
+    std::shared_ptr<TransportAgent> m_wrappedAgent;
     Status m_status;
     SyncOptions *m_options;
 public:
     TransportWrapper() {
         m_messageCount = 0;
         m_interruptAtMessage = -1;
-        m_wrappedAgent = boost::shared_ptr<TransportAgent>();
         m_status = INACTIVE;
-        m_options = NULL;
+        m_options = nullptr;
     }
     ~TransportWrapper() {
     }
@@ -969,7 +960,7 @@ public:
 
     virtual void setURL(const std::string &url) { m_wrappedAgent->setURL(url); }
     virtual void setContentType(const std::string &type) { m_wrappedAgent->setContentType(type); }
-    virtual void setAgent(boost::shared_ptr<TransportAgent> agent) {m_wrappedAgent = agent;}
+    virtual void setAgent(std::shared_ptr<TransportAgent> agent) {m_wrappedAgent = agent;}
     virtual void setSyncOptions(SyncOptions *options) {m_options = options;}
     virtual void setInterruptAtMessage (int interrupt) {m_interruptAtMessage = interrupt;}
     virtual void cancel() { m_wrappedAgent->cancel(); }
@@ -979,7 +970,7 @@ public:
         m_messageCount = 0;
         m_interruptAtMessage = -1;
         m_status = INACTIVE;
-        m_options = NULL;
+        m_options = nullptr;
         m_wrappedAgent.reset();
     }
     virtual Status wait(bool noReply = false) { return m_status; }

@@ -22,7 +22,8 @@
 
 #include <string>
 #include <stdexcept>
-#include <boost/function.hpp>
+#include <functional>
+
 #include <boost/noncopyable.hpp>
 
 namespace GDBusCXX {
@@ -101,16 +102,16 @@ class Watch;
  * Call object which needs to be called with the results
  * of an asynchronous method call. So instead of
  * "int foo()" one would implement
- * "void foo(Result1<int> > *r)"
+ * "void foo(Result<int> > *r)"
  * and after foo has returned, call r->done(res). Use const
  * references as type for complex results.
  *
- * A Result instance can be copied, but only called once.
+ * A Result instance cannot be copied and only called once.
  */
-class Result
+class ResultBase : private boost::noncopyable
 {
  public:
-    virtual ~Result() {}
+    virtual ~ResultBase() {}
 
     /** report failure to caller */
     virtual void failed(const dbus_error &error) = 0;
@@ -122,84 +123,16 @@ class Result
      * is requested.
      *
      * Alternatively a method can ask to get called with a life Watch
-     * by specifying "const boost::shared_ptr<Watch> &" as parameter
+     * by specifying "const std::shared_ptr<Watch> &" as parameter
      * and then calling its setCallback().
      */
-    virtual Watch *createWatch(const boost::function<void (void)> &callback) = 0;
- };
-
-class Result0 : virtual public Result
+    virtual Watch *createWatch(const std::function<void (void)> &callback) = 0;
+};
+template<typename ...A> class Result : public ResultBase
 {
  public:
     /** tell caller that we are done */
-    virtual void done() = 0;
-};
-
-template <typename A1>
-class Result1 : virtual public Result
-{
- public:
-    /** return result to caller */
-    virtual void done(A1 a1) = 0;
-};
-
-template <typename A1, typename A2>
-struct Result2 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2) = 0;
-};
-
-template <typename A1, typename A2, typename A3>
-struct Result3 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2, A3 a3) = 0;
-};
-
-template <typename A1, typename A2, typename A3, typename A4>
-struct Result4 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2, A3 a3, A4 a4) = 0;
-};
-
-template <typename A1, typename A2, typename A3, typename A4, typename A5>
-struct Result5 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5) = 0;
-};
-
-template <typename A1, typename A2, typename A3, typename A4, typename A5,
-          typename A6>
-struct Result6 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5, A6 a6) = 0;
-};
-
-template <typename A1, typename A2, typename A3, typename A4, typename A5,
-          typename A6, typename A7>
-struct Result7 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5, A6 a6, A7 a7) = 0;
-};
-
-template <typename A1, typename A2, typename A3, typename A4, typename A5,
-          typename A6, typename A7, typename A8>
-struct Result8 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5, A6 a6, A7 a7, A8 a8) = 0;
-};
-
-template <typename A1, typename A2, typename A3, typename A4, typename A5,
-          typename A6, typename A7, typename A8, typename A9>
-struct Result9 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5, A6 a6, A7 a7, A8 a8, A9 a9) = 0;
-};
-
-template <typename A1, typename A2, typename A3, typename A4, typename A5,
-          typename A6, typename A7, typename A8, typename A9, typename A10>
-struct Result10 : virtual public Result
-{
-    virtual void done(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5, A6 a6, A7 a7, A8 a8, A9 a9, A10 a10) = 0;
+    virtual void done(A... args) = 0;
 };
 
 } // namespace GDBusCXX

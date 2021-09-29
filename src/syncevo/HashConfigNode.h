@@ -33,7 +33,7 @@ class HashConfigNode : public ConfigNode {
 
     virtual void flush() {}
     virtual string readProperty(const string &property) const {
-        std::map<std::string, std::string>::const_iterator it = m_props.find(property);
+        auto it = m_props.find(property);
         if (it == m_props.end()) {
             return "";
         } else {
@@ -43,7 +43,7 @@ class HashConfigNode : public ConfigNode {
     virtual void setProperty(const string &property,
                              const string &value,
                              const string &comment = "",
-                             const string *defValue = NULL) { m_props[property] = value; }
+                             const string *defValue = nullptr) { m_props[property] = value; }
     virtual void readProperties(std::map<std::string, std::string> &props) const { props = m_props; }
     virtual void writeProperties(const PropsType &props) { m_props.insert(props.begin(), props.end()); }
     virtual void removeProperty(const std::string &property) { m_props.erase(property); }

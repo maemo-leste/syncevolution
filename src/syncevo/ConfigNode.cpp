@@ -23,14 +23,13 @@
 
 #include <syncevo/declarations.h>
 
-using namespace std;
 
 SE_BEGIN_CXX
 
-boost::shared_ptr<ConfigNode> ConfigNode::createFileNode(const string &filename)
+std::shared_ptr<ConfigNode> ConfigNode::createFileNode(const std::string &filename)
 {
-    string::size_type off = filename.rfind('/');
-    boost::shared_ptr<ConfigNode> filenode;
+    std::string::size_type off = filename.rfind('/');
+    std::shared_ptr<ConfigNode> filenode;
     if (off != filename.npos) {
         filenode.reset(new IniFileConfigNode(filename.substr(0, off),
                                              filename.substr(off + 1),
@@ -38,14 +37,14 @@ boost::shared_ptr<ConfigNode> ConfigNode::createFileNode(const string &filename)
     } else {
         filenode.reset(new IniFileConfigNode(".", filename, false));
     }
-    boost::shared_ptr<SafeConfigNode> savenode(new SafeConfigNode(filenode));
+    auto savenode = std::make_shared<SafeConfigNode>(filenode);
     savenode->setMode(false);
     return savenode;
 }
 
 void ConfigNode::writeProperties(const ConfigProps &props)
 {
-    BOOST_FOREACH(const ConfigProps::value_type &entry, props) {
+    for (const auto &entry: props) {
         setProperty(entry.first, entry.second);
     }
 }

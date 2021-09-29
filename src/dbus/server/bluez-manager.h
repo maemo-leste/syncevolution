@@ -24,7 +24,7 @@
 
 #include "gdbus-cxx-bridge.h"
 
-#include <boost/utility.hpp>
+#include <boost/noncopyable.hpp>
 
 #include <syncevo/declarations.h>
 
@@ -79,7 +79,7 @@ private:
             }
         }
 
-        std::vector<boost::shared_ptr<BluezDevice> >& getDevices() { return m_devices; }
+        std::vector<std::shared_ptr<BluezDevice> >& getDevices() { return m_devices; }
 
      private:
         /** callback of 'ListDevices' signal. Used to get all available devices of the adapter */
@@ -98,12 +98,12 @@ private:
         int m_devReplies;
 
         /** all available devices */
-        std::vector<boost::shared_ptr<BluezDevice> > m_devices;
+        std::vector<std::shared_ptr<BluezDevice> > m_devices;
 
         /** represents 'DeviceRemoved' signal of org.bluez.Adapter*/
-        GDBusCXX::SignalWatch1<GDBusCXX::DBusObject_t> m_deviceRemoved;
+        GDBusCXX::SignalWatch<GDBusCXX::DBusObject_t> m_deviceRemoved;
         /** represents 'DeviceAdded' signal of org.bluez.Adapter*/
-        GDBusCXX::SignalWatch1<GDBusCXX::DBusObject_t> m_deviceAdded;
+        GDBusCXX::SignalWatch<GDBusCXX::DBusObject_t> m_deviceAdded;
 
         friend class BluezDevice;
     };
@@ -147,7 +147,7 @@ private:
         /** whether the calling of 'GetProperties' is returned */
         bool m_reply;
 
-        typedef GDBusCXX::SignalWatch2<std::string, boost::variant<std::vector<std::string>, std::string> > PropertySignal;
+        typedef GDBusCXX::SignalWatch<std::string, boost::variant<std::vector<std::string>, std::string> > PropertySignal;
         /** represents 'PropertyChanged' signal of org.bluez.Device */
         PropertySignal m_propertyChanged;
 
@@ -167,25 +167,25 @@ private:
 
     Server &m_server;
     GDBusCXX::DBusConnectionPtr m_bluezConn;
-    boost::shared_ptr<BluezAdapter> m_adapter;
+    std::shared_ptr<BluezAdapter> m_adapter;
 
     // Holds the bluetooth lookup table and whether it was successfully loaded.
     class lookupTable : private boost::noncopyable {
     public:
-        lookupTable() : bt_key_file(NULL), isLoaded(false) {}
+        lookupTable() : bt_key_file(nullptr), isLoaded(false) {}
         ~lookupTable() { if (bt_key_file) g_key_file_free(bt_key_file); }
 
         GKeyFile *bt_key_file;
         bool isLoaded;
     } m_lookupTable;
 
-    boost::shared_ptr<GLibNotify> m_watchedFile;
+    std::shared_ptr<GLibNotify> m_watchedFile;
     void loadBluetoothDeviceLookupTable();
     bool getPnpInfoNamesFromValues(const std::string &vendorValue,  std::string &vendorName,
                                    const std::string &productValue, std::string &productName);
 
     /** represents 'DefaultAdapterChanged' signal of org.bluez.Adapter*/
-    GDBusCXX::SignalWatch1<GDBusCXX::DBusObject_t> m_adapterChanged;
+    GDBusCXX::SignalWatch<GDBusCXX::DBusObject_t> m_adapterChanged;
 
     /** flag to indicate whether the calls are all returned */
     bool m_done;

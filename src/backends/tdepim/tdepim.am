@@ -38,8 +38,6 @@ if ENABLE_TDEPIMNOTES
 src_backends_tdepim_synctdepimnotes_src += \
   src/backends/tdepim/TDEPIMSyncSource.h \
   src/backends/tdepim/TDEPIMSyncSource.cpp \
-  src/backends/tdepim/KNotesIface_stub.h \
-  src/backends/tdepim/KNotesIface_stub.cpp \
   src/backends/tdepim/TDEPIMNotesSource.h \
   src/backends/tdepim/TDEPIMNotesSource.cpp
 endif
@@ -50,9 +48,34 @@ src_backends_tdepim_cppflags = \
    $(BACKEND_CPPFLAGS) \
    -I$(top_srcdir)/src/backends/tdepim
 
-#src_backends_tdepim_src = $(src_backends_tdepim_synctdepimcal_src) $(src_backends_tdepim_synctdepimabc_src)
+src/backends/tdepim/KNotesIface.kidl:
+	cp /opt/trinity/include/KNotesIface.h src/backends/tdepim/KNotesIface.h
+	cd src/backends/tdepim/ && $(DCOPIDL) KNotesIface.h > KNotesIface.kidl
+
+src/backends/tdepim/KNotesIface_stub.h: src/backends/tdepim/KNotesIface.kidl
+	cd src/backends/tdepim/ && $(DCOPIDL2CPP) KNotesIface.kidl
+
+src/backends/tdepim/KNotesIface_stub.cpp: src/backends/tdepim/KNotesIface_stub.h
+
+src_backends_tdepim_built_sources =
+src_backends_tdepim_generated =
+if ENABLE_TDEPIMNOTES
+src_backends_tdepim_built_sources += \
+   src/backends/tdepim/KNotesIface_stub.h \
+   src/backends/tdepim/KNotesIface_stub.cpp
+
+src_backends_tdepim_generated += \
+   $(src_backends_tdepim_built_sources) \
+   src/backends/tdepim/KNotesIface.kidl \
+   src/backends/tdepim/KNotesIface_skel.cpp \
+   src/backends/tdepim/KNotesIface.h
+endif
+
+CLEANFILES += $(src_backends_tdepim_generated)
+BUILT_SOURCES += $(src_backends_tdepim_built_sources)
 
 src_backends_tdepim_synctdepimcal_la_SOURCES = $(src_backends_tdepim_synctdepimcal_src)
+nodist_src_backends_tdepim_synctdepimcal_la_SOURCES = $(src_backends_tdepim_built_sources)
 src_backends_tdepim_synctdepimcal_la_LIBADD = $(TDEPIMCAL_LIBS) $(SYNCEVOLUTION_LIBS)
 src_backends_tdepim_synctdepimcal_la_CPPFLAGS = $(TDEPIMCAL_CFLAGS) $(src_backends_tdepim_cppflags)
 src_backends_tdepim_synctdepimcal_la_LDFLAGS = -module -avoid-version -ldl

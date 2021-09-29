@@ -8,7 +8,7 @@ dnl Invoke autogen.sh to produce a configure script.
 #
 # Starting with the 1.1 release cycle, the rpm-style
 # .99 pseudo-version number is used to mark a pre-release.
-AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 1.5.3])])
+AC_INIT([syncevolution], [m4_esyscmd([build/gen-git-version.sh 2.0.0])])
 # STABLE_VERSION=1.0.1+
 AC_SUBST(STABLE_VERSION)
 
@@ -62,6 +62,11 @@ dnl check for programs.
 AC_PROG_CXX
 AC_PROG_MAKE_SET
 
+AC_PATH_PROGS(PYTHON, python3 python, "")
+if test "x$PYTHON" = "x" ; then
+   AC_ERROR([python3 not found])
+fi
+
 dnl Use the most recent C++ standard that is supported by the code.
 dnl We can fall back to older versions, but not below C++11.
 dnl Akonadi/Qt don't work with C++17 yet, so we can't enable that.
@@ -78,9 +83,13 @@ AX_BOOST_BASE(1.34)
 # TODO: Fix code to pass with -pedantic -Wextra.
 # -Wno-unknown-pragmas needed because icalstrdup.h
 # currently uses the "#pragma }" trick. Should remove that.
+# -Wno-deprecated-declarations is needed everywhere (i.e. not just in certain
+# modules, like SYNCEVO_WFLAGS_DEPRECATED) because EDS on Ubuntu Eon uses
+# the deprecated GDateTime in its header, which we included through our
+# EDS/libical wrapper even when not actually used.
 DK_ARG_ENABLE_WARNINGS([SYNCEVO_WFLAGS],
                        [-Wall -Wno-unknown-pragmas],
-                       [-Wall -Wno-unknown-pragmas],
+                       [-Wall -Wno-unknown-pragmas -Wno-deprecated-declarations],
                        [])
 
 # Fix code to work without deprecated methods: G GDK GDK_PIXBUF CAIRO PANGO GTK
@@ -520,33 +529,15 @@ if test "$enable_dbus_service" != "no" && test "$enable_dbus_service" != "yes"; 
 fi
 AC_SUBST(SYNCEVO_DBUS_SERVER_ARGS)
 
-AC_ARG_WITH([gio-gdbus],
-            AS_HELP_STRING([--with-gio-gdbus],
-                           [enables use of GIO's GDBus instead of the in-tree, Bluez gdbus.]),
-            with_gio_gdbus="$withval",
-            PKG_CHECK_EXISTS([gio-2.0 >= 2.30],
-                             [with_gio_gdbus="yes"],
-                             [with_gio_gdbus="no"]))
-AM_CONDITIONAL([COND_GIO_GDBUS], [test "x$with_gio_gdbus" = "xyes"])
-
-# We only need to check for dbus-1 if gio-gdbus is not used.
-#
 # Local sync depends on D-Bus communication between parent
 # and child process (works without a D-Bus daemon), and local
 # sync is not an optional feature. Could be made one if
 # someone is interested enough.
 #
-# Therefore, at the moment, either libdbus or gio-gdbus are needed
+# Therefore, at the moment, gio-gdbus is needed
 # unconditionally. glib is needed in all cases now.
 need_glib=yes
-AS_IF([test "x$with_gio_gdbus" = "xyes"],
-      [PKG_CHECK_MODULES([DBUS], [gio-2.0 >= 2.26])
-       AC_DEFINE([WITH_GIO_GDBUS],[],[Set if using GIO GDBus])],
-      [PKG_CHECK_MODULES(DBUS, dbus-1, dummy=yes,
-                         AC_MSG_ERROR(libdbus-1 is required))
-       AC_CHECK_LIB(dbus-1, dbus_watch_get_unix_fd, dummy=yes,
-                    AC_DEFINE(NEED_DBUS_WATCH_GET_UNIX_FD, 1,
-                    [Define to 1 if you need the dbus_watch_get_unix_fd() function.]))])
+PKG_CHECK_MODULES([DBUS], [gio-2.0 >= 2.26])
 
 if test "$enable_dbus_service" != "no"; then
     if test -z "$XSLT"; then
@@ -581,74 +572,7 @@ if test "$enable_dbus_service" != "no"; then
         MLITE_LIBS=
     fi
     AC_DEFINE(DBUS_SERVICE, 1, [define if dbus service is enabled])
-
-    AC_ARG_ENABLE(dbus-service-pim,
-                  AS_HELP_STRING([--enable-dbus-service-pim[=<locale>]],
-                                 [Enable implementation of org._01.pim D-Bus APIs (depends on libfolks),
-                                  using src/dbus/server/pim/locale-factory-<locale>.cpp to implement sorting
-                                  and searching. The default is <locale>=boost, which uses boost::locale.]),
-                  [ enable_dbus_pim="$enableval" ],
-                  [ enable_dbus_pim="no" ])
-    case "$enable_dbus_pim" in
-         no) ;;
-         *)
-                if test "$enable_dbus_pim" = "yes"; then
-                    enable_dbus_pim=boost
-                fi
-                if ! test -r "$srcdir/src/dbus/server/pim/locale-factory-$enable_dbus_pim.cpp"; then
-                    AC_MSG_ERROR([invalid value '$enable_dbus_pim' for --enable-dbus-service-pim, $srcdir/src/dbus/server/pim/locale-factory-$enable_dbus_pim.cpp does not exist or is not readable])
-                fi
-                PKG_CHECK_MODULES(FOLKS, [folks folks-eds])
-                AC_DEFINE(ENABLE_DBUS_PIM, 1, [org._01.pim D-Bus API enabled])
-                DBUS_PIM_PLUGIN=$enable_dbus_pim
-                AC_SUBST(DBUS_PIM_PLUGIN)
-
-                case "$enable_dbus_pim" in
-                    boost)
-                        AX_BOOST_LOCALE
-                        # AX_BOOST_LOCALE incorrectly puts -L/... into LDFLAGS.
-                        # That's broken because it then overrides the search path
-                        # for *all* libraries in a link, not just for boost. Fix
-                        # this by putting the LDFLAGS before the lib and leaving
-                        # DBUS_PIM_PLUGIN_LDFLAGS empty (for now - might have to
-                        # be revised if there ever are any boost flags which need
-                        # to go to the start of the link line).
-                        DBUS_PIM_PLUGIN_LIBS='$(BOOST_LDFLAGS) $(BOOST_LOCALE_LIB)'
-                        DBUS_PIM_PLUGIN_LDFLAGS=
-                        # We need to call ICU directly for the Han->Latin transformation.
-                        PKG_CHECK_MODULES(ICU, [icu-uc icu-i18n])
-                        ;;
-                esac
-                AC_SUBST(DBUS_PIM_PLUGIN_CFLAGS)
-                AC_SUBST(DBUS_PIM_PLUGIN_LIBS)
-                AC_SUBST(DBUS_PIM_PLUGIN_LDFLAGS)
-
-                # http://code.google.com/p/libphonenumber/
-                AC_LANG(C++)
-                SAVED_CPPFLAGS=$CPPFLAGS
-                if test ! "$PHONENUMBERS_CFLAGS"; then
-                      PHONENUMBERS_CFLAGS=-DI18N_PHONENUMBERS_USE_BOOST
-                fi
-                CPPFLAGS="$CPPFLAGS ${PHONENUMBERS_CFLAGS}"
-                AC_CHECK_HEADERS([phonenumbers/phonenumberutil.h])
-                SAVED_LIBS=$LIBS
-                if test ! "$PHONENUMBERS_LIBS"; then
-                      PHONENUMBERS_LIBS=-lphonenumber
-                fi
-                LIBS="$LIBS $PHONENUMBERS_LIBS"
-                AC_LINK_IFELSE(
-                      [AC_LANG_PROGRAM([#include <phonenumbers/phonenumberutil.h>],
-                                       [i18n::phonenumbers::PhoneNumberUtil::GetInstance()])],
-                      [true],
-                      [AC_ERROR([libphonebook not found, set PHONENUMBERS_CFLAGS and PHONENUMBERS_LIBS.])])
-                AC_SUBST(PHONENUMBERS_CFLAGS)
-                AC_SUBST(PHONENUMBERS_LIBS)
-                LIBS=$SAVED_LIBS
-                CPPFLAGS=$SAVED_CPPFLAGS
-                ;;
-    esac
 fi
-AM_CONDITIONAL([COND_DBUS_PIM], [test "$enable_dbus_pim" != "no"])
 
 AC_SUBST(DBUS_CFLAGS)
 AC_SUBST(DBUS_LIBS)
@@ -739,14 +663,6 @@ AC_SUBST(GUI_CFLAGS)
 AC_SUBST(GUI_LIBS)
 AC_SUBST(GUI_PROGRAMS)
 AC_SUBST(GUI_DESKTOP_FILES)
-
-# C++ regular expression support is required often enough to make it
-# mandatory.
-PKG_CHECK_MODULES(PCRECPP, libpcrecpp,,
-AC_CHECK_LIB(pcrecpp,main,
-AC_SUBST(PCRECPP_LIBS,-lpcrecpp),
-AC_MSG_ERROR([pcrecpp not found])
-))
 
 # need rst2man for man pages
 AC_ARG_WITH(rst2man,
@@ -1154,7 +1070,6 @@ echo "libical v1 timezone hack: $enable_icaltz_util"
 echo "DBus service: $enable_dbus_service"
 echo "org._01.pim support in DBus service: $enable_dbus_pim"
 echo "Notifications: $enable_notify"
-echo "GIO GDBus: $with_gio_gdbus"
 echo "GNOME keyring: $enable_gnome_keyring"
 if test "$enable_gui" = "no"; then
     echo "UI (DBus client): no"

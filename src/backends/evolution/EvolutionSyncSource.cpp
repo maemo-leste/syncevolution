@@ -41,9 +41,9 @@ void EvolutionSyncSource::getDatabasesFromRegistry(SyncSource::Databases &result
 {
     ESourceRegistryCXX registry = EDSRegistryLoader::getESourceRegistry();
     ESourceListCXX sources(e_source_registry_list_sources(registry, extension));
-    ESourceCXX def(refDef ? refDef(registry) : NULL,
+    ESourceCXX def(refDef ? refDef(registry) : nullptr,
                    TRANSFER_REF);
-    BOOST_FOREACH (ESource *source, sources) {
+    for (ESource *source: sources) {
         result.push_back(Database(e_source_get_display_name(source),
                                   e_source_get_uid(source),
                                   e_source_equal(def, source)));
@@ -58,7 +58,7 @@ static void handleErrorCB(EClient */*client*/, const gchar *error_msg, gpointer 
 
 EClientCXX EvolutionSyncSource::openESource(const char *extension,
                                             ESource *(*refBuiltin)(ESourceRegistry *),
-                                            const boost::function<EClient *(ESource *, GError **gerror)> &newClient)
+                                            const std::function<EClient *(ESource *, GError **gerror)> &newClient)
 {
     EClientCXX client;
     GErrorCXX gerror;
@@ -97,7 +97,7 @@ EClientCXX EvolutionSyncSource::openESource(const char *extension,
     while (true) {
         // Always allow EDS to create the database. "only-if-exists =
         // true" does not make sense.
-        if (!e_client_open_sync(client, false, NULL, gerror)) {
+        if (!e_client_open_sync(client, false, nullptr, gerror)) {
             if (retries < 5) {
                 // EDS 3.18 and 3.26 have various race conditions during startup.
                 // Try a few times.
@@ -153,7 +153,7 @@ SyncSource::Database EvolutionSyncSource::createDatabase(const Database &databas
     if (!g_key_file_load_from_data(keyfile, ini, len, G_KEY_FILE_NONE, gerror)) {
         gerror.throwError(SE_HERE, "parsing ESource .ini data");
     }
-    PlainGStrArray keys(g_key_file_get_keys(keyfile, mainSection, NULL, gerror));
+    PlainGStrArray keys(g_key_file_get_keys(keyfile, mainSection, nullptr, gerror));
     if (!keys) {
         gerror.throwError(SE_HERE, "listing keys in main section");
     }
@@ -166,7 +166,7 @@ SyncSource::Database EvolutionSyncSource::createDatabase(const Database &databas
     }
     g_key_file_set_string(keyfile, mainSection, "DisplayName", database.m_name.c_str());
     g_key_file_set_boolean(keyfile, mainSection, "Enabled", true);
-    ini = g_key_file_to_data(keyfile, &len, NULL);
+    ini = g_key_file_to_data(keyfile, &len, nullptr);
     const char *configDir = g_get_user_config_dir();
     int fd;
     std::string filename;
@@ -211,7 +211,7 @@ SyncSource::Database EvolutionSyncSource::createDatabase(const Database &databas
     while (!ESourceCXX(e_source_registry_ref_source(registry, uid.c_str()), TRANSFER_REF)) {
         // This will block forever if called from the non-main-thread.
         // Don't do that...
-        g_main_context_iteration(NULL, true);
+        g_main_context_iteration(nullptr, true);
     }
     SE_LOG_DEBUG(getDisplayName(), "ESourceRegistry has new ESource %s", uid.c_str());
 
@@ -219,7 +219,7 @@ SyncSource::Database EvolutionSyncSource::createDatabase(const Database &databas
     // UUID. Does not work! evolution-source-registry simply overwrites the
     // file that we created earlier.
     // ESourceCXX source(e_source_new_with_uid(uid.c_str(),
-    //                                         NULL, gerror),
+    //                                         nullptr, gerror),
     //                   TRANSFER_REF);
     // e_source_set_display_name(source, "syncevolution-fake");
     // e_source_set_parent(source, "local-stub");
@@ -227,7 +227,7 @@ SyncSource::Database EvolutionSyncSource::createDatabase(const Database &databas
     // sources.push_back(source.ref()); // ESourceListCXX unrefs sources it points to
     // if (!e_source_registry_create_sources_sync(registry,
     //                                            sources,
-    //                                            NULL,
+    //                                            nullptr,
     //                                            gerror)) {
     //     gerror.throwError(SE_HERE, StringPrintf("creating EDS database of type %s with name '%s'%s%s",
     //                                    sourceExtension(),
@@ -250,7 +250,7 @@ void EvolutionSyncSource::deleteDatabase(const std::string &uri, RemoveData remo
                                          uri.c_str()));
     }
     GErrorCXX gerror;
-    if (!e_source_remove_sync(source, NULL, gerror)) {
+    if (!e_source_remove_sync(source, nullptr, gerror)) {
         throwError(SE_HERE, StringPrintf("deleting EDS database with URI '%s'", uri.c_str()),
                    gerror);
     }
@@ -264,10 +264,10 @@ void EvolutionSyncSource::deleteDatabase(const std::string &uri, RemoveData remo
         // This is equivalent to "rm -rf $XDG_DATA_HOME/evolution/*/<uuid>".
         std::string basedir = StringPrintf("%s/evolution", g_get_user_data_dir());
         if (isDir(basedir)) {
-            BOOST_FOREACH (const std::string &kind, ReadDir(basedir)) {
+            for (const std::string &kind: ReadDir(basedir)) {
                 std::string subdir = basedir + "/" + kind;
                 if (isDir(subdir)) {
-                    BOOST_FOREACH (const std::string &source, ReadDir(subdir)) {
+                    for (const std::string &source: ReadDir(subdir)) {
                         // We assume that the UUID of the database
                         // consists only of characters which can be
                         // used in the directory name, i.e., no
@@ -294,7 +294,7 @@ ESource *EvolutionSyncSource::findSource(const ESourceListCXX &list, const strin
         finalID = id;
     } else {
         // Nothing selected specifically, use the one marked as default.
-        BOOST_FOREACH(const Database &db, getDatabases()) {
+        for (const Database &db: getDatabases()) {
             if (db.m_isDefault) {
                 finalID = db.m_uri;
                 break;
@@ -303,7 +303,7 @@ ESource *EvolutionSyncSource::findSource(const ESourceListCXX &list, const strin
     }
 
 #ifdef USE_EDS_CLIENT
-    BOOST_FOREACH (ESource *source, list) {
+    for (ESource *source: list) {
         bool found =
             !finalID.compare(e_source_get_display_name(source)) ||
             !finalID.compare(e_source_get_uid(source));
@@ -327,7 +327,7 @@ ESource *EvolutionSyncSource::findSource(const ESourceListCXX &list, const strin
         }
     }
 #endif
-    return NULL;
+    return nullptr;
 }
 
 void EvolutionSyncSource::throwError(const SourceLocation &where, const string &action, GErrorCXX &gerror)

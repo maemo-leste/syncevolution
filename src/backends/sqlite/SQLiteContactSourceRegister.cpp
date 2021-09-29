@@ -28,24 +28,24 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-static SyncSource *createSource(const SyncSourceParams &params)
+static std::unique_ptr<SyncSource> createSource(const SyncSourceParams &params)
 {
     SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
     bool isMe = sourceType.m_backend == "SQLite Address Book";
 
 #ifndef ENABLE_SQLITE
-    return isMe ? RegisterSyncSource::InactiveSource(params) : NULL;
+    return isMe ? RegisterSyncSource::InactiveSource(params) : nullptr;
 #else
     bool maybeMe = sourceType.m_backend == "addressbook";
     
     if (isMe || maybeMe) {
         if (sourceType.m_format == "" || sourceType.m_format == "text/x-vcard") {
-            return new SQLiteContactSource(params);
+            return std::make_unique<SQLiteContactSource>(params);
         } else {
-            return NULL;
+            return nullptr;
         }
     }
-    return NULL;
+    return nullptr;
 #endif
 }
 
@@ -71,11 +71,11 @@ class EvolutionSQLiteContactsTest : public CppUnit::TestFixture {
 
 protected:
     void testInstantiate() {
-        boost::shared_ptr<SyncSource> source;
-        source.reset(SyncSource::createTestingSource("contacts", "contacts", true));
-        source.reset(SyncSource::createTestingSource("contacts", "addressbook", true));
-        source.reset(SyncSource::createTestingSource("contacts", "sqlite-contacts", true));
-        source.reset(SyncSource::createTestingSource("contacts", "SQLite Address Book:text/x-vcard", true));
+        std::unique_ptr<SyncSource> source;
+        source = SyncSource::createTestingSource("contacts", "contacts", true);
+        source = SyncSource::createTestingSource("contacts", "addressbook", true);
+        source = SyncSource::createTestingSource("contacts", "sqlite-contacts", true);
+        source = SyncSource::createTestingSource("contacts", "SQLite Address Book:text/x-vcard", true);
     }
 };
 

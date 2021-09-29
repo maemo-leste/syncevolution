@@ -32,7 +32,7 @@
 
 SE_BEGIN_CXX
 
-static SyncSource *createSource ( const SyncSourceParams &params )
+static std::unique_ptr<SyncSource> createSource ( const SyncSourceParams &params )
 {
 
 	SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
@@ -47,13 +47,13 @@ static SyncSource *createSource ( const SyncSourceParams &params )
 	if (isMe) {
 // 		SE_LOG_DEBUG("createSource() c3", "Calendar Source format %s", sourceType.m_format.c_str());
 		if ( sourceType.m_format == "" || sourceType.m_format == "text/plain" ) 
-			return new TDEPIMNotesSource ( params );
-		else  return NULL;
+			return std::make_unique<TDEPIMNotesSource>( params );
+		else  return nullptr;
 	}
 #endif
 
 // 	SE_LOG_DEBUG("createSource() c6", "Calendar Source matching the format %s not found", sourceType.m_format.c_str() );
-	return NULL;
+	return nullptr;
 }
 
 static class RegisterTDEPIMNotesSyncSource : public RegisterSyncSource
@@ -89,38 +89,32 @@ class TDENotesTest : public CppUnit::TestFixture {
     CPPUNIT_TEST_SUITE(TDENotesTest);
     CPPUNIT_TEST(testInstantiate);
 
-    // There is no default database in Akonadi:
     // CPPUNIT_TEST(testOpenDefaultCalendar);
     // CPPUNIT_TEST(testOpenDefaultTodo);
     // CPPUNIT_TEST(testOpenDefaultMemo);
 
-    // Besides, don't enable tests which depend on running Akonadi,
-    // because that would cause "client-test SyncEvolution" unless
-    // Akonadi was started first:
-    // CPPUNIT_TEST(testTimezones);
-
     CPPUNIT_TEST_SUITE_END();
 
 protected:
-    static string addItem(boost::shared_ptr<TestingSyncSource> source,
+    static string addItem(std::shared_ptr<TestingSyncSource> source,
                           string &data) {
         SyncSourceRaw::InsertItemResult res = source->insertItemRaw("", data);
         return res.m_luid;
     }
 
     void testInstantiate() {
-        boost::shared_ptr<SyncSource> source;
+        std::unique_ptr<SyncSource> source;
 
-        // source.reset(SyncSource::createTestingSource("memos", "memos", true));
-        source.reset(SyncSource::createTestingSource("memos", "tdepim-notes", true));
-        source.reset(SyncSource::createTestingSource("memos", "TDE PIM Notes:text/plain", true));
+        // source = SyncSource::createTestingSource("memos", "memos", true);
+        source = SyncSource::createTestingSource("memos", "tdepim-notes", true);
+        source = SyncSource::createTestingSource("memos", "TDE PIM Notes:text/plain", true);
     }
 
     // TODO: support default databases
 
     // void testOpenDefaultMemo() {
-    //     boost::shared_ptr<TestingSyncSource> source;
-    //     source.reset((TestingSyncSource *)SyncSource::createTestingSource("memos", "tdepim-memos", true, NULL));
+    //     std::shared_ptr<TestingSyncSource> source;
+    //     source = (TestingSyncSource *)SyncSource::createTestingSource("memos", "tdepim-memos", true, nullptr);
     //     CPPUNIT_ASSERT_NO_THROW(source->open());
     // }
 
@@ -130,8 +124,8 @@ protected:
             prefix = "SyncEvolution_Test_";
         }
 
-        boost::shared_ptr<TestingSyncSource> source;
-        source.reset((TestingSyncSource *)SyncSource::createTestingSource("eds_event", "tdepim-notes", true, prefix));
+        std::shared_ptr<TestingSyncSource> source;
+        source = (TestingSyncSource *)SyncSource::createTestingSource("eds_event", "tdepim-notes", true, prefix);
         CPPUNIT_ASSERT_NO_THROW(source->open());
 
         string newyork = 

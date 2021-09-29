@@ -38,7 +38,7 @@ class WebDAVSource : public TrackingSyncSource, private boost::noncopyable
      * @param settings     instance which provides necessary settings callbacks for Neon
      */
     WebDAVSource(const SyncSourceParams &params,
-                 const boost::shared_ptr<Neon::Settings> &settings);
+                 const std::shared_ptr<Neon::Settings> &settings);
 
     /**
      * Utility function: replace HTML entities until none are left
@@ -69,7 +69,7 @@ class WebDAVSource : public TrackingSyncSource, private boost::noncopyable
      *
      * @return true if scanning completed, false if callback requested stop
      */
-    bool findCollections(const boost::function<bool (const std::string &,
+    bool findCollections(const std::function<bool (const std::string &,
                                                      const Neon::URI &,
                                                      bool isReadOnly)> &callback);
 
@@ -138,7 +138,7 @@ class WebDAVSource : public TrackingSyncSource, private boost::noncopyable
     Timespec createDeadline() const;
 
     // access to neon session and calendar, valid between open() and close()
-    boost::shared_ptr<Neon::Session> getSession() { return m_session; }
+    std::shared_ptr<Neon::Session> getSession() { return m_session; }
     Neon::URI &getCalendar() { return m_calendar; }
 
     // access to settings owned by this instance
@@ -220,8 +220,8 @@ class WebDAVSource : public TrackingSyncSource, private boost::noncopyable
      * @return UID value without line breaks and folding characters removed
      */
     static std::string extractUID(const std::string &item,
-                                  size_t *startp = NULL,
-                                  size_t *endp = NULL);
+                                  size_t *startp = nullptr,
+                                  size_t *endp = nullptr);
 
     /**
      * .vcf for VCARD and .ics for everything else.
@@ -229,11 +229,11 @@ class WebDAVSource : public TrackingSyncSource, private boost::noncopyable
     virtual std::string getSuffix() const;
 
  private:
-    /** settings to be used, never NULL, may be the same as m_contextSettings */
-    boost::shared_ptr<Neon::Settings> m_settings;
-    /** settings constructed by us instead of caller, may be NULL */
-    boost::shared_ptr<ContextSettings> m_contextSettings;
-    boost::shared_ptr<Neon::Session> m_session;
+    /** settings to be used, never nullptr, may be the same as m_contextSettings */
+    std::shared_ptr<Neon::Settings> m_settings;
+    /** settings constructed by us instead of caller, may be nullptr */
+    std::shared_ptr<ContextSettings> m_contextSettings;
+    std::shared_ptr<Neon::Session> m_session;
 
     /** normalized path: including backslash, URI encoded */
     Neon::URI m_calendar;
@@ -266,37 +266,11 @@ class WebDAVSource : public TrackingSyncSource, private boost::noncopyable
     /** extract all <DAV:href>value</DAV:href> values from a set, empty if none */
     std::list<std::string> extractHREFs(const std::string &propval);
 
-    void openPropCallback(Props_t &davProps,
-                          const Neon::URI &uri,
-                          const ne_propname *prop,
-                          const char *value,
-                          const ne_status *status);
-
-    void listAllItemsCallback(const Neon::URI &uri,
-                              const ne_prop_result_set *results,
-                              RevisionMap_t &revisions,
-                              bool &failed);
-
-    int checkItem(RevisionMap_t &revisions,
-                  const std::string &href,
-                  const std::string &etag,
-                  std::string *data);
-
-    void backupData(const boost::function<Operations::BackupData_t> &op,
-                    const Operations::ConstBackupInfo &oldBackup,
-                    const Operations::BackupInfo &newBackup,
-                    BackupReport &report) {
-        contactServer();
-        op(oldBackup, newBackup, report);
-    }
-
-    void restoreData(const boost::function<Operations::RestoreData_t> &op,
-                     const Operations::ConstBackupInfo &oldBackup,
-                     bool dryrun,
-                     SyncSourceReport &report) {
-        contactServer();
-        op(oldBackup, dryrun, report);
-    }
+    Neon::Session::PropfindPropCallback_t openPropCallback(Props_t &davProps);
+    Neon::Session::PropfindURICallback_t listAllItemsCallback(RevisionMap_t &revisions,
+                                                              bool &failed);
+    Neon::XMLParser::VoidResponseEndCB_t checkItem(RevisionMap_t &revisions,
+                                                   std::string *data);
 
     /**
      * return true if the resource with the given properties is one

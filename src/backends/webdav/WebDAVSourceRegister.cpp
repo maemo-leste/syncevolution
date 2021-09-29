@@ -16,14 +16,12 @@
 #include <dlfcn.h>
 #endif
 
-#include <boost/bind.hpp>
 #include <boost/tokenizer.hpp>
-#include <boost/assign.hpp>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-static SyncSource *createSource(const SyncSourceParams &params)
+static std::unique_ptr<SyncSource> createSource(const SyncSourceParams &params)
 {
     SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
     bool isMe;
@@ -60,12 +58,12 @@ static SyncSource *createSource(const SyncSourceParams &params)
             sourceType.m_format == "text/x-vcalendar") {
 #ifdef ENABLE_DAV
             if (enabled) {
-                boost::shared_ptr<Neon::Settings> settings;
+                std::shared_ptr<Neon::Settings> settings;
                 if (sourceType.m_backend == "CalDAV") {
-                    boost::shared_ptr<SubSyncSource> sub(new CalDAVSource(params, settings));
-                    return new MapSyncSource(params, sub);
+                    auto sub = std::make_shared<CalDAVSource>(params, settings);
+                    return std::make_unique<MapSyncSource>(params, sub);
                 } else {
-                    return new CalDAVVxxSource(sourceType.m_backend == "CalDAVTodo" ? "VTODO" : "VJOURNAL",
+                    return std::make_unique<CalDAVVxxSource>(sourceType.m_backend == "CalDAVTodo" ? "VTODO" : "VJOURNAL",
                                                params, settings);
                 }
             }
@@ -81,15 +79,15 @@ static SyncSource *createSource(const SyncSourceParams &params)
             sourceType.m_format == "text/vcard") {
 #ifdef ENABLE_DAV
             if (enabled) {
-                boost::shared_ptr<Neon::Settings> settings;
-                return new CardDAVSource(params, settings);
+                std::shared_ptr<Neon::Settings> settings;
+                return std::make_unique<CardDAVSource>(params, settings);
             }
 #endif
             return RegisterSyncSource::InactiveSource(params);
         }
     }
 
-    return NULL;
+    return nullptr;
 }
 
 static class RegisterWebDAVSyncSource : public RegisterSyncSource
@@ -138,13 +136,13 @@ class WebDAVTest : public CppUnit::TestFixture {
 
 protected:
     void testInstantiate() {
-        boost::shared_ptr<TestingSyncSource> source;
-        source.reset((TestingSyncSource *)SyncSource::createTestingSource("CalDAV", "CalDAV", true));
-        source.reset((TestingSyncSource *)SyncSource::createTestingSource("CalDAV", "CalDAV:text/calendar", true));
-        source.reset((TestingSyncSource *)SyncSource::createTestingSource("CalDAV", "CalDAV:text/x-vcalendar", true));
-        source.reset((TestingSyncSource *)SyncSource::createTestingSource("CardDAV", "CardDAV", true));
-        source.reset((TestingSyncSource *)SyncSource::createTestingSource("CardDAV", "CardDAV:text/vcard", true));
-        source.reset((TestingSyncSource *)SyncSource::createTestingSource("CardDAV", "CardDAV:text/x-vcard", true));
+        std::unique_ptr<TestingSyncSource> source;
+        source = SyncSource::createTestingSource("CalDAV", "CalDAV", true);
+        source = SyncSource::createTestingSource("CalDAV", "CalDAV:text/calendar", true);
+        source = SyncSource::createTestingSource("CalDAV", "CalDAV:text/x-vcalendar", true);
+        source = SyncSource::createTestingSource("CardDAV", "CardDAV", true);
+        source = SyncSource::createTestingSource("CardDAV", "CardDAV:text/vcard", true);
+        source = SyncSource::createTestingSource("CardDAV", "CardDAV:text/x-vcard", true);
     }
 
     std::string decode(const char *item) {
@@ -262,9 +260,12 @@ public:
             m_type == "caldav" ||
             m_type == "caldavjournal" ||
             m_type == "caldavtodo";
-        config.m_createSourceA = boost::bind(&WebDAVTest::createSource, this, _2, _4);
-        config.m_createSourceB = boost::bind(&WebDAVTest::createSource, this, _2, _4);
-        ConfigProps::const_iterator it = m_props.find(m_type + "/testcases");
+        auto create = [this] (ClientTest &, const std::string &clientID, int, bool isSourceA) {
+            return createSource(clientID, isSourceA);
+        };
+        config.m_createSourceA =
+            config.m_createSourceB = create;
+        auto it = m_props.find(m_type + "/testcases");
         if (it != m_props.end() ||
             (it = m_props.find("testcases")) != m_props.end()) {
             config.m_testcases = it->second.c_str();
@@ -276,7 +277,7 @@ public:
     }
 
     // This is very similar to client-test-app.cpp. TODO: refactor?!
-    TestingSyncSource *createSource(const std::string &clientID, bool isSourceA) const
+    std::unique_ptr<TestingSyncSource> createSource(const std::string &clientID, bool isSourceA) const
     {
         std::string name = m_server + "_" + m_type;
         const char *server = getenv("CLIENT_TEST_SERVER");
@@ -293,7 +294,7 @@ public:
                      name.c_str(),
                      config.c_str(),
                      tracking.c_str());
-        boost::shared_ptr<SyncConfig> context(new SyncConfig(config));
+        auto context = std::make_shared<SyncConfig>(config);
         SyncSourceNodes nodes = context->getSyncSourceNodes(name, tracking);
 
         // Copy properties from the Client::Sync
@@ -301,23 +302,23 @@ public:
         // that a testing source used as part of Client::Sync uses the
         // same settings.
         std::string peerName = std::string(server ? server : "no-such-server")  + "_" + clientID;
-        boost::shared_ptr<SyncConfig> peer(new SyncConfig(peerName));
+        auto peer = std::make_shared<SyncConfig>(peerName);
         // Resolve credentials.
         SimpleUserInterface ui(peer->getKeyring());
         PasswordConfigProperty::checkPasswords(ui,
                                                *peer,
                                                PasswordConfigProperty::CHECK_PASSWORD_ALL,
-                                               boost::assign::list_of(name));
+                                               { name });
         SyncSourceNodes peerNodes = peer->getSyncSourceNodes(name);
         SE_LOG_DEBUG(NULL, "overriding testing source %s properties with the ones from config %s = %s",
                      name.c_str(),
                      peerName.c_str(),
                      peer->getRootPath().c_str());
-        BOOST_FOREACH(const ConfigProperty *prop, SyncSourceConfig::getRegistry()) {
+        for (const ConfigProperty *prop: SyncSourceConfig::getRegistry()) {
             if (prop->isHidden()) {
                 continue;
             }
-            boost::shared_ptr<FilterConfigNode> node = peerNodes.getNode(*prop);
+            std::shared_ptr<FilterConfigNode> node = peerNodes.getNode(*prop);
             InitStateString value = prop->getProperty(*node);
             SE_LOG_DEBUG(NULL, "   %s = %s (%s)",
                          prop->getMainName().c_str(),
@@ -335,8 +336,8 @@ public:
         nodes.getProperties()->setProperty("backend", InitStateString(m_type, true));
         SE_LOG_DEBUG(NULL, "   additional property backend = %s (from CLIENT_TEST_WEBDAV)",
                      m_type.c_str());
-        BOOST_FOREACH(const StringPair &propval, m_props) {
-            boost::shared_ptr<FilterConfigNode> node = context->getNode(propval.first);
+        for (const auto &propval: m_props) {
+            std::shared_ptr<FilterConfigNode> node = context->getNode(propval.first);
             if (node) {
                 SE_LOG_DEBUG(NULL, "   additional property %s = %s (from CLIENT_TEST_WEBDAV)",
                              propval.first.c_str(), propval.second.c_str());
@@ -353,10 +354,10 @@ public:
         SyncSourceParams params(m_type,
                                 nodes,
                                 context);
-        SyncSource *ss = SyncSource::createSource(params);
+        auto ss = SyncSource::createSource(params);
         ss->setDisplayName(ss->getDisplayName() +
                            (isSourceA ? " #A" : " #B"));
-        return static_cast<TestingSyncSource *>(ss);
+        return std::unique_ptr<TestingSyncSource>(static_cast<TestingSyncSource *>(ss.release()));
     }
 };
 
@@ -376,17 +377,16 @@ static class WebDAVTestSingleton : RegisterSyncSourceTest {
      */
     class WebDAVList
     {
-        list< boost::shared_ptr<WebDAVTest> >m_sources;
+        list< std::shared_ptr<WebDAVTest> >m_sources;
 
     public:
-        void push_back(const boost::shared_ptr<WebDAVTest> &source)
+        void push_back(const std::shared_ptr<WebDAVTest> &source)
         {
-            boost::scoped_ptr<TestingSyncSource> instance(source->createSource("1", true));
+            auto instance = source->createSource("1", true);
             std::string database = instance->getDatabaseID();
             source->setDatabase(database);
 
-            BOOST_FOREACH (const boost::shared_ptr<WebDAVTest> &other,
-                           m_sources) {
+            for (const auto &other: m_sources) {
                 if (other->getDatabase() == database) {
                     other->m_linkedSources.push_back(source->m_configName);
                     break;
@@ -419,7 +419,7 @@ public:
         std::string settings(env);
         boost::char_separator<char> sep1(";");
         boost::char_separator<char> sep2("\t ");
-        BOOST_FOREACH(const std::string &entry,
+        for (const std::string &entry:
                       boost::tokenizer< boost::char_separator<char> >(settings, boost::char_separator<char>(";"))) {
             std::string server;
             bool caldav = false,
@@ -427,7 +427,7 @@ public:
                 caldavjournal = false,
                 carddav = false;
             ConfigProps props;
-            BOOST_FOREACH(const std::string &token,
+            for (const std::string &token:
                           boost::tokenizer< boost::char_separator<char> >(entry, boost::char_separator<char>("\t "))) {
                 if (server.empty()) {
                     server = token;
@@ -449,19 +449,19 @@ public:
             }
 
             if (caldav) {
-                boost::shared_ptr<WebDAVTest> ptr(new WebDAVTest(server, "caldav", props));
+                auto ptr = std::make_shared<WebDAVTest>(server, "caldav", props);
                 m_sources.push_back(ptr);
             }
             if (caldavtodo) {
-                boost::shared_ptr<WebDAVTest> ptr(new WebDAVTest(server, "caldavtodo", props));
+                auto ptr = std::make_shared<WebDAVTest>(server, "caldavtodo", props);
                 m_sources.push_back(ptr);
             }
             if (caldavjournal) {
-                boost::shared_ptr<WebDAVTest> ptr(new WebDAVTest(server, "caldavjournal", props));
+                auto ptr = std::make_shared<WebDAVTest>(server, "caldavjournal", props);
                 m_sources.push_back(ptr);
             }
             if (carddav) {
-                boost::shared_ptr<WebDAVTest> ptr(new WebDAVTest(server, "carddav", props));
+                auto ptr = std::make_shared<WebDAVTest>(server, "carddav", props);
                 m_sources.push_back(ptr);
             }
         }

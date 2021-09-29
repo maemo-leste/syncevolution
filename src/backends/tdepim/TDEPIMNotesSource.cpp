@@ -22,7 +22,6 @@
  */
 
 // #include <memory>
-// using namespace std;
 
 #include "config.h"
 
@@ -79,12 +78,12 @@ TDEPIMNotesSource::~TDEPIMNotesSource() {
 	if ( ! knotesWasRunning )
 		system("dcop knotes MainApplication-Interface quit");
 	delete kn_iface;
-	kn_iface = NULL;
+	kn_iface = nullptr;
 	SE_LOG_DEBUG(getDisplayName(), "kNotes exit OK");
 }
 
 
-TQString TDEPIMNotesSource::lastModifiedNormalized(TQDateTime &d) const
+TQString TDEPIMNotesSource::lastModified(TQDateTime &d) const
 {
 	// if no modification date is available, always return the same 0-time stamp
 	// to avoid that 2 calls deliver different times which would be treated as changed entry
@@ -92,14 +91,14 @@ TQString TDEPIMNotesSource::lastModifiedNormalized(TQDateTime &d) const
 	if (!d.isValid())
 		d.setTime_t(0);
 
-	// We pass UTC, because we open the calendar in UTC
+	// We pass UTC, because we open the source in UTC
 // 	return d.toString(TQt::ISODate); 
 	return d.toString("yyyyMMddThhmmssZ");
 }
 
 TQString TDEPIMNotesSource::stripHtml(TQString input)
 {
-	TQString output = NULL;
+	TQString output = nullptr;
 	unsigned int i = 0;
 	int inbraces = 0;
 	for (i = 0; i < input.length(); i++) {
@@ -182,12 +181,12 @@ void TDEPIMNotesSource::listAllItems(SyncSourceRevisions::RevisionMap_t &revisio
 		TQDateTime dt = kn_iface->getLastModified(TQString(i.key().utf8()));
 		if (kn_iface->status() != DCOPStub::CallSucceeded)
 			Exception::throwError(SE_HERE, "internal error, DCOP call failed");
-		revisions[static_cast<const char*>(i.key().utf8())] = static_cast<const char*>(lastModifiedNormalized(dt).utf8());
+		revisions[i.key().utf8().data()] = lastModified(dt).utf8().data();
 
 /* DEBUG
-		SE_LOG_DEBUG(getDisplayName(), "KNotes UID: %s", static_cast<const char*>(i.key().utf8()) );
-		SE_LOG_DEBUG(getDisplayName(), "KNotes REV: %s", static_cast<const char*>(lastModifiedNormalized(dt).utf8()) );
-		SE_LOG_DEBUG(getDisplayName(), "KNotes DATA: %s", static_cast<const char*>(data.utf8()));
+		SE_LOG_DEBUG(getDisplayName(), "KNotes UID: %s", i.key().utf8().data() );
+		SE_LOG_DEBUG(getDisplayName(), "KNotes REV: %s", lastModified(dt).utf8().data() );
+		SE_LOG_DEBUG(getDisplayName(), "KNotes DATA: %s", data.utf8().data());
 */
 	}
 }
@@ -204,8 +203,8 @@ TrackingSyncSource::InsertItemResult TDEPIMNotesSource::insertItem(const std::st
 		TQString summary = data.section('\n', 0, 0);  // first line is our title == summary
 		TQString body = data.section('\n', 1);  // rest
 /* DEBUG
-		SE_LOG_DEBUG(getDisplayName(), "KNotes SUM : %s", static_cast<const char*>(summary.utf8()) );
-		SE_LOG_DEBUG(getDisplayName(), "KNotes BODY: %s", static_cast<const char*>(body.utf8()) );
+		SE_LOG_DEBUG(getDisplayName(), "KNotes SUM : %s", summary.utf8().data() );
+		SE_LOG_DEBUG(getDisplayName(), "KNotes BODY: %s", body.utf8().data() );
  */
 		TQString newuid;
 
@@ -226,7 +225,7 @@ TrackingSyncSource::InsertItemResult TDEPIMNotesSource::insertItem(const std::st
 		TQDateTime dt = kn_iface->getLastModified(newuid);
 		if (kn_iface->status() != DCOPStub::CallSucceeded)
 			Exception::throwError(SE_HERE, "internal error, DCOP call failed");
-		return InsertItemResult(static_cast<const char*>(newuid.utf8()), static_cast<const char*>(lastModifiedNormalized(dt).utf8()), state);
+		return InsertItemResult(newuid.utf8().data(), lastModified(dt).utf8().data(), state);
 
 }
 
@@ -235,7 +234,7 @@ void TDEPIMNotesSource::readItem(const std::string &luid, std::string &item, boo
 	TQString uid = TQString::fromUtf8(luid.data(),luid.size());
 	TQString data = kn_iface->name( uid ) + '\n' + stripHtml(kn_iface->text( uid ));
 
-	item.assign( static_cast<const char*>(data.utf8()) );
+	item.assign( data.utf8().data() );
 }
 
 void TDEPIMNotesSource::removeItem(const std::string &luid)
@@ -256,7 +255,7 @@ std::string TDEPIMNotesSource::getDescription(const std::string &luid)
 	TQString uid = TQString::fromUtf8(luid.data(),luid.size());
 	TQString data = kn_iface->name( uid );
 	if ( data.length() > 0 )
-		return static_cast<const char*>(data.utf8());
+		return data.utf8().data();
 
         SE_LOG_DEBUG(getDisplayName(), "Resource id(%s) not found", luid.c_str() );
 	return "";

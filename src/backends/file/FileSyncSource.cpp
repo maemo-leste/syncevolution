@@ -137,7 +137,7 @@ void FileSyncSource::open()
 
 bool FileSyncSource::isEmpty()
 {
-    DIR *dir = NULL;
+    DIR *dir = nullptr;
     bool empty = true;
 
     try {
@@ -197,7 +197,7 @@ void FileSyncSource::listAllItems(RevisionMap_t &revisions)
         SE_LOG_DEBUG(getDisplayName(), "continue listing items in file source");
     }
 
-    BOOST_FOREACH(const string &entry, dirContent) {
+    for (const string &entry: dirContent) {
         string filename = createFilename(entry);
         string revision = getATimeString(filename);
         long entrynum = atoll(entry.c_str());

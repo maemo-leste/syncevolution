@@ -64,6 +64,7 @@ class SyncContext : public SyncConfig {
     bool m_doLogging;
     bool m_quiet;
     bool m_dryrun;
+    bool m_keepPhotoData;
 
     enum SyncFreeze {
         SYNC_FREEZE_NONE,
@@ -84,8 +85,8 @@ class SyncContext : public SyncConfig {
 
     FullProps m_configFilters;
     
-    boost::shared_ptr<TransportAgent> m_agent;
-    boost::shared_ptr<UserInterface> m_userInterface;
+    std::shared_ptr<TransportAgent> m_agent;
+    std::shared_ptr<UserInterface> m_userInterface;
 
     /**
      * a pointer to the active SourceList instance for this context if one exists
@@ -214,7 +215,7 @@ class SyncContext : public SyncConfig {
     SyncContext(const string &client,
                 const string &server,
                 const string &rootPath,
-                const boost::shared_ptr<TransportAgent> &agent,
+                const std::shared_ptr<TransportAgent> &agent,
                 bool doLogging = false);
 
     virtual ~SyncContext();
@@ -225,19 +226,22 @@ class SyncContext : public SyncConfig {
     bool getDryRun() { return m_dryrun; }
     void setDryRun(bool dryrun) { m_dryrun = dryrun; }
 
+    bool getKeepPhotoData() const { return m_keepPhotoData; }
+    void setKeepPhotoData(bool keepPhotoData) { m_keepPhotoData = keepPhotoData; }
+
     bool isLocalSync() const { return m_localSync; }
 
     bool isServerAlerted() const { return m_serverAlerted; }
     void setServerAlerted(bool serverAlerted) { m_serverAlerted = serverAlerted; }
 
-    boost::shared_ptr<UserInterface> getUserInterface() { return m_userInterface; }
-    void setUserInterface(const boost::shared_ptr<UserInterface> &userInterface) { m_userInterface = userInterface; }
+    std::shared_ptr<UserInterface> getUserInterface() { return m_userInterface; }
+    void setUserInterface(const std::shared_ptr<UserInterface> &userInterface) { m_userInterface = userInterface; }
 
     /** use config UI owned by caller, without reference counting */
-    void setUserInterface(UserInterface *userInterface) { m_userInterface = boost::shared_ptr<UserInterface>(userInterface, NopDestructor()); }
+    void setUserInterface(UserInterface *userInterface) { m_userInterface = std::shared_ptr<UserInterface>(userInterface, NopDestructor()); }
 
     /**
-     * In contrast to getUserInterface(), this call here never returns NULL.
+     * In contrast to getUserInterface(), this call here never returns nullptr.
      * If no UserInterface is currently set, then it returns
      * a reference to a dummy instance which doesn't do anything.
      */
@@ -296,10 +300,10 @@ class SyncContext : public SyncConfig {
      * Executes the sync, throws an exception in case of failure.
      * Handles automatic backups and report generation.
      *
-     * @retval complete sync report, skipped if NULL
+     * @retval complete sync report, skipped if nullptr
      * @return overall sync status, for individual sources see report
      */
-    SyncMLStatus sync(SyncReport *report = NULL);
+    SyncMLStatus sync(SyncReport *report = nullptr);
 
     /** result of analyzeSyncMLMessage() */
     struct SyncMLMessageInfo {
@@ -387,7 +391,7 @@ class SyncContext : public SyncConfig {
     static void startLoopThread();
 
     /**
-     * Finds activated sync source by name. May return  NULL
+     * Finds activated sync source by name. May return  nullptr
      * if no such sync source was defined or is not currently
      * instantiated. Pointer remains valid throughout the sync
      * session. Called by Synthesis DB plugin to find active
@@ -408,7 +412,7 @@ class SyncContext : public SyncConfig {
      * @param sessionName      chosen by SyncEvolution and passed to
      *                         Synthesis engine, which calls us back
      *                         with it in SyncEvolution_Session_CreateContext()
-     * @return context or NULL if not found
+     * @return context or nullptr if not found
      */
     static SyncContext *findContext(const char *sessionName);
 
@@ -429,7 +433,7 @@ class SyncContext : public SyncConfig {
     std::string getPeer() { return m_server; }
 
     /**
-     * Handle for active session, may be NULL.
+     * Handle for active session, may be nullptr.
      */
     SharedSession getSession() { return m_session; }
 
@@ -458,7 +462,7 @@ class SyncContext : public SyncConfig {
     bool setFreeze(bool freeze);
 
     /**
-     * access to current set of sync sources, NULL if not instantiated yet
+     * access to current set of sync sources, nullptr if not instantiated yet
      */
     const std::vector<SyncSource *> *getSources() const;
 
@@ -569,13 +573,13 @@ class SyncContext : public SyncConfig {
      * The default implementation instantiates one of the builtin
      * transport agents, depending on how it was compiled.
      *
-     * @param gmainloop    the GMainLoop to be used by transports, if not NULL;
+     * @param gmainloop    the GMainLoop to be used by transports, if not nullptr;
      *                     transports not supporting that should not be created;
      *                     transports will increase the reference count for the loop
      * @return transport agent
      */
-    virtual boost::shared_ptr<TransportAgent> createTransportAgent(void *gmainloop);
-    virtual boost::shared_ptr<TransportAgent> createTransportAgent() { return createTransportAgent(NULL); }
+    virtual std::shared_ptr<TransportAgent> createTransportAgent(void *gmainloop);
+    virtual std::shared_ptr<TransportAgent> createTransportAgent() { return createTransportAgent(nullptr); }
 
     /**
      * display a text message from the server
@@ -669,16 +673,6 @@ class SyncContext : public SyncConfig {
      * @param config    config name of peer
      */
     void initLocalSync(const string &config);
-
-    /**
-     * called via pre-signal of m_saveAdminData
-     */
-    SyncMLStatus preSaveAdminData(SyncSource &source);
-
-    /**
-     * called via pre-signal of m_startDataRead
-     */
-    SyncMLStatus startSourceAccess(SyncSource *source);
 
     /**
      * utility function for status() and getChanges():

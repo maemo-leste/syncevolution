@@ -88,13 +88,13 @@ void ActiveSyncSource::findCollections(const std::string &account, const bool fo
     if (!eas_sync_handler_get_folder_list (handler,
 					   force_update,
 					   folders,
-					   NULL,
+					   nullptr,
 					   gerror)) {
 	gerror.throwError(SE_HERE, "fetching folder list");
     }
     
     /* Save the Collections */
-    BOOST_FOREACH(EasFolder *folder, folders) {
+    for (EasFolder *folder: folders) {
 	m_collections[folder->folder_id].collectionId = folder->folder_id;
 	m_collections[folder->folder_id].name = folder->display_name;
 	m_collections[folder->folder_id].parentId = folder->parent_id;
@@ -103,7 +103,7 @@ void ActiveSyncSource::findCollections(const std::string &account, const bool fo
     }
     
     /* Save the full paths */
-    BOOST_FOREACH(std::string id, m_collections | boost::adaptors::map_keys) {
+    for (std::string id: m_collections | boost::adaptors::map_keys) {
 	m_folderPaths[m_collections[id].fullPath()] = id;
     }
 }
@@ -165,7 +165,7 @@ ActiveSyncSource::Databases ActiveSyncSource::getDatabases()
 
 	findCollections(account, true);
 
-	BOOST_FOREACH(Collection coll, m_collections | boost::adaptors::map_values) {
+	for (Collection coll: m_collections | boost::adaptors::map_values) {
 	    if (coll.getFolderType() == getEasType()) {
 		result.push_back(Database(coll.pathName, coll.collectionId, coll.collectionIsDefault()));
 	    }
@@ -192,7 +192,7 @@ std::string ActiveSyncSource::lookupFolder(const std::string &folder) {
     }
 
     // Lookup folder name
-    FolderPaths::const_iterator entry = m_folderPaths.find(key);
+    auto entry = m_folderPaths.find(key);
     if (entry != m_folderPaths.end()) {
         return entry->second;
     }
@@ -242,7 +242,7 @@ void ActiveSyncSource::open()
 void ActiveSyncSource::close()
 {
     // free handler if not done already
-    m_handler.set(NULL);
+    m_handler.set(nullptr);
 }
 
 void ActiveSyncSource::beginSync(const std::string &lastToken, const std::string &resumeToken)
@@ -278,7 +278,7 @@ void ActiveSyncSource::beginSync(const std::string &lastToken, const std::string
     for (bool firstIteration = true;
          moreAvailable;
          firstIteration = false) {
-        gchar *buffer = NULL;
+        gchar *buffer = nullptr;
         GErrorCXX gerror;
         EASItemsCXX created, updated;
         EASIdsCXX deleted;
@@ -315,7 +315,7 @@ void ActiveSyncSource::beginSync(const std::string &lastToken, const std::string
         // will ask us for older, unmodified item content which we won't have.
 
         // populate ID lists and content cache
-        BOOST_FOREACH(EasItemInfo *item, created) {
+        for (EasItemInfo *item: created) {
             if (!item->server_id) {
                 throwError(SE_HERE, "no server ID for new eas item");
             }
@@ -331,7 +331,7 @@ void ActiveSyncSource::beginSync(const std::string &lastToken, const std::string
             }
             m_items[luid] = item->data;
         }
-        BOOST_FOREACH(EasItemInfo *item, updated) {
+        for (EasItemInfo *item: updated) {
             if (!item->server_id) {
                 throwError(SE_HERE, "no server ID for updated eas item");
             }
@@ -347,7 +347,7 @@ void ActiveSyncSource::beginSync(const std::string &lastToken, const std::string
             }
             m_items[luid] = item->data;
         }
-        BOOST_FOREACH(const char *serverID, deleted) {
+        for (const char *serverID: deleted) {
             if (!serverID) {
                 throwError(SE_HERE, "no server ID for deleted eas item");
             }
@@ -379,7 +379,7 @@ void ActiveSyncSource::beginSync(const std::string &lastToken, const std::string
     // old items + new (added to m_ids above) - deleted (removed above)
     ConfigProps props;
     m_ids->readProperties(props);
-    BOOST_FOREACH(const StringPair &entry, props) {
+    for (const auto &entry: props) {
         const std::string &luid = entry.first;
         SE_LOG_DEBUG(getDisplayName(), "existing item %s", luid.c_str());
         addItem(luid, ANY);
@@ -523,7 +523,7 @@ SyncSourceSerialize::InsertItemResult ActiveSyncSource::insertItem(const std::st
 void ActiveSyncSource::readItem(const std::string &luid, std::string &item)
 {
     // return straight from cache?
-    std::map<std::string, std::string>::iterator it = m_items.find(luid);
+    auto it = m_items.find(luid);
     if (it == m_items.end()) {
         // no, must fetch
         EASItemPtr tmp(eas_item_info_new(), "EasItem");

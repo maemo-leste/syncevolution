@@ -6,20 +6,16 @@
 #include <iostream>
 #include <signal.h>
 
-#include <boost/bind.hpp>
-#include <boost/scoped_ptr.hpp>
-#include <boost/tuple/tuple_io.hpp>
-
 SyncEvo::GMainLoopCXX loop;
 
 // closes child connection
-boost::scoped_ptr<GDBusCXX::DBusObject> guard;
+std::unique_ptr<GDBusCXX::DBusObject> guard;
 
 class Test
 {
     GDBusCXX::DBusObjectHelper m_server;
     // GDBusCXX::DBusRemoteObject m_dbusAPI;
-    // GDBusCXX::SignalWatch0 m_disconnected;
+    // GDBusCXX::SignalWatch<> m_disconnected;
 
 public:
     Test(const GDBusCXX::DBusConnectionPtr &conn) :
@@ -43,8 +39,8 @@ public:
         // not implemented either
         // b_dbus_set_disconnect_function(m_server.getConnection(),
         // staticDisconnected,
-        // NULL,
-        // NULL);
+        // nullptr,
+        // nullptr);
     }
 
     std::string hello(const std::string &in)
@@ -122,8 +118,8 @@ public:
     {
     }
 
-    GDBusCXX::DBusClientCall1<std::string> m_hello;
-    GDBusCXX::DBusClientCall0 m_kill;
+    GDBusCXX::DBusClientCall<std::string> m_hello;
+    GDBusCXX::DBusClientCall<> m_kill;
 };
 
 static void onChildConnectKill(const GDBusCXX::DBusConnectionPtr &conn,
@@ -171,21 +167,22 @@ static void callServer(const GDBusCXX::DBusConnectionPtr &conn)
     std::cout << proxy.m_hello(std::string("blocking world, II")) << std::endl;
 
     try {
-        GDBusCXX::DBusClientCall1<std::string> nosuchcall(proxy, "nosuchcall");
+        GDBusCXX::DBusClientCall<std::string> nosuchcall(proxy, "nosuchcall");
         std::cout << nosuchcall(std::string("ignoreme")) << std::endl;
     } catch (const std::runtime_error &ex) {
         std::cout << "caught exception, as expected: " << ex.what() << std::endl;
     }
 
-    GDBusCXX::DBusClientCall2<std::string, std::string> getstrings(proxy, "GetStrings");
+    GDBusCXX::DBusClientCall<std::string, std::string> getstrings(proxy, "GetStrings");
     std::pair<std::string, std::string> r = getstrings();
     std::cout << "Got pair: (" << r.first << ", " << r.second << ")" << std::endl;
 
-    GDBusCXX::DBusClientCall3<std::string, int, std::string> getmixed(proxy, "GetMixed");
-    std::cout << "Got tuple: " << getmixed() << std::endl;
+    GDBusCXX::DBusClientCall<std::string, int, std::string> getmixed(proxy, "GetMixed");
+    auto result = getmixed();
+    std::cout << "Got tuple: " << std::get<0>(result) << " " << std::get<1>(result) << " " << std::get<2>(result) << std::endl;
 
     std::cout << "calling server" << std::endl;
-    proxy.m_hello.start(std::string("world"), boost::bind(helloCB, loop.get(), _1, _2));
+    proxy.m_hello.start(boost::bind(helloCB, loop.get(), boost::placeholders::_1, boost::placeholders::_2), std::string("world"));
     // keep connection open until child quits
     guard.reset(new  GDBusCXX::DBusObject(conn, "foo", "bar", true));
 }
@@ -244,28 +241,28 @@ int main(int argc, char **argv)
         SyncEvo::GErrorCXX gerror;
         GDBusCXX::DBusErrorCXX dbusError;
         GOptionEntry opt_entries[] = {
-            { "server", 's', 0, G_OPTION_ARG_NONE, &opt_server, "Start a server instead of a client", NULL },
-            { "forkexec", 'e', 0, G_OPTION_ARG_NONE, &opt_fork_exec, "Use fork+exec to start the client (implies --server)", NULL },
-            { "forkfailure", 'f', 0, G_OPTION_ARG_NONE, &opt_fork_exec_failure, "Fork /bin/false to simulate a failure in the child (implies )", NULL },
-            { "forkkill", 'a', 0, G_OPTION_ARG_STRING, &opt_kill, "'child/parent' call peer which kills itself before replying (implies --forkexec)", NULL },
-            { "address", 'a', 0, G_OPTION_ARG_STRING, &opt_address, "D-Bus address to use when connecting to server", NULL },
-            // { "allow-anonymous", 'n', 0, G_OPTION_ARG_NONE, &opt_allow_anonymous, "Allow anonymous authentication", NULL },
-            { NULL}
+            { "server", 's', 0, G_OPTION_ARG_NONE, &opt_server, "Start a server instead of a client", nullptr },
+            { "forkexec", 'e', 0, G_OPTION_ARG_NONE, &opt_fork_exec, "Use fork+exec to start the client (implies --server)", nullptr },
+            { "forkfailure", 'f', 0, G_OPTION_ARG_NONE, &opt_fork_exec_failure, "Fork /bin/false to simulate a failure in the child (implies )", nullptr },
+            { "forkkill", 'a', 0, G_OPTION_ARG_STRING, &opt_kill, "'child/parent' call peer which kills itself before replying (implies --forkexec)", nullptr },
+            { "address", 'a', 0, G_OPTION_ARG_STRING, &opt_address, "D-Bus address to use when connecting to server", nullptr },
+            // { "allow-anonymous", 'n', 0, G_OPTION_ARG_NONE, &opt_allow_anonymous, "Allow anonymous authentication", nullptr },
+            { nullptr}
         };
 
 #if !GLIB_CHECK_VERSION(2,36,0)
         g_type_init();
 #endif
 
-        opt_address = NULL;
-        opt_kill = NULL;
+        opt_address = nullptr;
+        opt_kill = nullptr;
         opt_server = FALSE;
         opt_fork_exec = FALSE;
         opt_fork_exec_failure = FALSE;
         // opt_allow_anonymous = FALSE;
 
         opt_context = g_option_context_new("peer-to-peer example");
-        g_option_context_add_main_entries(opt_context, opt_entries, NULL);
+        g_option_context_add_main_entries(opt_context, opt_entries, nullptr);
         bool success = g_option_context_parse(opt_context, &argc, &argv, gerror);
         g_option_context_free(opt_context);
         if (!success) {
@@ -275,29 +272,28 @@ int main(int argc, char **argv)
         // throw stdruntime_error("The --allow-anonymous option only makes sense when used with --server.");
         // }
 
-        loop = SyncEvo::GMainLoopStealCXX(g_main_loop_new (NULL, FALSE));
+        loop = SyncEvo::GMainLoopStealCXX(g_main_loop_new (nullptr, FALSE));
         if (!loop) {
             throw std::runtime_error("could not allocate main loop");
         }
 
         if (opt_fork_exec || opt_fork_exec_failure) {
             boost::scoped_ptr<Test> testptr;
-            boost::shared_ptr<SyncEvo::ForkExecParent> forkexec =
-                SyncEvo::ForkExecParent::create(opt_fork_exec_failure ? "/bin/false" : argv[0]);
+            auto forkexec = SyncEvo::make_weak_shared::make<SyncEvo::ForkExecParent>(opt_fork_exec_failure ? "/bin/false" : argv[0]);
             if (opt_kill) {
                 forkexec->addEnvVar("DBUS_CLIENT_SERVER_KILL", opt_kill);
             }
             forkexec->m_onConnect.connect(g_strcmp0(opt_kill, "child") ?
-                                          boost::bind(onChildConnect, _1, boost::ref(testptr)) :
-                                          boost::bind(onChildConnectKill, _1, boost::ref(testptr)));
+                                          boost::bind(onChildConnect, boost::placeholders::_1, boost::ref(testptr)) :
+                                          boost::bind(onChildConnectKill, boost::placeholders::_1, boost::ref(testptr)));
             forkexec->m_onQuit.connect(onQuit);
-            forkexec->m_onFailure.connect(boost::bind(onFailure, _2));
+            forkexec->m_onFailure.connect(boost::bind(onFailure, boost::placeholders::_2));
             forkexec->start();
             g_main_loop_run(loop.get());
         } else if (opt_server) {
             boost::scoped_ptr<Test> testptr;
-            boost::shared_ptr<GDBusCXX::DBusServerCXX> server =
-                GDBusCXX::DBusServerCXX::listen(boost::bind(newClientConnection, _1, _2, boost::ref(testptr)),
+            std::shared_ptr<GDBusCXX::DBusServerCXX> server =
+                GDBusCXX::DBusServerCXX::listen(boost::bind(newClientConnection, boost::placeholders::_1, boost::placeholders::_2, boost::ref(testptr)),
                                                 &dbusError);
             if (!server) {
                 dbusError.throwFailure("starting server");
@@ -306,13 +302,12 @@ int main(int argc, char **argv)
 
             g_main_loop_run(loop.get());
         } else if (SyncEvo::ForkExecChild::wasForked()) {
-            boost::shared_ptr<SyncEvo::ForkExecChild> forkexec =
-                SyncEvo::ForkExecChild::create();
+            auto forkexec = SyncEvo::make_weak_shared::make<SyncEvo::ForkExecChild>();
 
             forkexec->m_onConnect.connect(!g_strcmp0(getenv("DBUS_CLIENT_SERVER_KILL"), "child") ? calledByServer :
                                           !g_strcmp0(getenv("DBUS_CLIENT_SERVER_KILL"), "server") ? killServer :
                                           callServer);
-            forkexec->m_onFailure.connect(boost::bind(onFailure, _2));
+            forkexec->m_onFailure.connect(boost::bind(onFailure, boost::placeholders::_2));
             forkexec->connect();
             g_main_loop_run(loop.get());
         } else {

@@ -154,7 +154,7 @@ public:
         QStringList content;
         content << detail.definitionName(); // <detail>
         QVariantMap fields = detail.variantValues();
-        for (QVariantMap::const_iterator entry = fields.begin();
+        for (auto entry = fields.begin();
              entry != fields.end();
              ++entry) {
             const QString &fieldName = entry.key();
@@ -198,7 +198,7 @@ public:
 #else
         StringEscape escape('|', "^");
         std::list<std::string> strings;
-        BOOST_FOREACH(const QString &str, content) {
+        for (const QString &str: content) {
             strings.push_back(escape.escape(string(str.toUtf8().constData())));
         }
         prop.setValue(QVariant(QString::fromUtf8(boost::join(strings, "^").c_str())));
@@ -237,7 +237,7 @@ public:
         // detail name available?
         if (content.size() > 0) {
             const QString &detailName = content[0];
-            QMap<QString, QContactDetailDefinition>::const_iterator it = m_details.constFind(detailName);
+            auto it = m_details.constFind(detailName);
             // detail still exists?
             if (it != m_details.constEnd()) {
                 const QContactDetailDefinition &definition = *it;
@@ -273,9 +273,8 @@ public:
                     }
 
                     // skip fields which are (no longer) valid, have wrong type or wrong value
-                    QMap<QString, QContactDetailFieldDefinition> fields = definition.fields();
-                    QMap<QString, QContactDetailFieldDefinition>::const_iterator it2 =
-                        fields.constFind(fieldName);
+                    auto fields = definition.fields();
+                    auto it2 = fields.constFind(fieldName);
                     if (it2 != fields.constEnd()) {
                         if (it2->dataType() == value.type()) {
                             QVariantList allowed = it2->allowableValues();
@@ -376,7 +375,7 @@ public:
 QtContactsSource::QtContactsSource(const SyncSourceParams &params) :
     TrackingSyncSource(params)
 {
-    m_data = NULL;
+    m_data = nullptr;
     SyncSourceLogging::init(InitList<std::string>("N_FIRST") + "N_MIDDLE" + "N_LAST",
                             " ",
                             m_operations);

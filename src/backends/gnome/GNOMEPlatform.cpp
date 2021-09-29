@@ -21,9 +21,7 @@
 
 #ifdef USE_GNOME_KEYRING
 
-extern "C" {
 #include <libsecret/secret.h>
-}
 
 #include "GNOMEPlatform.h"
 
@@ -37,12 +35,12 @@ SE_BEGIN_CXX
 
 /**
  * GNOME keyring distinguishes between empty and unset
- * password keys. This function returns NULL for an
+ * password keys. This function returns nullptr for an
  * empty std::string.
  */
 inline const char *passwdStr(const std::string &str)
 {
-    return str.empty() ? NULL : str.c_str();
+    return str.empty() ? nullptr : str.c_str();
 }
 
 static bool UseGNOMEKeyring(const InitStateTri &keyring)
@@ -128,7 +126,7 @@ bool GNOMELoadPasswordSlot(const InitStateTri &keyring,
         GErrorCXX gerror;
         PlainGStr result(secret_password_lookupv_sync(SECRET_SCHEMA_COMPAT_NETWORK,
                                                       hash,
-                                                      NULL,
+                                                      nullptr,
                                                       gerror));
 
         // if find password stored in gnome keyring
@@ -203,10 +201,10 @@ bool GNOMESavePasswordSlot(const InitStateTri &keyring,
         GErrorCXX gerror;
         gboolean result = secret_password_storev_sync(SECRET_SCHEMA_COMPAT_NETWORK,
                                                       hash,
-                                                      NULL,
+                                                      nullptr,
                                                       label.c_str(),
                                                       password.c_str(),
-                                                      NULL,
+                                                      nullptr,
                                                       gerror);
         if (result) {
             SE_LOG_DEBUG(NULL, "saved password in GNOME keyring using %s", key.toString().c_str());

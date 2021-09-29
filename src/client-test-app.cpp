@@ -33,8 +33,6 @@
 #include <syncevo/util.h>
 #include <syncevo/VolatileConfigNode.h>
 
-#include <boost/bind.hpp>
-
 #include <syncevo/declarations.h>
 
 SE_BEGIN_CXX
@@ -68,7 +66,7 @@ public:
  * around for each of eds_event and eds_contact/30, if they ever were used
  * during testing.
  */
-static map<string, boost::shared_ptr<TestingSyncSource> > lockEvolution;
+static map<string, std::shared_ptr<TestingSyncSource> > lockEvolution;
 static void CleanupSources()
 {
     lockEvolution.clear();
@@ -142,7 +140,7 @@ public:
         size_t count = 0;
         while (count != m_configs.size()) {
             count = m_configs.size();
-            BOOST_FOREACH (const RegisterSyncSourceTest *test,
+            for (const RegisterSyncSourceTest *test:
                            TestRegistry(m_configs)) {
                 test->init();
             }
@@ -175,17 +173,17 @@ public:
         /* check sources */
         const char *sourcelist = getenv("CLIENT_TEST_SOURCES");
         set<string> sources;
-        if (sourcelist) {
+        if (sourcelist && sourcelist[0]) {
             boost::split(sources, sourcelist, boost::is_any_of(","));
         } else {
-            BOOST_FOREACH(const RegisterSyncSourceTest *test, m_configs) {
+            for (const RegisterSyncSourceTest *test: m_configs) {
                 if (!test->m_configName.empty()) {
                     sources.insert(test->m_configName);
                 }
             }
         }
 
-        BOOST_FOREACH(const RegisterSyncSourceTest *test, m_configs) {
+        for (const RegisterSyncSourceTest *test: m_configs) {
             if (sources.find(test->m_configName) != sources.end() &&
                 !test->m_configName.empty()) {
                 m_syncSource2Config.push_back(test->m_configName);
@@ -195,12 +193,12 @@ public:
         /* Local Test SyncSource : remove all virtual datastores, inserting the
          * sub datastores*/
         ClientTest::Config conf;
-        BOOST_FOREACH (string source, sources) {
+        for (string source: sources) {
             getSourceConfig (source, conf);
             if (!conf.m_subConfigs.empty()) {
                 vector<string> subs;
                 boost::split (subs, conf.m_subConfigs, boost::is_any_of(","));
-                BOOST_FOREACH (string sub, subs) {
+                for (string sub: subs) {
                     pushLocalSource2Config(sub);
                 }
             } else {
@@ -210,8 +208,8 @@ public:
         // get configuration and set obligatory fields
         Logger::instance().setLevel(Logger::DEBUG);
         std::string root = std::string("evolution/") + server + "_" + m_clientID;
-        boost::shared_ptr<SyncConfig> config(new SyncConfig(string(server) + "_" + m_clientID));
-        boost::shared_ptr<SyncConfig> from = boost::shared_ptr<SyncConfig> ();
+        auto config = std::make_shared<SyncConfig>(string(server) + "_" + m_clientID);
+        std::shared_ptr<SyncConfig> from = std::shared_ptr<SyncConfig> ();
 
         if (!config->exists()) {
             // no configuration yet, create in different contexts because
@@ -225,7 +223,7 @@ public:
             }
             config->setDevID(m_clientID == "1" ? "sc-api-nat" : "sc-pim-ppc");
         }
-        BOOST_FOREACH(const RegisterSyncSourceTest *test, m_configs) {
+        for (const RegisterSyncSourceTest *test: m_configs) {
             if (test->m_configName.empty()) {
                 continue;
             }
@@ -234,7 +232,7 @@ public:
             getSourceConfig(test, testconfig);
             CPPUNIT_ASSERT(!testconfig.m_type.empty());
 
-            boost::shared_ptr<SyncSourceConfig> sc = config->getSyncSourceConfig(testconfig.m_sourceName);
+            std::shared_ptr<SyncSourceConfig> sc = config->getSyncSourceConfig(testconfig.m_sourceName);
             if (!sc || !sc->exists()) {
                 // no configuration yet
                 config->setSourceDefaults(testconfig.m_sourceName);
@@ -242,7 +240,7 @@ public:
                 CPPUNIT_ASSERT(sc);
                 sc->setURI(testconfig.m_uri);
                 if(from && !testconfig.m_sourceNameServerTemplate.empty()) {
-                    boost::shared_ptr<SyncSourceConfig> scServerTemplate = from->getSyncSourceConfig(testconfig.m_sourceNameServerTemplate);
+                    std::shared_ptr<SyncSourceConfig> scServerTemplate = from->getSyncSourceConfig(testconfig.m_sourceNameServerTemplate);
                     sc->setURI(scServerTemplate->getURI());
                 }
             }
@@ -340,12 +338,14 @@ public:
         rm_r(current);
         mkdir_p(current);
         rm_r("Client_Sync_Current");
-        symlink(current.c_str(), "Client_Sync_Current");
+        auto err = symlink(current.c_str(), "Client_Sync_Current");
+        if (err != 0) {
+                SE_LOG_WARNING(NULL, "symlink to %s: %s", current.c_str(), strerror(errno));
+        }
 
         string server = getenv("CLIENT_TEST_SERVER") ? getenv("CLIENT_TEST_SERVER") : "funambol";
         server += "_";
         server += m_clientID;
-        
 
         class ClientTest : public CmdlineSyncClient {
         public:
@@ -397,14 +397,14 @@ public:
                 }
             }
 
-            virtual boost::shared_ptr<TransportAgent> createTransportAgent()
+            virtual std::shared_ptr<TransportAgent> createTransportAgent()
             {
-                boost::shared_ptr<TransportAgent>wrapper = m_options.m_transport;
-                boost::shared_ptr<TransportAgent>agent =SyncContext::createTransportAgent();
+                std::shared_ptr<TransportAgent>wrapper = m_options.m_transport;
+                std::shared_ptr<TransportAgent>agent =SyncContext::createTransportAgent();
                 if (!wrapper.get())
                     return agent;
-                dynamic_cast<TransportWrapper*>(wrapper.get())->setAgent(agent);
-                dynamic_cast<TransportWrapper*>(wrapper.get())->setSyncOptions(&m_options);
+                static_cast<TransportWrapper*>(wrapper.get())->setAgent(agent);
+                static_cast<TransportWrapper*>(wrapper.get())->setSyncOptions(&m_options);
                 return wrapper;
             }
 
@@ -461,7 +461,7 @@ private:
     }
 
     /** called by test frame work */
-    static TestingSyncSource *createSource(ClientTest &client, const std::string &clientID, int source, bool isSourceA) {
+    static std::unique_ptr<TestingSyncSource> createSource(ClientTest &client, const std::string &clientID, int source, bool isSourceA) {
         TestEvolution &evClient((TestEvolution &)client);
         string name = evClient.m_localSource2Config[source];
 
@@ -472,7 +472,7 @@ private:
     }
 
     /** called internally in this class */
-    TestingSyncSource *createNamedSource(const string &name, bool isSourceA) {
+    std::unique_ptr<TestingSyncSource> createNamedSource(const string &name, bool isSourceA) {
         string database = getDatabaseName(name);
         std::string config = "target-config@client-test";
         const char *server = getenv("CLIENT_TEST_SERVER");
@@ -487,7 +487,7 @@ private:
                      name.c_str(),
                      config.c_str(),
                      tracking.c_str());
-        boost::shared_ptr<SyncConfig> context(new SyncConfig(config));
+        auto context = std::make_shared<SyncConfig>(config);
         SyncSourceNodes nodes = context->getSyncSourceNodes(name, tracking);
 
         // The user of client-test must have configured the source
@@ -495,17 +495,17 @@ private:
         // Client::Sync testing.  Our testing source must use the same
         // properties, but different change tracking.
         std::string peerName = server ? (std::string(server) + "_" + m_clientID) : "@default";
-        boost::shared_ptr<SyncConfig> peer(new SyncConfig(peerName));
+        auto peer = std::make_shared<SyncConfig>(peerName);
         SyncSourceNodes peerNodes = peer->getSyncSourceNodes(name);
         SE_LOG_DEBUG(NULL, "overriding testing source %s properties with the ones from config %s = %s",
                      name.c_str(),
                      peerName.c_str(),
                      peer->getRootPath().c_str());
-        BOOST_FOREACH(const ConfigProperty *prop, SyncSourceConfig::getRegistry()) {
+        for (const ConfigProperty *prop: SyncSourceConfig::getRegistry()) {
             if (prop->isHidden()) {
                 continue;
             }
-            boost::shared_ptr<FilterConfigNode> node = peerNodes.getNode(*prop);
+            std::shared_ptr<FilterConfigNode> node = peerNodes.getNode(*prop);
             InitStateString value = prop->getProperty(*node);
             SE_LOG_DEBUG(NULL, "   %s = %s (%s)",
                          prop->getMainName().c_str(),
@@ -518,7 +518,7 @@ private:
 
         // Same as in init() above: set values if still empty, but don't
         // overwrite anything.
-        boost::shared_ptr<FilterConfigNode> props = nodes.getProperties();
+        std::shared_ptr<FilterConfigNode> props = nodes.getProperties();
         std::string value;
         if (!props->getProperty("database", value)) {
             props->setProperty("database", database);
@@ -544,14 +544,14 @@ private:
 
         // downcasting here: anyone who registers his sources for testing
         // must ensure that they are indeed TestingSyncSource instances
-        SyncSource *ss = SyncSource::createSource(params);
-        return static_cast<TestingSyncSource *>(ss);
+        auto ss = SyncSource::createSource(params);
+        return std::unique_ptr<TestingSyncSource>(static_cast<TestingSyncSource *>(ss.release()));
     }
 
     // push source into localsource2config if it doesn't exist in the vector
     void pushLocalSource2Config(const string &source) {
         bool finded = false;
-        BOOST_FOREACH(string element, m_localSource2Config) {
+        for (string element: m_localSource2Config) {
             if (boost::iequals(element, source)) {
                 finded = true;
                 break;
@@ -578,7 +578,7 @@ private:
 
         if (!basename.empty() &&
             lockEvolution.find(basename) == lockEvolution.end()) {
-            lockEvolution[basename].reset(createNamedSource(name, true));
+            lockEvolution[basename] = createNamedSource(name, true);
             lockEvolution[basename]->open();
             ClientTest::registerCleanup(CleanupSources);
         }

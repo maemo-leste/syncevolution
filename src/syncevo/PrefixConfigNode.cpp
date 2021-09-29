@@ -20,14 +20,13 @@
 #include <syncevo/PrefixConfigNode.h>
 #include <syncevo/Exception.h>
 
-#include <boost/foreach.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
 PrefixConfigNode::PrefixConfigNode(const std::string prefix,
-                                   const boost::shared_ptr<ConfigNode> &node) :
+                                   const std::shared_ptr<ConfigNode> &node) :
     m_prefix(prefix),
     m_node(node),
     m_readOnlyNode(node)
@@ -35,7 +34,7 @@ PrefixConfigNode::PrefixConfigNode(const std::string prefix,
 }
 
 PrefixConfigNode::PrefixConfigNode(const std::string prefix,
-                                   const boost::shared_ptr<const ConfigNode> &node) :
+                                   const std::shared_ptr<const ConfigNode> &node) :
     m_prefix(prefix),
     m_readOnlyNode(node)
 {
@@ -60,7 +59,7 @@ void PrefixConfigNode::readProperties(ConfigProps &props) const
     ConfigProps original;
     m_readOnlyNode->readProperties(original);
 
-    BOOST_FOREACH(const StringPair &prop, original) {
+    for (const auto &prop: original) {
         std::string key = prop.first;
         std::string value = prop.second;
 
@@ -74,7 +73,7 @@ void PrefixConfigNode::clear()
 {
     ConfigProps original;
     m_readOnlyNode->readProperties(original);
-    BOOST_FOREACH(const StringPair &prop, original) {
+    for (const auto &prop: original) {
         std::string key = prop.first;
         if (boost::starts_with(key, m_prefix)) {
             m_node->removeProperty(key);

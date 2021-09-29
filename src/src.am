@@ -5,13 +5,8 @@ include $(top_srcdir)/src/gnome-bluetooth/gnome-bluetooth.am
 src_cppflags += -I$(top_srcdir)/src/gnome-bluetooth
 endif
 
-if COND_GIO_GDBUS
 include $(top_srcdir)/src/gdbusxx/gdbusxx.am
 src_cppflags += -I$(top_srcdir)/src/gdbusxx
-else
-include $(top_srcdir)/src/gdbus/gdbus.am
-src_cppflags += -I$(top_srcdir)/src/gdbus
-endif
 
 if COND_CORE
 include $(top_srcdir)/src/syncevo/syncevo.am
@@ -42,12 +37,14 @@ if COND_DBUS
 nodist_bin_SCRIPTS += src/syncevo-http-server
 endif
 src/syncevo-http-server: $(top_srcdir)/test/syncevo-http-server.py
-	$(AM_V_GEN)cp $< $@
+	$(AM_V_GEN)sed -e 's|\@PYTHON\@|$(PYTHON)|' $< > $@
+	$(AM_V_GEN)chmod a+x $@
 CLEANFILES += src/syncevo-http-server
 
 nodist_bin_SCRIPTS += src/syncevo-phone-config
 src/syncevo-phone-config: $(top_srcdir)/test/syncevo-phone-config.py
-	$(AM_V_GEN)cp $< $@
+	$(AM_V_GEN)sed -e 's|\@PYTHON\@|$(PYTHON)|' $< > $@
+	$(AM_V_GEN)chmod a+x $@
 CLEANFILES += src/syncevo-phone-config
 
 SYNCEVOLUTION_DEP =
@@ -72,7 +69,7 @@ src/synccompare : $(top_srcdir)/test/Algorithm/Diff.pm $(top_srcdir)/test/syncco
 bin_SCRIPTS += src/synclog2html
 CLEANFILES += src/synclog2html
 src/synclog2html: $(top_srcdir)/test/log2html.py
-	$(AM_V_GEN)cp $< $@ && chmod u+x $@
+	$(AM_V_GEN)sed -e 's|\@PYTHON\@|$(PYTHON)|' $< > $@ && chmod u+x $@
 
 CORE_SOURCES =
 
@@ -91,10 +88,16 @@ else
 CORE_SOURCES += $(BACKEND_REGISTRIES)
 endif
 
-CORE_CXXFLAGS = $(SYNTHESIS_CFLAGS) $(CPPUNIT_CFLAGS)
+CORE_CXXFLAGS = $(SYNTHESIS_CFLAGS)
 CORE_LDADD = $(SYNCEVOLUTION_LDADD) src/syncevo/libsyncevolution.la $(GLIB_LIBS) $(GTHREAD_LIBS) $(GOBJECT_LIBS) $(LIBS)
 CORE_DEP = $(SYNCEVOLUTION_DEP) src/syncevo/libsyncevolution.la $(SYNTHESIS_DEP)
-CORE_LD_FLAGS = -Wl,-uSyncEvolution_Module_Version -Wl,--export-dynamic $(CPPUNIT_LIBS) $(ADDITIONAL_LDFLAGS)
+CORE_LD_FLAGS = -Wl,-uSyncEvolution_Module_Version -Wl,--export-dynamic $(ADDITIONAL_LDFLAGS)
+
+if ENABLE_UNIT_TESTS
+CORE_CXXFLAGS += $(CPPUNIT_CFLAGS)
+CORE_LD_FLAGS += $(CPPUNIT_LIBS)
+endif
+
 
 if ENABLE_ICALTZ_UTIL
 # Force inclusion of our own ical replacement functions directly
@@ -105,7 +108,7 @@ endif
 
 # Used when build syncevolution.org binaries to link statically
 # against certain libraries with ABIs that changed between distros
-# (libpcrecpp, libopenobex).
+# (libopenobex).
 CORE_LDADD += $(EXTRACORELDADD)
 
 # put link to static c++ library into current directory, needed if compiling with --enable-static-c++
@@ -129,8 +132,8 @@ if COND_DBUS
 src_syncevolution_LDADD += $(gdbus_build_dir)/libgdbussyncevo.la
 src_syncevolution_DEPENDENCIES += $(gdbus_build_dir)/libgdbussyncevo.la
 endif
-src_syncevolution_LDFLAGS = $(PCRECPP_LIBS) $(CORE_LD_FLAGS) $(DBUS_LIBS)
-src_syncevolution_CXXFLAGS = $(PCRECPP_CFLAGS) $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(DBUS_CFLAGS) $(SYNCEVO_WFLAGS)
+src_syncevolution_LDFLAGS = $(CORE_LD_FLAGS) $(DBUS_LIBS)
+src_syncevolution_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(DBUS_CFLAGS) $(SYNCEVO_WFLAGS)
 src_syncevolution_CPPFLAGS = $(src_cppflags) -I$(gdbus_dir)
 
 # include Synthesis in distribution: package only files in git if using a git checkout
@@ -194,8 +197,8 @@ nodist_src_syncevo_local_sync_SOURCES = test/test.cpp
 endif
 src_syncevo_local_sync_LDADD = $(gdbus_build_dir)/libgdbussyncevo.la $(CORE_LDADD) $(DBUS_LIBS)
 src_syncevo_local_sync_CPPFLAGS = -DHAVE_CONFIG_H -I$(gdbus_dir) $(src_cppflags)
-src_syncevo_local_sync_CXXFLAGS = $(PCRECPP_CFLAGS) $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(GLIB_CFLAGS) $(DBUS_CFLAGS) $(LIBSOUP_CFLAGS) $(SYNCEVO_WFLAGS)
-src_syncevo_local_sync_LDFLAGS = $(PCRECPP_LIBS) $(CORE_LD_FLAGS) $(LIBSOUP_LIBS)
+src_syncevo_local_sync_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(GLIB_CFLAGS) $(DBUS_CFLAGS) $(LIBSOUP_CFLAGS) $(SYNCEVO_WFLAGS)
+src_syncevo_local_sync_LDFLAGS = $(CORE_LD_FLAGS) $(LIBSOUP_LIBS)
 src_syncevo_local_sync_DEPENDENCIES = $(top_builddir)/$(gdbus_build_dir)/libgdbussyncevo.la $(EXTRA_LTLIBRARIES) $(CORE_DEP) $(SYNTHESIS_DEP)
 endif
 
@@ -213,8 +216,8 @@ endif
 
 src_syncevo_dbus_server_LDADD = $(builddir)/src/dbus/server/libsyncevodbusserver.la $(gdbus_build_dir)/libgdbussyncevo.la $(CORE_LDADD) $(LIBNOTIFY_LIBS) $(MLITE_LIBS) $(DBUS_LIBS)
 src_syncevo_dbus_server_CPPFLAGS = -DHAVE_CONFIG_H -I$(gdbus_dir) $(src_cppflags) -DSYNCEVOLUTION_LOCALEDIR=\"${SYNCEVOLUTION_LOCALEDIR}\"
-src_syncevo_dbus_server_CXXFLAGS = $(PCRECPP_CFLAGS) $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(GLIB_CFLAGS) $(DBUS_CFLAGS) $(LIBNOTIFY_CFLAGS) $(MLITE_CFLAGS) $(SYNCEVO_WFLAGS)
-src_syncevo_dbus_server_LDFLAGS = $(PCRECPP_LIBS) $(CORE_LD_FLAGS)
+src_syncevo_dbus_server_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(GLIB_CFLAGS) $(DBUS_CFLAGS) $(LIBNOTIFY_CFLAGS) $(MLITE_CFLAGS) $(SYNCEVO_WFLAGS)
+src_syncevo_dbus_server_LDFLAGS = $(CORE_LD_FLAGS)
 src_syncevo_dbus_server_DEPENDENCIES = $(builddir)/src/dbus/server/libsyncevodbusserver.la $(gdbus_build_dir)/libgdbussyncevo.la $(EXTRA_LTLIBRARIES) $(CORE_DEP) $(SYNTHESIS_DEP)
 
 # syncevo-dbus-server's helper binary
@@ -228,8 +231,8 @@ src_syncevo_dbus_helper_SOURCES = \
 
 src_syncevo_dbus_helper_LDADD = $(builddir)/src/dbus/server/libsyncevodbushelper.la $(gdbus_build_dir)/libgdbussyncevo.la $(CORE_LDADD) $(DBUS_LIBS)
 src_syncevo_dbus_helper_CPPFLAGS = -DHAVE_CONFIG_H -I$(gdbus_dir) $(src_cppflags) -DSYNCEVOLUTION_LOCALEDIR=\"${SYNCEVOLUTION_LOCALEDIR}\"
-src_syncevo_dbus_helper_CXXFLAGS = $(PCRECPP_CFLAGS) $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(GLIB_CFLAGS) $(DBUS_CFLAGS) $(SYNCEVO_WFLAGS)
-src_syncevo_dbus_helper_LDFLAGS = $(PCRECPP_LIBS) $(CORE_LD_FLAGS)
+src_syncevo_dbus_helper_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(GLIB_CFLAGS) $(DBUS_CFLAGS) $(SYNCEVO_WFLAGS)
+src_syncevo_dbus_helper_LDFLAGS = $(CORE_LD_FLAGS)
 src_syncevo_dbus_helper_DEPENDENCIES = $(builddir)/src/dbus/server/libsyncevodbushelper.la $(gdbus_build_dir)/libgdbussyncevo.la $(EXTRA_LTLIBRARIES) $(CORE_DEP) $(SYNTHESIS_DEP)
 endif # COND_DBUS
 
@@ -300,9 +303,9 @@ endif
 src_client_test_undef = $(shell nm $(patsubst %.la,%.a,$(subst /lib,/.libs/lib,$(src_client_test_libs))) | grep funambolAutoRegisterRegistry | sed -e 's/.* /-Wl,-u/' )
 
 src_client_test_CPPFLAGS = -DHAVE_CONFIG_H -DENABLE_INTEGRATION_TESTS -DENABLE_UNIT_TESTS $(src_cppflags) $(QT_CPPFLAGS)
-src_client_test_CXXFLAGS = $(filter-out -O2, @CPPUNIT_CFLAGS@ $(PCRECPP_CFLAGS) $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(filter-out -O2 -g -W -Wall, $(QT_CXXFLAGS)) $(SYNCEVO_WFLAGS))
+src_client_test_CXXFLAGS = $(filter-out -O2, @CPPUNIT_CFLAGS@ $(SYNCEVOLUTION_CXXFLAGS) $(CORE_CXXFLAGS) $(filter-out -O2 -g -W -Wall, $(QT_CXXFLAGS)) $(SYNCEVO_WFLAGS))
 src_client_test_LDFLAGS = @CPPUNIT_LIBS@  $(src_client_test_undef) $(CORE_LD_FLAGS) $(QT_LDFLAGS)
-src_client_test_LDADD = $(src_client_test_libs) $(CORE_LDADD) $(PCRECPP_LIBS) $(SYNTHESIS_ENGINE) $(QT_LIBS)
+src_client_test_LDADD = $(src_client_test_libs) $(CORE_LDADD) $(SYNTHESIS_ENGINE) $(QT_LIBS)
 
 # These dependencies are intentionally a bit too broad:
 # they ensure that all files are in place to *run* client-test.
@@ -367,7 +370,7 @@ testcase2patch: $(TEST_FILES_GENERATED)
 nodist_noinst_DATA += src/ClientTest.cpp.html
 CLEANFILES += src/ClientTest.cpp.html
 src/ClientTest.cpp.html: build/source2html.py test/ClientTest.cpp
-	$(AM_V_GEN)python $+ >$@
+	$(AM_V_GEN)$(PYTHON) $+ >$@
 
 # copy base test files
 $(filter-out %.tem, $(filter src/testcases/%, $(subst $(top_srcdir)/test/,src/,$(CLIENT_LIB_TEST_FILES)))) : src/% : $(top_srcdir)/test/%

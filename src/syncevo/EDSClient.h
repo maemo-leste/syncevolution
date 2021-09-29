@@ -22,17 +22,17 @@
 
 #include <config.h>
 
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 #if defined(HAVE_EDS) && defined(USE_EDS_CLIENT)
 
 #include <syncevo/GLibSupport.h>
 
 #include <libedataserver/libedataserver.h>
-#include <boost/function.hpp>
-#include <boost/utility.hpp>
-#include <boost/bind.hpp>
-#include <boost/lambda/core.hpp>
+#include <boost/noncopyable.hpp>
+#include <functional>
+
+#include <functional>
 #include <list>
 
 typedef SyncEvo::GListCXX<ESource, GList, SyncEvo::GObjectDestructor> ESourceListCXX;
@@ -49,7 +49,7 @@ SE_BEGIN_CXX
 // It may get used by backends which were compiled against
 // EDS >= 3.6 even when the libsyncevolution itself wasn't.
 class EDSRegistryLoader;
-EDSRegistryLoader &EDSRegistryLoaderSingleton(const boost::shared_ptr<EDSRegistryLoader> &loader);
+EDSRegistryLoader &EDSRegistryLoaderSingleton(const std::shared_ptr<EDSRegistryLoader> &loader);
 
 // The following code implements EDSRegistryLoader.
 // For the sake of simplicity, its all in the header file,
@@ -66,7 +66,7 @@ EDSRegistryLoader &EDSRegistryLoaderSingleton(const boost::shared_ptr<EDSRegistr
 class EDSRegistryLoader : private boost::noncopyable
 {
  public:
-    typedef boost::function<void (const ESourceRegistryCXX &registry,
+    typedef std::function<void (const ESourceRegistryCXX &registry,
                                   const GError *gerror)> Callback_t;
 
     /**
@@ -75,7 +75,7 @@ class EDSRegistryLoader : private boost::noncopyable
      */
     static void getESourceRegistryAsync(const Callback_t &cb)
     {
-        EDSRegistryLoaderSingleton(boost::shared_ptr<EDSRegistryLoader>(new EDSRegistryLoader)).async(cb);
+        EDSRegistryLoaderSingleton(std::make_shared<EDSRegistryLoader>()).async(cb);
     }
 
     /**
@@ -83,7 +83,7 @@ class EDSRegistryLoader : private boost::noncopyable
      */
     static ESourceRegistryCXX getESourceRegistry()
     {
-        return EDSRegistryLoaderSingleton(boost::shared_ptr<EDSRegistryLoader>(new EDSRegistryLoader)).sync();
+        return EDSRegistryLoaderSingleton(std::make_shared<EDSRegistryLoader>()).sync();
     }
 
  private:
@@ -98,43 +98,21 @@ class EDSRegistryLoader : private boost::noncopyable
             cb(m_registry, m_gerror);
         } else {
             m_pending.push_back(cb);
-#if 0
-            m_loading = true;
-            SYNCEVO_GLIB_CALL_ASYNC(e_source_registry_new,
-                                    boost::bind(&EDSRegistryLoader::created,
-                                                this,
-                                                _1, _2),
-                                    NULL);
-#else
 	    ESourceRegistry *registry;
 	    GErrorCXX gerror;
-	    registry = e_source_registry_new_sync(NULL, gerror);
+	    registry = e_source_registry_new_sync(nullptr, gerror);
 	    created(registry, gerror);
-#endif
         }
     }
 
     ESourceRegistryCXX sync()
     {
-#if 0
-        if (!m_loading) {
-            m_loading = true;
-            SYNCEVO_GLIB_CALL_ASYNC(e_source_registry_new,
-                                    boost::bind(&EDSRegistryLoader::created,
-                                                this,
-                                                _1, _2),
-                                    NULL);
-        }
-
-        GRunWhile(!boost::lambda::var(m_registry) && !boost::lambda::var(m_gerror));
-#else
         if (!m_registry) {
             ESourceRegistry *registry;
             GErrorCXX gerror;
-            registry = e_source_registry_new_sync(NULL, gerror);
+            registry = e_source_registry_new_sync(nullptr, gerror);
             created(registry, gerror);
         }
-#endif
 
         if (m_registry) {
             return m_registry;
@@ -151,7 +129,7 @@ class EDSRegistryLoader : private boost::noncopyable
         try {
             m_registry = ESourceRegistryCXX::steal(registry);
             m_gerror = gerror;
-            BOOST_FOREACH (const Callback_t &cb, m_pending) {
+            for (const auto &cb: m_pending) {
                 cb(m_registry, m_gerror);
             }
         } catch (...) {

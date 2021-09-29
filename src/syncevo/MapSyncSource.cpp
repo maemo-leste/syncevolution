@@ -27,18 +27,19 @@ SDKInterface *SubSyncSource::getSynthesisAPI() const
 {
     return m_parent ?
         m_parent->getSynthesisAPI() :
-        NULL;
+        nullptr;
 }
 
 
 
 MapSyncSource::MapSyncSource(const SyncSourceParams &params,
-                             const boost::shared_ptr<SubSyncSource> &sub) :
+                             const std::shared_ptr<SubSyncSource> &sub) :
     TestingSyncSource(params),
     m_sub(sub)
 {
-    boost::shared_ptr<ConfigNode> safeNode(new SafeConfigNode(params.m_nodes.getTrackingNode()));
-    m_trackingNode.reset(new PrefixConfigNode("item-", safeNode));
+    auto safeNode = std::make_shared<SafeConfigNode>(params.m_nodes.getTrackingNode());
+    m_trackingNode.reset(new PrefixConfigNode("item-",
+                                              std::static_pointer_cast<ConfigNode>(safeNode)));
     m_metaNode = safeNode;
 
     // parameters don't matter because actual implementation is in sub source
@@ -79,7 +80,7 @@ void MapSyncSource::detectChanges(SyncSourceRevisions::ChangeMode mode)
     m_revisions.clear();
     ConfigProps props;
     m_trackingNode->readProperties(props);
-    BOOST_FOREACH(const StringPair &prop, props) {
+    for (const auto &prop: props) {
         const std::string &mainid = prop.first;
         const std::string &value = prop.second;
         size_t pos = value.find('/');
@@ -129,37 +130,35 @@ void MapSyncSource::detectChanges(SyncSourceRevisions::ChangeMode mode)
             m_sub->updateAllSubItems(newRevisions);
         }
         // deleted items...
-        BOOST_FOREACH(const SubRevisionMap_t::value_type &entry,
-                      m_revisions) {
+        for (const auto &entry: m_revisions) {
             const std::string &mainid = entry.first;
             const SubRevisionEntry &ids = entry.second;
             if (newRevisions.find(entry.first) == newRevisions.end()) {
-                BOOST_FOREACH(const std::string &subid, ids.m_subids) {
+                for (const std::string &subid: ids.m_subids) {
                     addItem(createLUID(mainid, subid), DELETED);
                 }
             }
         }
         // added or updated items...
-        BOOST_FOREACH(const SubRevisionMap_t::value_type &entry,
-                      newRevisions) {
+        for (const auto &entry: newRevisions) {
             const std::string &mainid = entry.first;
             const SubRevisionEntry &ids = entry.second;
-            SubRevisionMap_t::iterator it = m_revisions.find(entry.first);
+            auto it = m_revisions.find(entry.first);
             if (it == m_revisions.end()) {
                 // all sub-items are added
-                BOOST_FOREACH(const std::string &subid, ids.m_subids) {
+                for (const std::string &subid: ids.m_subids) {
                     addItem(createLUID(mainid, subid), NEW);
                 }
             } else if (it->second.m_revision != ids.m_revision) {
                 // merged item was modified, some of its sub-items
                 // might have been removed...
-                BOOST_FOREACH(const std::string &subid, it->second.m_subids) {
+                for (const std::string &subid: it->second.m_subids) {
                     if (ids.m_subids.find(subid) == ids.m_subids.end()) {
                         addItem(createLUID(mainid, subid), DELETED);
                     }
                 }
                 // ... or added/modified
-                BOOST_FOREACH(const std::string &subid, ids.m_subids) {
+                for (const std::string &subid: ids.m_subids) {
                     if (it->second.m_subids.find(subid) == it->second.m_subids.end()){ 
                         addItem(createLUID(mainid, subid), NEW);
                     } else {
@@ -184,11 +183,10 @@ void MapSyncSource::detectChanges(SyncSourceRevisions::ChangeMode mode)
     }
 
     // always set the full list of luids in SyncSourceChanges
-    BOOST_FOREACH(const SubRevisionMap_t::value_type &entry,
-                  m_revisions) {
+    for (const auto &entry: m_revisions) {
         const std::string &mainid = entry.first;
         const SubRevisionEntry &ids = entry.second;
-        BOOST_FOREACH(const std::string &subid, ids.m_subids) {
+        for (const std::string &subid: ids.m_subids) {
             addItem(createLUID(mainid, subid));
         }
     }
@@ -256,14 +254,13 @@ std::string MapSyncSource::endSync(bool success)
         // This part is different from TrackingSyncSource: our luid/rev information
         // is in m_revisions and only gets dumped into m_trackingNode at the very end here.
         m_trackingNode->clear();
-        BOOST_FOREACH(const SubRevisionMap_t::value_type &entry,
-                      m_revisions) {
+        for (const auto &entry: m_revisions) {
             const std::string &mainid = entry.first;
             const SubRevisionEntry &ids = entry.second;
             std::stringstream buffer;
             buffer << '/' << m_escape.escape(ids.m_revision) << '/';
             buffer << m_escape.escape(ids.m_uid) << '/';
-            BOOST_FOREACH(const std::string &subid, ids.m_subids) {
+            for (const std::string &subid: ids.m_subids) {
                 buffer << m_escape.escape(subid) << '/';
             }
             m_trackingNode->setProperty(mainid, buffer.str());
@@ -313,7 +310,7 @@ void MapSyncSource::deleteItem(const string &luid)
 {
     StringPair ids = splitLUID(luid);
     std::string rev = m_sub->removeSubItem(ids.first, ids.second);
-    SubRevisionMap_t::iterator it = m_revisions.find(ids.first);
+    auto it = m_revisions.find(ids.first);
     if (it != m_revisions.end()) {
         it->second.m_subids.erase(ids.second);
         if (it->second.m_subids.empty()) {
@@ -357,8 +354,7 @@ StringEscape MapSyncSource::m_escape('%', "/");
 
 void MapSyncSource::removeAllItems()
 {
-    BOOST_FOREACH(const SubRevisionMap_t::value_type &entry,
-                  m_revisions) {
+    for (const auto &entry: m_revisions) {
         m_sub->removeMergedItem(entry.first);
     }
     m_revisions.clear();

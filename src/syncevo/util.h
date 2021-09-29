@@ -26,18 +26,17 @@
 
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/function.hpp>
-#include <boost/utility/value_init.hpp>
-#include <boost/type_traits/is_class.hpp>
 
 #include <stdarg.h>
 
+#include <memory>
+#include <functional>
 #include <vector>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <exception>
 #include <list>
+#include <type_traits>
 
 #include <syncevo/Timespec.h>    // definitions used to be included in util.h,
                                  // include it to avoid changing code using the time things
@@ -61,6 +60,134 @@ public:
 /** shorthand, primarily useful for BOOST_FOREACH macro */
 typedef std::pair<std::string, std::string> StringPair;
 typedef std::map<std::string, std::string> StringMap;
+
+/**
+ * Similar to boost::make_iterator_range(). Reimplemented to avoid
+ * depending on boost for this rather minor helper.
+ *
+ * The end iterator is optional in make_iterator_range(),
+ * thus making it possible to do:
+ * for (const auto &match: make_iterator_range(boost::make_split_iterator(...))
+ */
+template<typename I> class iterator_range
+{
+    I m_begin, m_end;
+
+ public:
+    iterator_range(I &&begin, I &&end) :
+        m_begin(std::forward<I>(begin)),
+        m_end(std::forward<I>(end))
+    {}
+    I begin() { return m_begin; }
+    I end() { return m_end; }
+};
+template<typename I> auto make_iterator_range(I &&begin, I &&end = {})
+{
+    return iterator_range<I>(std::forward<I>(begin), std::forward<I>(end));
+}
+
+/**
+ * A string piece refers to a chunk of memory stored elsewhere.
+ * Memory is read-only. Replaces StringPiece.
+ */
+class StringPiece
+{
+    const char *m_ptr;
+    size_t m_length;
+
+ public:
+    StringPiece() { clear(); }
+    StringPiece(const char *str) { set(str); }
+    StringPiece(const char *ptr, size_t len) { set(ptr, len); }
+
+    // Anything that has begin/end that converts to a char ptr,
+    // like std::sub_match or std::string.
+    template<class C> StringPiece(const C &c) {
+        set(c);
+    }
+
+    const char *data() const { return m_ptr; }
+    size_t size() const { return m_length; }
+    bool empty() const { return m_length == 0; }
+
+    // Can be used in a range-based for loop.
+    const char *begin() const { return m_ptr; }
+    const char *end() const { return m_ptr + m_length; }
+
+    void clear() { m_ptr = nullptr; m_length = 0; }
+    void set(const char *str) { m_ptr = str; m_length = strlen(str); }
+    void set(const char *ptr, size_t len) { m_ptr = ptr; m_length = len; }
+    void set(const StringPiece &other) {
+        set(other.data(), static_cast<size_t>(other.size()));
+    }
+    template<class C> void set(const C &c) {
+        m_ptr = &*std::begin(c);
+        m_length = std::distance(std::begin(c), std::end(c));
+    }
+
+    template<typename C> StringPiece & operator = (const C &other) {
+        set(other);
+        return *this;
+    }
+};
+
+
+/**
+ * Iterate through a container in reverse order:
+ * for (auto entry: reverse(some_container)
+ */
+template<typename C> auto reverse(C &container)
+{
+    // Explicit namespace, to avoid ambiguity when C is from boost
+    // and thus boost::make_iterator_range() also becomes a candidate
+    // thanks to ADL.
+    return SyncEvo::make_iterator_range(container.rbegin(), container.rend());
+}
+
+/**
+ * enable_weak_from_this and it's shared_from_this() have one
+ * limitation: the call fails when invoked during
+ * destruction. Obviously a shared pointer cannot be constructed
+ * anymore because the reference count already reached zero, but a
+ * weak_ptr might still make sense even though it cannot be locked
+ * anymore. Some classes (e.g. Session) rely on that in common utility
+ * code.  To overcome this limitation, a weak_ptr must be created
+ * already when constructing the instance.
+ *
+ * Usage:
+ * class Foo : public enable_weak_from_this<Foo> {
+ *    Foo();
+ *    // Due to the complex syntax for declaring template
+ *    // methods as friends, make_weak_shared is an empty
+ *    // class with template methods.
+ *    friend make_weak_shared;
+ * };
+ *
+ * auto ptr = make_weak_shared::make<Foo>();
+ */
+template <class C> class enable_weak_from_this {
+    std::weak_ptr<C> m_me;
+
+ public:
+    auto weak_from_this() const { return m_me; }
+    auto shared_from_this() const {
+        auto ptr = m_me.lock();
+        if (!ptr) {
+            throw std::bad_weak_ptr();
+        }
+        return ptr;
+    }
+    void set_weak(const std::shared_ptr<C> &ptr) { m_me = ptr; }
+};
+
+class make_weak_shared {
+ public:
+    template<class C, typename ...A> static std::shared_ptr<C> make(A &&...a) {
+        std::shared_ptr<C> ptr(new C(std::forward<A>(a)...));
+        ptr->set_weak(ptr);
+        return ptr;
+    }
+};
 
 /**
  * remove multiple slashes in a row and dots directly after a slash if not followed by filename,
@@ -104,7 +231,7 @@ inline bool rm_r_all(const std::string &path, bool isDir) { return true; }
  *                 to be deleted (return true in that case); called with full path
  *                 to entry and true if known to be a directory
  */
-void rm_r(const std::string &path, boost::function<bool (const std::string &,
+void rm_r(const std::string &path, std::function<bool (const std::string &,
                                                     bool)> filter = rm_r_all);
 
 /**
@@ -330,17 +457,6 @@ std::string StringPrintf(const char *format, ...)
 std::string StringPrintfV(const char *format, va_list ap);
 
 /**
- * Turns a value of arbitrary type into a std::string,
- * using the << operator.
- */
-template<class T> std::string ToString(const T &value)
-{
-    std::stringstream s;
-    s << value;
-    return s.str();
-}
-
-/**
  * strncpy() which inserts adds 0 byte
  */
 char *Strncpy(char *dest, const char *src, size_t n);
@@ -360,7 +476,7 @@ double Sleep(double seconds);
 template<class T> class Init {
  public:
     Init(const T &val) : m_value(val) {}
-    Init() : m_value(boost::value_initialized<T>()) {}
+ Init() : m_value{} {}
     Init(const Init &other) : m_value(other.m_value) {}
     Init & operator = (const T &val) { m_value = val; return *this; }
     Init & operator = (const Init &other) { m_value = other.m_value; return *this; }
@@ -381,7 +497,7 @@ template<class T, bool isClass> class InitStateBase {
     T m_value;
 
  protected:
-    InitStateBase() : m_value(boost::value_initialized<T>()) {}
+    InitStateBase() : m_value{} {}
     InitStateBase(const InitStateBase &other) : m_value(other.m_value) {}
     template<class V> InitStateBase(const V &val) : m_value(val) {}
 
@@ -404,8 +520,8 @@ template<class T> class InitStateBase<T, true> : public T {
     T & get() { return *this; }
 };
 
-template<class T> class InitState : public InitStateBase<T, boost::is_class<T>::value> {
-    typedef InitStateBase<T, boost::is_class<T>::value> parent_type;
+template<class T> class InitState : public InitStateBase<T, std::is_class<T>::value> {
+    typedef InitStateBase<T, std::is_class<T>::value> parent_type;
     bool m_wasSet;
 
  public:
@@ -433,9 +549,9 @@ template<class T> class InitState : public InitStateBase<T, boost::is_class<T>::
 template<class C> InitState<typename C::mapped_type>
 GetWithDef(const C &map,
            const typename C::key_type &key,
-           const typename C::mapped_type &def = boost::value_initialized<typename C::mapped_type>())
+           const typename C::mapped_type &def = {})
 {
-    typename C::const_iterator it = map.find(key);
+    auto it = map.find(key);
     if (it != map.end()) {
         return InitState<typename C::mapped_type>(it->second, true);
     } else {
@@ -444,7 +560,7 @@ GetWithDef(const C &map,
 }
 
 /**
- * a nop destructor which doesn't do anything, for boost::shared_ptr
+ * a nop destructor which doesn't do anything, for std::shared_ptr
  */
 struct NopDestructor
 {
@@ -576,14 +692,14 @@ std::string getCurrentTime();
  * is true, otherwise it will only be invoked in the main thread. Use that
  * latter mode for code which must run in the main thread.
  */
-void GRunWhile(const boost::function<bool ()> &check, bool checkFirst = true);
+void GRunWhile(const std::function<bool ()> &check, bool checkFirst = true);
 
 /**
  * Runs the action in the main thread once, then returns.  Any
  * exception thrown by the action will be caught and rethrown in the
  * calling thread.
  */
-void GRunInMain(const boost::function<void ()> &action);
+void GRunInMain(const std::function<void ()> &action);
 
 /**
  * True iff the calling thread is handling the main event loop.  Can

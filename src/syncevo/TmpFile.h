@@ -23,8 +23,8 @@
 #include <stdexcept>
 #include <string>
 
-#include <pcrecpp.h>
-
+#include <syncevo/declarations.h>
+SE_BEGIN_CXX
 
 /**
  * Exception class for TmpFile.
@@ -37,6 +37,7 @@ class TmpFileException : public std::runtime_error
             { }
 };
 
+class StringPiece;
 
 /**
  * Class for handling temporary files, either read/write access
@@ -75,8 +76,8 @@ class TmpFile
          *
          * File should already have a correct size.
          *
-         * @param mapptr Pointer to variable for mapped pointer. (can be NULL)
-         * @param mapsize Pointer to variable for mapped size. (can be NULL)
+         * @param mapptr Pointer to variable for mapped pointer. (can be nullptr)
+         * @param mapsize Pointer to variable for mapped size. (can be nullptr)
          */
         void map(void **mapptr = 0, size_t *mapsize = 0);
 
@@ -150,11 +151,9 @@ class TmpFile
             { return m_mapptr; }
 
         /**
-         * Retrieve pcrecpp::StringPiece object for the mapped view.
-         *
-         * @return pcrecpp::StringPiece of the mapped view
+         * Retrieve StringPiece object for the mapped view.
          */
-        pcrecpp::StringPiece stringPiece();
+        StringPiece stringPiece();
 
     protected:
         Type m_type;
@@ -164,6 +163,8 @@ class TmpFile
         std::string m_filename;
 
 };
+
+SE_END_CXX
 
 #endif  // INCL_SYNCEVOLUTION_TMPFILE
 

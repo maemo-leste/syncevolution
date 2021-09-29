@@ -32,10 +32,10 @@ SE_BEGIN_CXX
 
 CurlTransportAgent::CurlTransportAgent() :
     m_easyHandle(easyInit()),
-    m_slist(NULL),
+    m_slist(nullptr),
     m_status(INACTIVE),
     m_timeoutSeconds(0),
-    m_reply(NULL),
+    m_reply(nullptr),
     m_replyLen(0),
     m_replySize(0)
 {
@@ -47,6 +47,12 @@ CurlTransportAgent::CurlTransportAgent() :
      * its read callback and reply is stored in write callback
      */
     CURLcode code;
+    auto readDataCallback = [] (void *buffer, size_t size, size_t nmemb, void *stream) noexcept {
+        return static_cast<CurlTransportAgent *>(stream)->readData(buffer, size * nmemb);
+    };
+    auto writeDataCallback = [] (void *buffer, size_t size, size_t nmemb, void *stream) noexcept {
+        return static_cast<CurlTransportAgent *>(stream)->writeData(buffer, size * nmemb);
+    };
     if ((code = curl_easy_setopt(m_easyHandle, CURLOPT_NOPROGRESS, false)) ||
         (code = curl_easy_setopt(m_easyHandle, CURLOPT_PROGRESSFUNCTION, progressCallback)) ||
         (code = curl_easy_setopt(m_easyHandle, CURLOPT_WRITEFUNCTION, writeDataCallback)) ||
@@ -175,7 +181,7 @@ void CurlTransportAgent::send(const char *data, size_t len)
     m_messageLen = len;
 
     curl_slist_free_all(m_slist);
-    m_slist = NULL;
+    m_slist = nullptr;
     
     // Setting Expect explicitly prevents problems with certain
     // proxies: if curl is allowed to depend on Expect, then it will
@@ -234,11 +240,6 @@ void CurlTransportAgent::getReply(const char *&data, size_t &len, std::string &c
     }
 }
 
-size_t CurlTransportAgent::writeDataCallback(void *buffer, size_t size, size_t nmemb, void *stream) throw()
-{
-    return static_cast<CurlTransportAgent *>(stream)->writeData(buffer, size * nmemb);
-}
-
 size_t CurlTransportAgent::writeData(void *buffer, size_t size) throw()
 {
     bool increase = false;
@@ -261,11 +262,6 @@ size_t CurlTransportAgent::writeData(void *buffer, size_t size) throw()
            size);
     m_replyLen += size;
     return size;
-}
-
-size_t CurlTransportAgent::readDataCallback(void *buffer, size_t size, size_t nmemb, void *stream) throw()
-{
-    return static_cast<CurlTransportAgent *>(stream)->readData(buffer, size * nmemb);
 }
 
 size_t CurlTransportAgent::readData(void *buffer, size_t size) throw()

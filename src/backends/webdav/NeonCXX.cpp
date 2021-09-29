@@ -15,8 +15,6 @@
 #include <list>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/split.hpp>
-#include <boost/bind.hpp>
-#include <boost/lambda/lambda.hpp>
 
 #include <syncevo/util.h>
 #include <syncevo/Logging.h>
@@ -123,7 +121,7 @@ std::string URI::toURL() const
 std::string URI::escape(const std::string &text)
 {
     SmartPtr<char *> tmp(ne_path_escape(text.c_str()));
-    // Fail gracefully. I have observed ne_path_escape returning NULL
+    // Fail gracefully. I have observed ne_path_escape returning nullptr
     // a couple of times, with input "%u". It makes sense, if the
     // escaping fails, to just return the same string, because, well,
     // it couldn't be escaped.
@@ -145,9 +143,7 @@ std::string URI::normalizePath(const std::string &path, bool collection)
     // always start with one leading slash
     res = "/";
 
-    typedef boost::split_iterator<string::const_iterator> string_split_iterator;
-    string_split_iterator it =
-        boost::make_split_iterator(path, boost::first_finder("/", boost::is_iequal()));
+    auto it = boost::make_split_iterator(path, boost::first_finder("/", boost::is_iequal()));
     while (!it.eof()) {
         if (it->begin() == it->end()) {
             // avoid adding empty path components
@@ -179,7 +175,7 @@ std::string URI::normalizePath(const std::string &path, bool collection)
 std::string Status2String(const ne_status *status)
 {
     if (!status) {
-        return "<NULL status>";
+        return "<nullptr status>";
     }
     return StringPrintf("<status %d.%d, code %d, class %d, %s>",
                         status->major_version,
@@ -189,12 +185,12 @@ std::string Status2String(const ne_status *status)
                         status->reason_phrase ? status->reason_phrase : "\"\"");
 }
 
-Session::Session(const boost::shared_ptr<Settings> &settings) :
+Session::Session(const std::shared_ptr<Settings> &settings) :
     m_forceAuthorizationOnce(AUTH_ON_DEMAND),
     m_credentialsSent(false),
     m_settings(settings),
     m_debugging(false),
-    m_session(NULL),
+    m_session(nullptr),
     m_attempt(0)
 {
     int logLevel = m_settings->logLevel();
@@ -207,7 +203,7 @@ Session::Session(const boost::shared_ptr<Settings> &settings) :
                       (logLevel >= 11 ? (NE_DBG_HTTPPLAIN) : 0));
         m_debugging = true;
     } else {
-        ne_debug_init(NULL, 0);
+        ne_debug_init(nullptr, 0);
     }
 
     ne_sock_init();
@@ -215,6 +211,9 @@ Session::Session(const boost::shared_ptr<Settings> &settings) :
     m_session = ne_session_create(m_uri.m_scheme.c_str(),
                                   m_uri.m_host.c_str(),
                                   m_uri.m_port);
+    auto getCredentials = [] (void *userdata, const char *realm, int attempt, char *username, char *password) noexcept {
+        return static_cast<Session *>(userdata)->getCredentials(realm, attempt, username, password);
+    };
     ne_set_server_auth(m_session, getCredentials, this);
     if (m_uri.m_scheme == "https") {
         // neon only initializes session->ssl_context if
@@ -222,6 +221,9 @@ Session::Session(const boost::shared_ptr<Settings> &settings) :
         // of ne_gnutls.c if ne_ssl_trust_default_ca()
         // is called for non-https. So better call these
         // functions only when needed.
+        auto sslVerify = [] (void *userdata, int failures, const ne_ssl_certificate *cert) noexcept {
+            return static_cast<Session *>(userdata)->sslVerify(failures, cert);
+        };
         ne_ssl_set_verify(m_session, sslVerify, this);
         ne_ssl_trust_default_ca(m_session);
 
@@ -263,6 +265,13 @@ Session::Session(const boost::shared_ptr<Settings> &settings) :
     }
     ne_set_read_timeout(m_session, seconds);
     ne_set_connect_timeout(m_session, seconds);
+    auto preSendHook = [] (ne_request *req, void *userdata, ne_buffer *header) noexcept {
+        try {
+            static_cast<Session *>(userdata)->preSend(req, header);
+        } catch (...) {
+            Exception::handle();
+        }
+    };
     ne_hook_pre_send(m_session, preSendHook, this);
 }
 
@@ -274,9 +283,9 @@ Session::~Session()
     ne_sock_exit();
 }
 
-boost::shared_ptr<Session> Session::m_cachedSession;
+std::shared_ptr<Session> Session::m_cachedSession;
 
-boost::shared_ptr<Session> Session::create(const boost::shared_ptr<Settings> &settings)
+std::shared_ptr<Session> Session::create(const std::shared_ptr<Settings> &settings)
 {
     URI uri = URI::parse(settings->getURL());
     if (m_cachedSession &&
@@ -292,11 +301,10 @@ boost::shared_ptr<Session> Session::create(const boost::shared_ptr<Settings> &se
 }
 
 
-int Session::getCredentials(void *userdata, const char *realm, int attempt, char *username, char *password) throw()
+int Session::getCredentials(const char *realm, int attempt, char *username, char *password) noexcept
 {
     try {
-        Session *session = static_cast<Session *>(userdata);
-        boost::shared_ptr<AuthProvider> authProvider = session->m_settings->getAuthProvider();
+        std::shared_ptr<AuthProvider> authProvider = m_settings->getAuthProvider();
         if (authProvider && authProvider->methodIsSupported(AuthProvider::AUTH_METHOD_OAUTH2)) {
             // We have to fail here because we cannot provide neon
             // with a username/password combination. Instead we rely
@@ -307,10 +315,10 @@ int Session::getCredentials(void *userdata, const char *realm, int attempt, char
         } else if (!attempt) {
             // try again with credentials
             std::string user, pw;
-            session->m_settings->getCredentials(realm, user, pw);
+            m_settings->getCredentials(realm, user, pw);
             SyncEvo::Strncpy(username, user.c_str(), NE_ABUFSIZ);
             SyncEvo::Strncpy(password, pw.c_str(), NE_ABUFSIZ);
-            session->m_credentialsSent = true;
+            m_credentialsSent = true;
             SE_LOG_DEBUG(NULL, "retry request with credentials");
             return 0;
         } else {
@@ -325,19 +333,10 @@ int Session::getCredentials(void *userdata, const char *realm, int attempt, char
 }
 
 void Session::forceAuthorization(ForceAuthorization forceAuthorization,
-                                 const boost::shared_ptr<AuthProvider> &authProvider)
+                                 const std::shared_ptr<AuthProvider> &authProvider)
 {
     m_forceAuthorizationOnce = forceAuthorization;
     m_authProvider = authProvider;
-}
-
-void Session::preSendHook(ne_request *req, void *userdata, ne_buffer *header) throw()
-{
-    try {
-        static_cast<Session *>(userdata)->preSend(req, header);
-    } catch (...) {
-        Exception::handle();
-    }
 }
 
 void Session::preSend(ne_request *req, ne_buffer *header)
@@ -350,7 +349,7 @@ void Session::preSend(ne_request *req, ne_buffer *header)
     bool haveUserAgentHeader = boost::starts_with(header->data, "User-Agent:") ||
         strstr(header->data, "\nUser-Agent:");
     if (!haveUserAgentHeader) {
-        ne_buffer_concat(header, "User-Agent: SyncEvolution\r\n", (const char *)NULL);
+        ne_buffer_concat(header, "User-Agent: SyncEvolution\r\n", nullptr);
     }
 
     // Only do this once when using normal username/password.
@@ -370,14 +369,14 @@ void Session::preSend(ne_request *req, ne_buffer *header)
             SE_LOG_DEBUG(NULL, "using OAuth2 token '%s' to authenticate", m_oauth2Bearer.c_str());
             m_credentialsSent = true;
             // SmartPtr<char *> blob(ne_base64((const unsigned char *)m_oauth2Bearer.c_str(), m_oauth2Bearer.size()));
-            ne_buffer_concat(header, "Authorization: Bearer ", m_oauth2Bearer.c_str() /* blob.get() */, "\r\n", (const char *)NULL);
+            ne_buffer_concat(header, "Authorization: Bearer ", m_oauth2Bearer.c_str() /* blob.get() */, "\r\n", nullptr);
         } else if (forceAlways || m_uri.m_scheme == "https") {
             // append "Authorization: Basic" header if not present already
             if (!haveAuthorizationHeader) {
                 Credentials creds = m_authProvider->getCredentials();
                 std::string credentials = creds.m_username + ":" + creds.m_password;
                 SmartPtr<char *> blob(ne_base64((const unsigned char *)credentials.c_str(), credentials.size()));
-                ne_buffer_concat(header, "Authorization: Basic ", blob.get(), "\r\n", (const char *)NULL);
+                ne_buffer_concat(header, "Authorization: Basic ", blob.get(), "\r\n", nullptr);
             }
 
             // check for acceptance of credentials later
@@ -389,30 +388,27 @@ void Session::preSend(ne_request *req, ne_buffer *header)
     }
 }
 
-
-int Session::sslVerify(void *userdata, int failures, const ne_ssl_certificate *cert) throw()
+int Session::sslVerify(int failures, const ne_ssl_certificate *cert) noexcept
 {
     try {
-        Session *session = static_cast<Session *>(userdata);
-
         static const Flag descr[] = {
             { NE_SSL_NOTYETVALID, "certificate not yet valid" },
             { NE_SSL_EXPIRED, "certificate has expired" },
             { NE_SSL_IDMISMATCH, "hostname mismatch" },
             { NE_SSL_UNTRUSTED, "untrusted certificate" },
-            { 0, NULL }
+            { 0, nullptr }
         };
 
         SE_LOG_DEBUG(NULL,
                      "%s: SSL verification problem: %s",
-                     session->getURL().c_str(),
+                     getURL().c_str(),
                      Flags2String(failures, descr).c_str());
-        if (!session->m_settings->verifySSLCertificate()) {
+        if (!m_settings->verifySSLCertificate()) {
             SE_LOG_DEBUG(NULL, "ignoring bad certificate");
             return 0;
         }
         if (failures == NE_SSL_IDMISMATCH &&
-            !session->m_settings->verifySSLHost()) {
+            !m_settings->verifySSLHost()) {
             SE_LOG_DEBUG(NULL, "ignoring hostname mismatch");
             return 0;
         }
@@ -446,18 +442,26 @@ void Session::propfindURI(const std::string &path, int depth,
     startOperation("PROPFIND", deadline);
 
  retry:
-    boost::shared_ptr<ne_propfind_handler> handler;
+    std::shared_ptr<ne_propfind_handler> handler;
     int error;
 
     checkAuthorization();
-    handler = boost::shared_ptr<ne_propfind_handler>(ne_propfind_create(m_session, path.c_str(), depth),
+    handler = std::shared_ptr<ne_propfind_handler>(ne_propfind_create(m_session, path.c_str(), depth),
                                                      PropFindDeleter());
-    if (props != NULL) {
-	error = ne_propfind_named(handler.get(), props,
-                                  propsResult, const_cast<void *>(static_cast<const void *>(&callback)));
+    auto propsResult = [] (void *userdata, const ne_uri *uri,
+                           const ne_prop_result_set *results) noexcept {
+        try {
+            PropfindURICallback_t *callback = static_cast<PropfindURICallback_t *>(userdata);
+            (*callback)(URI::fromNeon(*uri), results);
+        } catch (...) {
+            Exception::handle();
+        }
+    };
+    void *userdata = const_cast<void *>(static_cast<const void *>(&callback));
+    if (props != nullptr) {
+	error = ne_propfind_named(handler.get(), props, propsResult, userdata);
     } else {
-	error = ne_propfind_allprop(handler.get(),
-                                    propsResult, const_cast<void *>(static_cast<const void *>(&callback)));
+	error = ne_propfind_allprop(handler.get(), propsResult, userdata);
     }
 
     // remain valid as long as "handler" is valid
@@ -471,52 +475,35 @@ void Session::propfindURI(const std::string &path, int depth,
     }
 }
 
-void Session::propsResult(void *userdata, const ne_uri *uri,
-                          const ne_prop_result_set *results) throw()
-{
-    try {
-        PropfindURICallback_t *callback = static_cast<PropfindURICallback_t *>(userdata);
-        (*callback)(URI::fromNeon(*uri), results);
-    } catch (...) {
-        Exception::handle();
-    }
-}
-
 void Session::propfindProp(const std::string &path, int depth,
                            const ne_propname *props,
                            const PropfindPropCallback_t &callback,
                            const Timespec &deadline)
 {
-    propfindURI(path, depth, props,
-                boost::bind(&Session::propsIterate, _1, _2, boost::cref(callback)),
-                deadline);
+    // use pointers here, g++ 4.2.3 has issues with references (which was used before)
+    using PropIteratorUserdata_t = std::pair<const URI *, const PropfindPropCallback_t *>;
+
+    auto propIterate = [&callback] (const URI &uri, const ne_prop_result_set *results) {
+        PropIteratorUserdata_t data(&uri, &callback);
+        auto propIterator = [] (void *userdata,
+                                const ne_propname *pname,
+                                const char *value,
+                                const ne_status *status) noexcept {
+            try {
+                const PropIteratorUserdata_t *data = static_cast<const PropIteratorUserdata_t *>(userdata);
+                (*data->second)(*data->first, pname, value, status);
+                return 0;
+            } catch (...) {
+                Exception::handle();
+                return 1; // abort iterating
+            }
+        };
+        ne_propset_iterate(results, propIterator, &data);
+    };
+    propfindURI(path, depth, props, propIterate, deadline);
 }
 
-void Session::propsIterate(const URI &uri, const ne_prop_result_set *results,
-                           const PropfindPropCallback_t &callback)
-{
-    PropIteratorUserdata_t data(&uri, &callback);
-    ne_propset_iterate(results,
-                       propIterator,
-                       &data);
-}
-
-int Session::propIterator(void *userdata,
-                           const ne_propname *pname,
-                           const char *value,
-                           const ne_status *status) throw()
-{
-    try {
-        const PropIteratorUserdata_t *data = static_cast<const PropIteratorUserdata_t *>(userdata);
-        (*data->second)(*data->first, pname, value, status);
-        return 0;
-    } catch (...) {
-        Exception::handle();
-        return 1; // abort iterating
-    }
-}
-
-void Session::startOperation(const string &operation, const Timespec &deadline)
+void Session::startOperation(const std::string &operation, const Timespec &deadline)
 {
     SE_LOG_DEBUG(NULL, "starting %s, credentials %s, %s",
                  operation.c_str(),
@@ -558,11 +545,11 @@ bool Session::checkError(int error, int code, const ne_status *status,
     SuspendFlags &s = SuspendFlags::getSuspendFlags();
 
     // unset operation, set it again only if the same operation is going to be retried
-    string operation = m_operation;
+    std::string operation = m_operation;
     m_operation = "";
 
     // determine error description, may be made more specific below
-    string descr;
+    std::string descr;
     if (code) {
         descr = StringPrintf("%s: Neon error code %d, HTTP status %d: %s",
                              operation.c_str(),
@@ -817,116 +804,113 @@ XMLParser &XMLParser::pushHandler(const StartCB_t &start,
 {
     m_stack.push_back(Callbacks(start, data, end));
     Callbacks &cb = m_stack.back();
+
+    auto startCB = [] (void *userdata, int parent,
+                       const char *nspace, const char *name,
+                       const char **atts) noexcept {
+        Callbacks *cb = static_cast<Callbacks *>(userdata);
+        try {
+            return cb->m_start(parent, nspace, name, atts);
+        } catch (...) {
+            Exception::handle();
+            SE_LOG_ERROR(NULL, "startCB %s %s failed", nspace, name);
+            return -1;
+        }
+    };
+
+    auto dataCB = [] (void *userdata, int state,
+                      const char *cdata, size_t len) noexcept {
+        Callbacks *cb = static_cast<Callbacks *>(userdata);
+        try {
+            return cb->m_data ?
+                cb->m_data(state, cdata, len) :
+                0;
+        } catch (...) {
+            Exception::handle();
+            SE_LOG_ERROR(NULL, "dataCB failed");
+            return -1;
+        }
+    };
+
+    auto endCB = [] (void *userdata, int state,
+                     const char *nspace, const char *name) noexcept {
+        Callbacks *cb = static_cast<Callbacks *>(userdata);
+        try {
+            return cb->m_end ?
+                cb->m_end(state, nspace, name) :
+                0;
+        } catch (...) {
+            Exception::handle();
+            SE_LOG_ERROR(NULL, "endCB %s %s failed", nspace, name);
+            return -1;
+        }
+    };
+
     ne_xml_push_handler(m_parser,
                         startCB, dataCB, endCB,
                         &cb);
     return *this;
 }
 
-int XMLParser::startCB(void *userdata, int parent,
-                       const char *nspace, const char *name,
-                       const char **atts)
+XMLParser::StartCB_t XMLParser::accept(const std::string &nspaceExpected,
+                                       const std::string &nameExpected)
 {
-    Callbacks *cb = static_cast<Callbacks *>(userdata);
-    try {
-        return cb->m_start(parent, nspace, name, atts);
-    } catch (...) {
-        Exception::handle();
-        SE_LOG_ERROR(NULL, "startCB %s %s failed", nspace, name);
-        return -1;
-    }
+    return [nspaceExpected, nameExpected] (int state, const char *nspace, const char *name, const char **attributes) {
+        if (nspace && nspaceExpected == nspace &&
+            name && nameExpected == name) {
+            return 1;
+        } else {
+            return 0;
+        }
+    };
 }
 
-int XMLParser::dataCB(void *userdata, int state,
-                      const char *cdata, size_t len)
+XMLParser::DataCB_t XMLParser::append(std::string &buffer)
 {
-    Callbacks *cb = static_cast<Callbacks *>(userdata);
-    try {
-        return cb->m_data ?
-            cb->m_data(state, cdata, len) :
-            0;
-    } catch (...) {
-        Exception::handle();
-        SE_LOG_ERROR(NULL, "dataCB failed");
-        return -1;
-    }
-}
-
-int XMLParser::endCB(void *userdata, int state, 
-                     const char *nspace, const char *name)
-{
-    Callbacks *cb = static_cast<Callbacks *>(userdata);
-    try {
-        return cb->m_end ?
-            cb->m_end(state, nspace, name) :
-            0;
-    } catch (...) {
-        Exception::handle();
-        SE_LOG_ERROR(NULL, "endCB %s %s failed", nspace, name);
-        return -1;
-    }
-}
-
-
-int XMLParser::accept(const std::string &nspaceExpected,
-                      const std::string &nameExpected,
-                      const char *nspace,
-                      const char *name)
-{
-    if (nspace && nspaceExpected == nspace &&
-        name && nameExpected == name) {
-        return 1;
-    } else {
+    return [&buffer] (int state, const char *newdata, size_t len) {
+        buffer.append(newdata, len);
         return 0;
-    }
-}
-
-int XMLParser::append(std::string &buffer,
-                      const char *data,
-                      size_t len)
-{
-    buffer.append(data, len);
-    return 0;
-}
-
-int XMLParser::reset(std::string &buffer)
-{
-    buffer.clear();
-    return 0;
+    };
 }
 
 void XMLParser::initAbortingReportParser(const ResponseEndCB_t &responseEnd)
 {
-    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "multistatus", _2, _3));
-    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "response", _2, _3),
-                Neon::XMLParser::DataCB_t(),
-                boost::bind(&Neon::XMLParser::doResponseEnd,
-                            this, responseEnd));
-    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "href", _2, _3),
-                boost::bind(Neon::XMLParser::append, boost::ref(m_href), _2, _3));
-    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "propstat", _2, _3));
-    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "status", _2, _3),
-                boost::bind(Neon::XMLParser::append, boost::ref(m_status), _2, _3));
-    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "prop", _2, _3));
-    pushHandler(boost::bind(Neon::XMLParser::accept, "DAV:", "getetag", _2, _3),
-                boost::bind(Neon::XMLParser::append, boost::ref(m_etag), _2, _3));
-}
-
-static int VoidResponseEndCBWrapper(const XMLParser::VoidResponseEndCB_t &responseEnd,
-				    const std::string &href,
-				    const std::string &etag,
-				    const std::string &status)
-{
-    responseEnd(href, etag, status);
-    return 0;
+    pushHandler(accept("DAV:", "multistatus"));
+    pushHandler(accept("DAV:", "response"),
+                {},
+                [this, responseEnd] (int state, const char *nspace, const char *name) {
+                    int abort = 0;
+                    if (responseEnd) {
+                        abort = responseEnd(m_href, m_etag, m_status);
+                    }
+                    // clean up for next response
+                    m_href.clear();
+                    m_etag.clear();
+                    m_status.clear();
+                    return abort;
+                });
+    pushHandler(accept("DAV:", "href"),
+                append(m_href));
+    pushHandler(accept("DAV:", "propstat"));
+    pushHandler(accept("DAV:", "status"),
+                append(m_status));
+    pushHandler(accept("DAV:", "prop"));
+    pushHandler(accept("DAV:", "getetag"),
+                append(m_etag));
 }
 
 void XMLParser::initReportParser(const VoidResponseEndCB_t &responseEnd)
 {
     if (responseEnd) {
-        initAbortingReportParser(boost::bind(VoidResponseEndCBWrapper, responseEnd, _1, _2, _3));
+        auto end = [responseEnd] (const std::string &href,
+                                  const std::string &etag,
+                                  const std::string &status) {
+            responseEnd(href, etag, status);
+            return 0;
+        };
+        initAbortingReportParser(end);
     } else {
-        initAbortingReportParser(ResponseEndCB_t());
+        initAbortingReportParser();
     }
 }
 
@@ -940,7 +924,7 @@ Request::Request(Session &session,
     m_path(path),
     m_session(session),
     m_result(&result),
-    m_parser(NULL)
+    m_parser(nullptr)
 {
     m_req = ne_request_create(session.getSession(), m_method.c_str(), path.c_str());
     ne_set_request_body_buffer(m_req, body.c_str(), body.size());
@@ -954,7 +938,7 @@ Request::Request(Session &session,
     m_method(method),
     m_path(path),
     m_session(session),
-    m_result(NULL),
+    m_result(nullptr),
     m_parser(&parser)
 {
     m_req = ne_request_create(session.getSession(), m_method.c_str(), path.c_str());
@@ -985,7 +969,10 @@ void Session::checkAuthorization()
         // Count the number of times we asked for new tokens. This helps
         // the provider determine whether the token that it returns are valid.
         try {
-            m_oauth2Bearer = m_authProvider->getOAuth2Bearer(boost::bind(&Settings::updatePassword, m_settings, _1));
+            auto update_password = [this] (const std::string& password) {
+                m_settings->updatePassword(password);
+            };
+            m_oauth2Bearer = m_authProvider->getOAuth2Bearer(update_password);
             SE_LOG_DEBUG(NULL, "got new OAuth2 token '%s' for next request", m_oauth2Bearer.c_str());
         } catch (...) {
             std::string explanation;
@@ -999,7 +986,7 @@ void Session::checkAuthorization()
     }
 }
 
-bool Session::run(Request &request, const std::set<int> *expectedCodes, const boost::function<bool ()> &aborted)
+bool Session::run(Request &request, const std::set<int> *expectedCodes, const std::function<bool ()> &aborted)
 {
     int error;
 
@@ -1010,8 +997,13 @@ bool Session::run(Request &request, const std::set<int> *expectedCodes, const bo
     ne_request *req = request.getRequest();
     if (result) {
         result->clear();
+        auto addResultData = [] (void *userdata, const char *buf, size_t len) {
+            Request *me = static_cast<Request *>(userdata);
+            me->m_result->append(buf, len);
+            return 0;
+        };
         ne_add_response_body_reader(req, ne_accept_2xx,
-                                    Request::addResultData, &request);
+                                    addResultData, &request);
         error = ne_request_dispatch(req);
     } else {
         error = ne_xml_dispatch_request(req, request.getParser()->get());
@@ -1026,13 +1018,6 @@ bool Session::run(Request &request, const std::set<int> *expectedCodes, const bo
                       request.getResponseHeader("Location"),
                       request.getPath(),
                       expectedCodes);
-}
-
-int Request::addResultData(void *userdata, const char *buf, size_t len)
-{
-    Request *me = static_cast<Request *>(userdata);
-    me->m_result->append(buf, len);
-    return 0;
 }
 
 }

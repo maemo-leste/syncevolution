@@ -36,7 +36,6 @@
 #include <boost/algorithm/string/find_iterator.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/noncopyable.hpp>
-#include <boost/foreach.hpp>
 
 #include <algorithm>
 #include <iostream>
@@ -47,7 +46,6 @@
 
 
 #include <syncevo/declarations.h>
-using namespace std;
 SE_BEGIN_CXX
 
 LogRedirect *LogRedirect::m_redirect;
@@ -90,10 +88,10 @@ void LogRedirect::abortHandler(int sig) throw()
 void LogRedirect::init()
 {
     m_processing = false;
-    m_buffer = NULL;
+    m_buffer = nullptr;
     m_len = 0;
-    m_out = NULL;
-    m_err = NULL;
+    m_out = nullptr;
+    m_err = nullptr;
     m_streams = false;
     m_stderr.m_original =
         m_stderr.m_read =
@@ -106,12 +104,8 @@ void LogRedirect::init()
 
     const char *lines = getenv("SYNCEVOLUTION_SUPPRESS_ERRORS");
     if (lines) {
-        typedef boost::split_iterator<const char *> string_split_iterator;
-        string_split_iterator it =
-            boost::make_split_iterator(lines, boost::first_finder("\n", boost::is_iequal()));
-        while (it != string_split_iterator()) {
-            m_knownErrors.insert(std::string(it->begin(), it->end()));
-            ++it;
+        for (const auto &match: make_iterator_range(boost::make_split_iterator(lines, boost::first_finder("\n", boost::is_iequal())))) {
+            m_knownErrors.insert(std::string(match.begin(), match.end()));
         }
     }
 
@@ -201,7 +195,7 @@ LogRedirect::~LogRedirect() throw()
         guard = lock();
     }
     if (m_redirect == this) {
-        m_redirect = NULL;
+        m_redirect = nullptr;
     }
     process();
     restore();
@@ -457,7 +451,7 @@ bool LogRedirect::process(FDs &fds) throw()
         if (have_message) {
             if (USE_UNIX_DOMAIN_DGRAM || !m_streams) {
                 // swallow packet, even if empty or we couldn't receive it
-                recv(fds.m_read, NULL, 0, MSG_DONTWAIT);
+                recv(fds.m_read, nullptr, 0, MSG_DONTWAIT);
             }
             data_read = true;
         }
@@ -481,8 +475,8 @@ bool LogRedirect::process(FDs &fds) throw()
                     if (eol) {
                         m_stdoutData.append(text, eol - text);
                         text = eol + 1;
-                        Logger::instance().message(level, prefix.empty() ? NULL : &prefix,
-                                                   NULL, 0, NULL,
+                        Logger::instance().message(level, prefix.empty() ? nullptr : &prefix,
+                                                   nullptr, 0, nullptr,
                                                    "%s", m_stdoutData.c_str());
                         m_stdoutData.clear();
                     }
@@ -543,8 +537,8 @@ bool LogRedirect::process(FDs &fds) throw()
             if (len > 0 && text[len - 1] == '\n') {
                 text[len - 1] = 0;
             }
-            Logger::instance().message(level, prefix.empty() ? NULL : &prefix,
-                                       NULL, 0, NULL,
+            Logger::instance().message(level, prefix.empty() ? nullptr : &prefix,
+                                       nullptr, 0, nullptr,
                                        "%s", text);
             available = 0;
         }
@@ -562,7 +556,7 @@ void LogRedirect::addIgnoreError(const std::string &error)
 bool LogRedirect::ignoreError(const std::string &text)
 {
     RecMutex::Guard guard = Logger::lock();
-    BOOST_FOREACH(const std::string &entry, m_knownErrors) {
+    for (const std::string &entry: m_knownErrors) {
         if (text.find(entry) != text.npos) {
             return true;
         }
@@ -599,7 +593,7 @@ void LogRedirect::process()
                 return;
             }
 
-            int res = select(maxfd + 1, &readfds, NULL, &errfds, NULL);
+            int res = select(maxfd + 1, &readfds, nullptr, &errfds, nullptr);
             switch (res) {
             case -1:
                 // fatal, cannot continue
@@ -671,8 +665,8 @@ void LogRedirect::flush() throw()
     if (!m_stdoutData.empty()) {
         std::string buffer;
         std::swap(buffer, m_stdoutData);
-        Logger::instance().message(Logger::SHOW, NULL,
-                                   NULL, 0, NULL,
+        Logger::instance().message(Logger::SHOW, nullptr,
+                                   nullptr, 0, nullptr,
                                    "%s", buffer.c_str());
     }
 }
@@ -704,7 +698,7 @@ class LogRedirectTest : public CppUnit::TestFixture {
         LogBuffer(LogRedirect::Mode mode = LogRedirect::STDERR_AND_STDOUT)
         {
             m_redirect.reset(new LogRedirect(mode));
-            addLogger(boost::shared_ptr<Logger>(this, NopDestructor()));
+            addLogger(std::shared_ptr<Logger>(this, NopDestructor()));
         }
         ~LogBuffer()
         {
@@ -758,7 +752,7 @@ public:
         // process() keeps unfinished STDOUT lines buffered
         buffer.m_redirect->process();
         CPPUNIT_ASSERT_EQUAL(std::string(errorMessage), buffer.m_streams[Logger::DEV].str());
-        CPPUNIT_ASSERT_EQUAL(string(""), buffer.m_streams[Logger::SHOW].str());
+        CPPUNIT_ASSERT_EQUAL(std::string(""), buffer.m_streams[Logger::SHOW].str());
 
         // flush() makes them available
         buffer.m_redirect->flush();
@@ -795,7 +789,7 @@ public:
             // need to restore the current state below; would be nice
             // to query it instead of assuming that Logger::glogFunc
             // is the current log handler
-            g_log_set_default_handler(g_log_default_handler, NULL);
+            g_log_set_default_handler(g_log_default_handler, nullptr);
 
             orig_stdout = dup(STDOUT_FILENO);
             dup2(new_stdout, STDOUT_FILENO);
@@ -827,19 +821,19 @@ public:
             std::string info = buffer.m_streams[Logger::INFO].str();
             std::string dev = buffer.m_streams[Logger::DEV].str();
             std::string debug = buffer.m_streams[Logger::DEBUG].str();
-            CPPUNIT_ASSERT_EQUAL(string(""), error);
-            CPPUNIT_ASSERT_EQUAL(string(""), warning);
-            CPPUNIT_ASSERT_EQUAL(string(""), show);
-            CPPUNIT_ASSERT_EQUAL(string(""), info);
-            CPPUNIT_ASSERT_EQUAL(string(""), error);
+            CPPUNIT_ASSERT_EQUAL(std::string(""), error);
+            CPPUNIT_ASSERT_EQUAL(std::string(""), warning);
+            CPPUNIT_ASSERT_EQUAL(std::string(""), show);
+            CPPUNIT_ASSERT_EQUAL(std::string(""), info);
+            CPPUNIT_ASSERT_EQUAL(std::string(""), error);
             CPPUNIT_ASSERT(dev.find("normal message stderr") != dev.npos);
             CPPUNIT_ASSERT(debug.find("test warning") != debug.npos);
         } catch(...) {
-            g_log_set_default_handler(Logger::glogFunc, NULL);
+            g_log_set_default_handler(Logger::glogFunc, nullptr);
             dup2(orig_stdout, STDOUT_FILENO);
             throw;
         }
-        g_log_set_default_handler(Logger::glogFunc, NULL);
+        g_log_set_default_handler(Logger::glogFunc, nullptr);
         dup2(orig_stdout, STDOUT_FILENO);
 
         lseek(new_stdout, 0, SEEK_SET);

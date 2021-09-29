@@ -71,7 +71,7 @@ template <class T> std::ostream &operator<<(std::ostream &out, const Entry<T> &e
 }
 
 /**
- * accessor which reads from std::vector< std:pair< entry, cost > >
+ * accessor which reads from std::vector< std::pair< entry, cost > >
  */
 template <class T> class accessor {
 public:
@@ -227,7 +227,6 @@ void lcs(const T &a, const T &b, ITO out, A access)
     }
 
     // copy result (using intermediate list instead of recursive function call)
-    typedef std::list< std::pair<size_t, size_t> > indexlist;
     std::list< std::pair<size_t, size_t> > indices;
     size_t i = a.size(), j = b.size();
     while (i > 0 && j > 0) {
@@ -249,7 +248,7 @@ void lcs(const T &a, const T &b, ITO out, A access)
         }
     }
     
-    for (indexlist::iterator it = indices.begin();
+    for (auto it = indices.begin();
          it != indices.end();
          it++) {
         *out++ = Entry<typename A::F>(it->first, it->second, access.entry_at(a, it->first - 1));

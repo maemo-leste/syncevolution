@@ -22,7 +22,6 @@
 #include <syncevo/Logging.h>
 #include <syncevo/util.h>
 
-#include <boost/foreach.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <algorithm>
@@ -63,11 +62,11 @@ static const char PROPERTIES_GET[] = "Get";
 
 LocaledListener::LocaledListener():
     GDBusCXX::DBusRemoteObject(!strcmp(getEnv("SYNCEVOLUTION_LOCALED", ""), "none") ?
-                               NULL : /* simulate missing localed */
+                               nullptr : /* simulate missing localed */
                                GDBusCXX::dbus_get_bus_connection(!strcmp(getEnv("SYNCEVOLUTION_LOCALED", ""), "session") ?
                                                                  "SESSION" : /* use our own localed stub */
                                                                  "SYSTEM" /* use real localed */,
-                                                                 NULL, false, NULL),
+                                                                 nullptr, false, nullptr),
                                LOCALED_PATH,
                                PROPERTIES_INTERFACE,
                                LOCALED_DESTINATION),
@@ -75,20 +74,24 @@ LocaledListener::LocaledListener():
     m_propertiesGet(*this, PROPERTIES_GET)
 {
     if (getConnection()) {
-        m_propertiesChanged.activate(boost::bind(&LocaledListener::onPropertiesChange, this, _1, _2, _3));
+        auto change = [this] (const std::string &interface,
+                              const Properties &properties,
+                              const Invalidated &invalidated) {
+            onPropertiesChange(interface, properties, invalidated);
+        };
+        m_propertiesChanged.activate(change);
     } else {
         SE_LOG_DEBUG(NULL, "localed: not activating, no connection");
     }
 };
 
 
-boost::shared_ptr<LocaledListener> LocaledListener::create()
+std::shared_ptr<LocaledListener> LocaledListener::create()
 {
-    static boost::weak_ptr<LocaledListener> singleton;
-    boost::shared_ptr<LocaledListener> self = singleton.lock();
+    static std::weak_ptr<LocaledListener> singleton;
+    std::shared_ptr<LocaledListener> self = singleton.lock();
     if (!self) {
         self.reset(new LocaledListener());
-        self->m_self = self;
         singleton = self;
     }
     return self;
@@ -99,8 +102,13 @@ void LocaledListener::onPropertiesChange(const std::string &interface,
                                          const Invalidated &invalidated)
 {
     if (interface == LOCALED_INTERFACE) {
-        boost::function<void (const LocaleEnv &env)> result(boost::bind(&LocaledListener::emitLocaleEnv, m_self, _1));
-        BOOST_FOREACH (const Properties::value_type &entry, properties) {
+        auto result = [self=weak_from_this()] (const LocaleEnv &env) {
+            auto lock = self.lock();
+            if (lock) {
+                lock->emitLocaleEnv(env);
+            }
+        };
+        for (const auto &entry: properties) {
             if (entry.first == LOCALED_LOCALE_PROPERTY) {
                 const LocaleEnv *locale = boost::get<LocaleEnv>(&entry.second);
                 if (locale) {
@@ -116,11 +124,14 @@ void LocaledListener::onPropertiesChange(const std::string &interface,
                       invalidated.end(),
                       LOCALED_LOCALE_PROPERTY) != invalidated.end()) {
             SE_LOG_DEBUG(NULL, "localed: Locale changed, need to get new value");
-            m_propertiesGet.start(std::string(LOCALED_INTERFACE),
-                                  std::string(LOCALED_LOCALE_PROPERTY),
-                                  boost::bind(&LocaledListener::processLocaleProperty, m_self,
-                                              _1, _2, false,
-                                              result));
+            m_propertiesGet.start([self=weak_from_this(), result] (const LocaleVariant &variant, const std::string &error) {
+                    auto lock = self.lock();
+                    if (lock) {
+                        lock->processLocaleProperty(variant, error, false, result);
+                    }
+                },
+                std::string(LOCALED_INTERFACE),
+                std::string(LOCALED_LOCALE_PROPERTY));
         }
         SE_LOG_DEBUG(NULL, "localed: ignoring irrelevant property change");
     }
@@ -135,11 +146,11 @@ void LocaledListener::processLocaleProperty(const LocaleVariant &variant,
     const LocaleEnv *locale =
         error.empty() ?
         boost::get<LocaleEnv>(&variant) :
-        NULL;
+        nullptr;
     LocaleEnv current;
     if (!locale && mustCall) {
         SE_LOG_DEBUG(NULL, "localed: using current environment as fallback");
-        BOOST_FOREACH (const char *name, LOCALED_ENV_VARS) {
+        for (const char *name: LOCALED_ENV_VARS) {
             const char *value = getenv(name);
             if (value) {
                 current.push_back(StringPrintf("%s=%s", name, value));
@@ -159,13 +170,18 @@ void LocaledListener::emitLocaleEnv(const LocaleEnv &env)
     m_localeValues(env);
 }
 
-void LocaledListener::check(const boost::function<void (const LocaleEnv &env)> &result)
+void LocaledListener::check(const std::function<void (const LocaleEnv &env)> &result)
 {
     if (getConnection()) {
         SE_LOG_DEBUG(NULL, "localed: get current Locale property");
-        m_propertiesGet.start(std::string(LOCALED_INTERFACE),
-                              std::string(LOCALED_LOCALE_PROPERTY),
-                              boost::bind(&LocaledListener::processLocaleProperty, m_self, _1, _2, true, result));
+        m_propertiesGet.start([self=weak_from_this(), result] (const LocaleVariant &variant, const std::string &error) {
+                    auto lock = self.lock();
+                    if (lock) {
+                        lock->processLocaleProperty(variant, error, true, result);
+                    }
+            },
+            std::string(LOCALED_INTERFACE),
+            std::string(LOCALED_LOCALE_PROPERTY));
     } else {
         processLocaleProperty(LocaleVariant(), "no D-Bus connection", true, result);
     }
@@ -174,12 +190,12 @@ void LocaledListener::check(const boost::function<void (const LocaleEnv &env)> &
 void LocaledListener::setLocale(const LocaleEnv &locale)
 {
     bool modified = false;
-    BOOST_FOREACH (const char *name, LOCALED_ENV_VARS) {
+    for (const char *name: LOCALED_ENV_VARS) {
         const char *value = getenv(name);
         std::string assignment = StringPrintf("%s=", name);
-        LocaleEnv::const_iterator instance = std::find_if(locale.begin(), locale.end(),
-                                                          boost::bind(boost::starts_with<std::string, std::string>, _1, name));
-        const char *newvalue = instance != locale.end() ? instance->c_str() + assignment.size() : NULL;
+        auto instance = std::find_if(locale.begin(), locale.end(),
+                                     [&name] (const std::string &l) { return boost::starts_with(l, name); });
+        const char *newvalue = instance != locale.end() ? instance->c_str() + assignment.size() : nullptr;
         if ((value && newvalue && strcmp(value, newvalue)) ||
             (!value && newvalue)) {
             modified = true;

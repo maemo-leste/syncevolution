@@ -54,7 +54,7 @@ void Connection::failed(const std::string &reason)
     //
     // But don't delete ourselves while some code of the Connection still
     // runs. Instead let server do that as part of its event loop.
-    boost::shared_ptr<Connection> c = m_me.lock();
+    auto c = weak_from_this().lock();
     if (c) {
         m_server.delayDeletion(c);
         m_server.detach(this);
@@ -114,13 +114,13 @@ void Connection::process(const Caller_t &caller,
                  message_type.c_str(),
                  SessionCommon::ConnectionStateToString(m_state).c_str());
 
-    boost::shared_ptr<Client> client(m_server.findClient(caller));
+    std::shared_ptr<Client> client(m_server.findClient(caller));
     if (!client) {
         SE_THROW("unknown client");
     }
 
-    boost::shared_ptr<Connection> myself =
-        boost::static_pointer_cast<Connection, Resource>(client->findResource(this));
+    std::shared_ptr<Connection> myself =
+        std::static_pointer_cast<Connection, Resource>(client->findResource(this));
     if (!myself) {
         SE_THROW("client does not own connection");
     }
@@ -158,11 +158,10 @@ void Connection::process(const Caller_t &caller,
                     // of our configs first before going back to the name itself.
                     std::string serverID = san.fServerID;
                     SyncConfig::ConfigList servers = SyncConfig::getConfigs();
-                    BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server,
-                            servers) {
+                    for (const auto &server: servers) {
                         SyncConfig conf(server.first);
                         vector<string> urls = conf.getSyncURL();
-                        BOOST_FOREACH (const string &url, urls) {
+                        for (const string &url: urls) {
                             if (url == serverID) {
                                 config = server.first;
                                 break;
@@ -174,19 +173,18 @@ void Connection::process(const Caller_t &caller,
                     }
 
                     // for Bluetooth transports match against mac address.
-                    StringMap::const_iterator id = m_peer.find("id"),
+                    auto id = m_peer.find("id"),
                         trans = m_peer.find("transport");
                     if (trans != m_peer.end() && id != m_peer.end()) {
                         if (trans->second == "org.openobex.obexd") {
                             m_peerBtAddr = id->second.substr(0, id->second.find("+"));
-                            BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server,
-                                    servers) {
+                            for (const auto &server: servers) {
                                 SyncConfig conf(server.first);
                                 vector<string> urls = conf.getSyncURL();
-                                BOOST_FOREACH (string &url, urls){
+                                for (std::string &url: urls){
                                     url = url.substr (0, url.find("+"));
                                     SE_LOG_DEBUG(NULL, "matching against %s",url.c_str());
-                                    if (url.find ("obex-bt://") ==0 && url.substr(strlen("obex-bt://"), url.npos) == m_peerBtAddr) {
+                                    if (url == "obex-bt://" + m_peerBtAddr) {
                                         config = server.first;
                                         break;
                                     }
@@ -199,8 +197,7 @@ void Connection::process(const Caller_t &caller,
                     }
 
                     if (config.empty()) {
-                        BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server,
-                                      servers) {
+                        for (const auto &server: servers) {
                             if (server.first == serverID) {
                                 config = serverID;
                                 break;
@@ -271,8 +268,7 @@ void Connection::process(const Caller_t &caller,
                     // TODO: proper exception
                     SE_THROW("could not extract LocURI=deviceID from initial message");
                 }
-                BOOST_FOREACH(const SyncConfig::ConfigList::value_type &entry,
-                              SyncConfig::getConfigs()) {
+                for (const auto &entry: SyncConfig::getConfigs()) {
                     SyncConfig peer(entry.first);
                     if (info.m_deviceID == peer.getRemoteDevID()) {
                         config = entry.first;
@@ -299,10 +295,10 @@ void Connection::process(const Caller_t &caller,
 
             // run session as client or server
             m_state = SessionCommon::PROCESSING;
-            m_session = Session::createSession(m_server,
-                                               peerDeviceID,
-                                               config,
-                                               m_sessionID);
+            m_session = make_weak_shared::make<Session>(m_server,
+                                                           peerDeviceID,
+                                                           config,
+                                                           m_sessionID);
             m_session->activate();
             if (serverMode) {
                 m_session->initServer(SharedBuffer(reinterpret_cast<const char *>(message.second),
@@ -327,7 +323,7 @@ void Connection::process(const Caller_t &caller,
                 // it might go away before killing completes and/or
                 // fails - need to use shared pointer tracking).
                 //
-                // boost::shared_ptr<Connection> c = m_me.lock();
+                // std::shared_ptr<Connection> c = m_me.lock();
                 // if (!c) {
                 //     SE_THROW("internal error: Connection::process() cannot lock its own instance");
                 // }
@@ -427,7 +423,7 @@ void Connection::close(const Caller_t &caller,
                  error.c_str(),
                  SessionCommon::ConnectionStateToString(m_state).c_str());
 
-    boost::shared_ptr<Client> client(m_server.findClient(caller));
+    std::shared_ptr<Client> client(m_server.findClient(caller));
     if (!client) {
         SE_THROW("unknown client");
     }
@@ -435,7 +431,7 @@ void Connection::close(const Caller_t &caller,
     // Remove reference to us from client, will destruct *this*
     // instance. To let us finish our work safely, keep a reference
     // that the server will unref when everything is idle again.
-    boost::shared_ptr<Connection> c = m_me.lock();
+    auto c = weak_from_this().lock();
     if (!c) {
         SE_THROW("connection already destructing");
     }
@@ -499,7 +495,7 @@ Connection::Connection(Server &server,
     DBusObjectHelper(conn,
                      std::string("/org/syncevolution/Connection/") + sessionID,
                      "org.syncevolution.Connection",
-                     boost::bind(&Server::autoTermCallback, &server)),
+                     [serverPtr=&server] () { serverPtr->autoTermCallback(); }),
     m_server(server),
     m_peer(peer),
     m_mustAuthenticate(must_authenticate),
@@ -519,17 +515,6 @@ Connection::Connection(Server &server,
 
     SE_LOG_DEBUG(NULL, "Connection %s: created",
                  m_sessionID.c_str());
-}
-
-boost::shared_ptr<Connection> Connection::createConnection(Server &server,
-                                                           const DBusConnectionPtr &conn,
-                                                           const std::string &sessionID,
-                                                           const StringMap &peer,
-                                                           bool must_authenticate)
-{
-    boost::shared_ptr<Connection> c(new Connection(server, conn, sessionID, peer, must_authenticate));
-    c->m_me = c;
-    return c;
 }
 
 Connection::~Connection()
@@ -596,8 +581,8 @@ void Connection::ready()
             std::string serverURI = m_SANContent->m_serverURI[sync];
             //uint32_t contentType = m_SANContent->m_contentType[sync];
             bool found = false;
-            BOOST_FOREACH(const std::string &source, sources) {
-                boost::shared_ptr<const PersistentSyncSourceConfig> sourceConfig(context.getSyncSourceConfig(source));
+            for (const std::string &source: sources) {
+                std::shared_ptr<const PersistentSyncSourceConfig> sourceConfig(context.getSyncSourceConfig(source));
                 // prefix match because the local
                 // configuration might contain
                 // additional parameters (like date
@@ -634,20 +619,16 @@ void Connection::ready()
 void Connection::activateTimeout()
 {
     if (m_timeoutSeconds >= 0) {
-        m_timeout.runOnce(m_timeoutSeconds,
-                          boost::bind(&Connection::timeoutCb,
-                                      this));
+        auto timeoutCb = [this] () {
+            SE_LOG_DEBUG(NULL, "Connection %s: timed out after %ds (state %s)",
+                         m_sessionID.c_str(), m_timeoutSeconds,
+                         SessionCommon::ConnectionStateToString(m_state).c_str());
+            failed(StringPrintf("timed out after %ds", m_timeoutSeconds));
+        };
+        m_timeout.runOnce(m_timeoutSeconds, timeoutCb);
     } else {
         m_timeout.deactivate();
     }
-}
-
-void Connection::timeoutCb()
-{
-    SE_LOG_DEBUG(NULL, "Connection %s: timed out after %ds (state %s)",
-                 m_sessionID.c_str(), m_timeoutSeconds,
-                 SessionCommon::ConnectionStateToString(m_state).c_str());
-    failed(StringPrintf("timed out after %ds", m_timeoutSeconds));
 }
 
 SE_END_CXX

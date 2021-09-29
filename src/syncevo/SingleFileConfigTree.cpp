@@ -25,37 +25,35 @@
 #include <syncevo/IniConfigNode.h>
 #include <syncevo/util.h>
 
-#include <boost/foreach.hpp>
 #include <boost/algorithm/string.hpp>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
-using namespace std;
 
-SingleFileConfigTree::SingleFileConfigTree(const boost::shared_ptr<DataBlob> &data) :
+SingleFileConfigTree::SingleFileConfigTree(const std::shared_ptr<DataBlob> &data) :
     m_data(data)
 {
     readFile();
 }
 
-SingleFileConfigTree::SingleFileConfigTree(const string &fullpath) :
+SingleFileConfigTree::SingleFileConfigTree(const std::string &fullpath) :
     m_data(new FileDataBlob(fullpath, true))
 {
     readFile();
 }
 
-boost::shared_ptr<ConfigNode> SingleFileConfigTree::open(const string &filename)
+std::shared_ptr<ConfigNode> SingleFileConfigTree::open(const std::string &filename)
 {
-    string normalized = normalizePath(string("/") + filename);
-    boost::shared_ptr<ConfigNode> &entry = m_nodes[normalized];
+    std::string normalized = normalizePath(std::string("/") + filename);
+    std::shared_ptr<ConfigNode> &entry = m_nodes[normalized];
     if (entry) {
         return entry;
     }
 
-    string name = m_data->getName() + " - " + normalized;
-    boost::shared_ptr<DataBlob> data; 
+    std::string name = m_data->getName() + " - " + normalized;
+    std::shared_ptr<DataBlob> data; 
 
-    BOOST_FOREACH(const FileContent_t::value_type &file, m_content) {
+    for (const auto &file: m_content) {
         if (file.first == normalized) {
             data.reset(new StringDataBlob(name, file.second, true));
             break;
@@ -66,7 +64,7 @@ boost::shared_ptr<ConfigNode> SingleFileConfigTree::open(const string &filename)
          * creating new files not supported, would need support for detecting
          * StringDataBlob::write()
          */
-        data.reset(new StringDataBlob(name, boost::shared_ptr<std::string>(), true));
+        data.reset(new StringDataBlob(name, std::shared_ptr<std::string>(), true));
     }
     entry.reset(new IniFileConfigNode(data));
     return entry;
@@ -82,7 +80,7 @@ void SingleFileConfigTree::reload()
     SE_THROW("SingleFileConfigTree::reload() not implemented");
 }
 
-void SingleFileConfigTree::remove(const string &path)
+void SingleFileConfigTree::remove(const std::string &path)
 {
     SE_THROW("internal error: SingleFileConfigTree::remove() called");
 }
@@ -93,11 +91,11 @@ void SingleFileConfigTree::reset()
     readFile();
 }
 
-boost::shared_ptr<ConfigNode> SingleFileConfigTree::open(const string &path,
+std::shared_ptr<ConfigNode> SingleFileConfigTree::open(const std::string &path,
                                                          PropertyType type,
-                                                         const string &otherId)
+                                                         const std::string &otherId)
 {
-    string fullpath = path;
+    std::string fullpath = path;
     if (!fullpath.empty()) {
         fullpath += "/";
     }
@@ -119,19 +117,19 @@ boost::shared_ptr<ConfigNode> SingleFileConfigTree::open(const string &path,
     return open(fullpath);
 }
 
-boost::shared_ptr<ConfigNode> SingleFileConfigTree::add(const string &path,
-                                                        const boost::shared_ptr<ConfigNode> &bode)
+std::shared_ptr<ConfigNode> SingleFileConfigTree::add(const std::string &path,
+                                                        const std::shared_ptr<ConfigNode> &bode)
 {
     SE_THROW("SingleFileConfigTree::add() not supported");
 }
 
 
-static void checkChild(const string &normalized,
-                       const string &node,
-                       set<string> &subdirs)
+static void checkChild(const std::string &normalized,
+                       const std::string &node,
+                       std::set<std::string> &subdirs)
 {
     if (boost::starts_with(node, normalized)) {
-        string remainder = node.substr(normalized.size());
+        std::string remainder = node.substr(normalized.size());
         size_t offset = remainder.find('/');
         if (offset != remainder.npos) {
             // only directories underneath path matter
@@ -140,24 +138,24 @@ static void checkChild(const string &normalized,
     }
 }
 
-list<string> SingleFileConfigTree::getChildren(const string &path)
+std::list<std::string> SingleFileConfigTree::getChildren(const std::string &path)
 {
-    set<string> subdirs;
-    string normalized = normalizePath(string("/") + path);
+    std::set<std::string> subdirs;
+    std::string normalized = normalizePath(std::string("/") + path);
     if (normalized != "/") {
         normalized += "/";
     }
 
     // must check both actual files as well as unsaved nodes
-    BOOST_FOREACH(const FileContent_t::value_type &file, m_content) {
+    for (const auto &file: m_content) {
         checkChild(normalized, file.first, subdirs);
     }
-    BOOST_FOREACH(const NodeCache_t::value_type &file, m_nodes) {
+    for (const auto &file: m_nodes) {
         checkChild(normalized, file.first, subdirs);
     }
 
-    list<string> result;
-    BOOST_FOREACH(const string &dir, subdirs) {
+    std::list<std::string> result;
+    for (const std::string &dir: subdirs) {
         result.push_back(dir);
     }
     return result;
@@ -165,17 +163,17 @@ list<string> SingleFileConfigTree::getChildren(const string &path)
 
 void SingleFileConfigTree::readFile()
 {
-    boost::shared_ptr<istream> in(m_data->read());
-    boost::shared_ptr<string> content;
-    string line;
+    std::shared_ptr<std::istream> in(m_data->read());
+    std::shared_ptr<std::string> content;
+    std::string line;
 
     m_content.clear();
     while (getline(*in, line)) {
         if (boost::starts_with(line, "=== ") &&
             boost::ends_with(line, " ===")) {
-            string name = line.substr(4, line.size() - 8);
-            name = normalizePath(string("/") + name);
-            content.reset(new string);
+            std::string name = line.substr(4, line.size() - 8);
+            name = normalizePath(std::string("/") + name);
+            content.reset(new std::string);
             m_content[name] = content;
         } else if (content) {
             (*content) += line;
@@ -192,7 +190,7 @@ class SingleIniTest : public CppUnit::TestFixture {
     CPPUNIT_TEST_SUITE_END();
 
     void simple() {
-        boost::shared_ptr<string> data(new string);
+        auto data = std::make_shared<std::string>();
         data->assign("# comment\n"
                      "# foo\n"
                      "=== foo/config.ini ===\n"
@@ -206,18 +204,18 @@ class SingleIniTest : public CppUnit::TestFixture {
                      "=== sources/addressbook/config.ini ===\n"
                      "=== sources/calendar/config.ini ===\n"
                      "evolutionsource = Personal\n");
-        boost::shared_ptr<DataBlob> blob(new StringDataBlob("test", data, true));
+        auto blob = std::make_shared<StringDataBlob>("test", data, true);
         SingleFileConfigTree tree(blob);
-        boost::shared_ptr<ConfigNode> node;
+        std::shared_ptr<ConfigNode> node;
         node = tree.open("foo/config.ini");
         CPPUNIT_ASSERT(node);
         CPPUNIT_ASSERT(node->exists());
-        CPPUNIT_ASSERT_EQUAL(string("test - /foo/config.ini"), node->getName());
+        CPPUNIT_ASSERT_EQUAL(std::string("test - /foo/config.ini"), node->getName());
         CPPUNIT_ASSERT(node->readProperty("foo").wasSet());
-        CPPUNIT_ASSERT_EQUAL(string("bar"), node->readProperty("foo").get());
-        CPPUNIT_ASSERT_EQUAL(string("bar2"), node->readProperty("foo2").get());
+        CPPUNIT_ASSERT_EQUAL(std::string("bar"), node->readProperty("foo").get());
+        CPPUNIT_ASSERT_EQUAL(std::string("bar2"), node->readProperty("foo2").get());
         CPPUNIT_ASSERT(node->readProperty("foo2").wasSet());
-        CPPUNIT_ASSERT_EQUAL(string(""), node->readProperty("no_such_bar").get());
+        CPPUNIT_ASSERT_EQUAL(std::string(""), node->readProperty("no_such_bar").get());
         CPPUNIT_ASSERT(!node->readProperty("no_such_bar").wasSet());
         node = tree.open("/foo/config.ini");
         CPPUNIT_ASSERT(node);
@@ -225,28 +223,28 @@ class SingleIniTest : public CppUnit::TestFixture {
         node = tree.open("foo//.config.ini");
         CPPUNIT_ASSERT(node);
         CPPUNIT_ASSERT(node->exists());
-        CPPUNIT_ASSERT_EQUAL(string("bar_internal"), node->readProperty("foo_internal").get());
-        CPPUNIT_ASSERT_EQUAL(string("bar2_internal"), node->readProperty("foo2_internal").get());
+        CPPUNIT_ASSERT_EQUAL(std::string("bar_internal"), node->readProperty("foo_internal").get());
+        CPPUNIT_ASSERT_EQUAL(std::string("bar2_internal"), node->readProperty("foo2_internal").get());
         node = tree.open("bar///./.internal.ini");
         CPPUNIT_ASSERT(node);
         CPPUNIT_ASSERT(node->exists());
-        CPPUNIT_ASSERT_EQUAL(string("foo"), node->readProperty("bar").get());
+        CPPUNIT_ASSERT_EQUAL(std::string("foo"), node->readProperty("bar").get());
         node = tree.open("sources/addressbook/config.ini");
         CPPUNIT_ASSERT(node);
         CPPUNIT_ASSERT(node->exists());
         node = tree.open("sources/calendar/config.ini");
         CPPUNIT_ASSERT(node);
         CPPUNIT_ASSERT(node->exists());
-        CPPUNIT_ASSERT_EQUAL(string("Personal"), node->readProperty("evolutionsource").get());
+        CPPUNIT_ASSERT_EQUAL(std::string("Personal"), node->readProperty("evolutionsource").get());
 
         node = tree.open("no-such-source/config.ini");
         CPPUNIT_ASSERT(node);
         CPPUNIT_ASSERT(!node->exists());
 
-        list<string> dirs = tree.getChildren("");
-        CPPUNIT_ASSERT_EQUAL(string("bar|foo|no-such-source|sources"), boost::join(dirs, "|"));
+        std::list<std::string> dirs = tree.getChildren("");
+        CPPUNIT_ASSERT_EQUAL(std::string("bar|foo|no-such-source|sources"), boost::join(dirs, "|"));
         dirs = tree.getChildren("sources/");
-        CPPUNIT_ASSERT_EQUAL(string("addressbook|calendar"), boost::join(dirs, "|"));
+        CPPUNIT_ASSERT_EQUAL(std::string("addressbook|calendar"), boost::join(dirs, "|"));
     }
 };
 

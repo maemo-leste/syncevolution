@@ -67,8 +67,8 @@ MaemoCalendarSource::MaemoCalendarSource(int EntryType, int EntryFormat,
         break;
     }
     mc = CMulticalendar::MCInstance();
-    cal = NULL;
-    conv = NULL;
+    cal = nullptr;
+    conv = nullptr;
     if (!mc) {
         throwError(SE_HERE, "Could not connect to Maemo Calendar backend");
     }
@@ -89,7 +89,7 @@ std::string MaemoCalendarSource::getMimeType() const
                            "text/calendar+plain" :
                            "text/calendar";
     case VCAL_TYPE: return "text/x-calendar";
-    default: return NULL;
+    default: return nullptr;
     }
 }
 
@@ -99,7 +99,7 @@ std::string MaemoCalendarSource::getMimeVersion() const
     case -1: return "1.0";
     case ICAL_TYPE: return "2.0";
     case VCAL_TYPE: return "1.0";
-    default: return NULL;
+    default: return nullptr;
     }
 }
 
@@ -155,9 +155,9 @@ bool MaemoCalendarSource::isEmpty()
 void MaemoCalendarSource::close()
 {
     delete conv;
-    conv = NULL;
+    conv = nullptr;
     delete cal;
-    cal = NULL;
+    cal = nullptr;
 }
 
 MaemoCalendarSource::Databases MaemoCalendarSource::getDatabases()
@@ -170,7 +170,7 @@ MaemoCalendarSource::Databases MaemoCalendarSource::getDatabases()
     vector< CCalendar * > calendars = mc->getListCalFromMc();
     Databases result;
 
-    BOOST_FOREACH(CCalendar * c, calendars) {
+    for (CCalendar * c: calendars) {
         int id = c->getCalendarId();
         ostringstream uri;
         uri << "id:" << id;
@@ -204,7 +204,7 @@ void MaemoCalendarSource::listAllItems(RevisionMap_t &revisions)
         // components of the specified type, so just ignore it for now
         if (!comps.size())
             break;
-        BOOST_FOREACH(CComponent * c, comps) {
+        for (CComponent * c: comps) {
             revisions[c->getId()] = get_revision(c);
             // Testing shows that the backend doesn't free the memory itself
             delete c;
@@ -219,7 +219,7 @@ void MaemoCalendarSource::listAllItems(RevisionMap_t &revisions)
     // desirable, given the N900's limited memory.
     int err;
     vector< string > ids = cal->getIdList(entry_type, err);
-    BOOST_FOREACH(std::string& id, ids) {
+    for (std::string& id: ids) {
         CComponent *c = cal->getEntry(id, entry_type, err);
         if (!c)
         {
@@ -278,7 +278,7 @@ TrackingSyncSource::InsertItemResult MaemoCalendarSource::insertItem(const strin
                 throwError(SE_HERE, string("no events in ical: ") + item);
             }
         }
-        vector< CComponent * >::iterator it = comps.begin();
+        vector< CComponent * auto it = comps.begin();
         if (comps.size() > 1) {
             for (; it != comps.end(); ++it) {
                 delete (*it);

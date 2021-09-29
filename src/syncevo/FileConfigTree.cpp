@@ -24,7 +24,6 @@
 #include <syncevo/IniConfigNode.h>
 #include <syncevo/util.h>
 
-#include <boost/foreach.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <unistd.h>
@@ -34,10 +33,9 @@
 #include <dirent.h>
 
 #include <syncevo/declarations.h>
-using namespace std;
 SE_BEGIN_CXX
 
-FileConfigTree::FileConfigTree(const string &root,
+FileConfigTree::FileConfigTree(const std::string &root,
                                SyncConfig::Layout layout) :
     m_root(root),
     m_layout(layout),
@@ -47,14 +45,14 @@ FileConfigTree::FileConfigTree(const string &root,
 
 void FileConfigTree::flush()
 {
-    BOOST_FOREACH(const NodeCache_t::value_type &node, m_nodes) {
+    for (const auto &node: m_nodes) {
         node.second->flush();
     }
 }
 
 void FileConfigTree::reload()
 {
-    BOOST_FOREACH(const NodeCache_t::value_type &node, m_nodes) {
+    for (const auto &node: m_nodes) {
         node.second->reload();
     }
 }
@@ -63,7 +61,7 @@ void FileConfigTree::reload()
  * remove config files, backup files of config files (with ~ at
  * the end) and empty directories
  */
-static bool rm_filter(const string &path, bool isDir)
+static bool rm_filter(const std::string &path, bool isDir)
 {
     if (isDir) {
         // skip non-empty directories
@@ -85,16 +83,16 @@ static bool rm_filter(const string &path, bool isDir)
     }
 }
 
-void FileConfigTree::remove(const string &path)
+void FileConfigTree::remove(const std::string &path)
 {
-    string fullpath = m_root + "/" + path;
+    std::string fullpath = m_root + "/" + path;
     clearNodes(fullpath);
     rm_r(fullpath, rm_filter);
 }
 
 void FileConfigTree::reset()
 {
-    for (NodeCache_t::iterator it = m_nodes.begin();
+    for (auto it = m_nodes.begin();
          it != m_nodes.end();
          ++it) {
         if (it->second.use_count() > 1) {
@@ -108,19 +106,19 @@ void FileConfigTree::reset()
     m_nodes.clear();
 }
 
-void FileConfigTree::clearNodes(const string &fullpath) 
+void FileConfigTree::clearNodes(const std::string &fullpath)
 {
     NodeCache_t::iterator it;
     it = m_nodes.begin();
     while (it != m_nodes.end()) {
-        const string &key = it->first;
+        const std::string &key = it->first;
         if (boost::starts_with(key, fullpath)){
             /* 'it = m_nodes.erase(it);' doesn't make sense
              * because 'map::erase' returns 'void' in gcc. But other 
              * containers like list, vector could work! :( 
              * Below is STL recommended usage. 
              */
-            NodeCache_t::iterator erased = it++;
+            auto erased = it++;
             if (erased->second.use_count() > 1) {
                 // same check as in reset()
                 SE_THROW(erased->second->getName() +
@@ -133,12 +131,12 @@ void FileConfigTree::clearNodes(const string &fullpath)
     }
 }
 
-boost::shared_ptr<ConfigNode> FileConfigTree::open(const string &path,
+std::shared_ptr<ConfigNode> FileConfigTree::open(const std::string &path,
                                                    ConfigTree::PropertyType type,
-                                                   const string &otherId)
+                                                   const std::string &otherId)
 {
-    string fullpath;
-    string filename;
+    std::string fullpath;
+    std::string filename;
     
     fullpath = normalizePath(m_root + "/" + path + "/");
     if (type == other) {
@@ -164,23 +162,23 @@ boost::shared_ptr<ConfigNode> FileConfigTree::open(const string &path,
             "config.ini";
     }
 
-    string fullname = normalizePath(fullpath + "/" + filename);
-    NodeCache_t::iterator found = m_nodes.find(fullname);
+    std::string fullname = normalizePath(fullpath + "/" + filename);
+    auto found = m_nodes.find(fullname);
     if (found != m_nodes.end()) {
         return found->second;
     } else if(type != other && type != server) {
-        boost::shared_ptr<ConfigNode> node(new IniFileConfigNode(fullpath, filename, m_readonly));
+        auto node = std::make_shared<IniFileConfigNode>(fullpath, filename, m_readonly);
         return m_nodes[fullname] = node;
     } else {
-        boost::shared_ptr<ConfigNode> node(new IniHashConfigNode(fullpath, filename, m_readonly));
+        auto node = std::make_shared<IniHashConfigNode>(fullpath, filename, m_readonly);
         return m_nodes[fullname] = node;
     }
 }
 
-boost::shared_ptr<ConfigNode> FileConfigTree::add(const string &path,
-                                                  const boost::shared_ptr<ConfigNode> &node)
+std::shared_ptr<ConfigNode> FileConfigTree::add(const std::string &path,
+                                                  const std::shared_ptr<ConfigNode> &node)
 {
-    NodeCache_t::iterator found = m_nodes.find(path);
+    auto found = m_nodes.find(path);
     if (found != m_nodes.end()) {
         return found->second;
     } else {
@@ -189,23 +187,23 @@ boost::shared_ptr<ConfigNode> FileConfigTree::add(const string &path,
     }
 }
 
-static inline bool isNode(const string &dir, const string &name) {
+static inline bool isNode(const std::string &dir, const std::string &name) {
     struct stat buf;
-    string fullpath = dir + "/" + name;
+    std::string fullpath = dir + "/" + name;
     return !stat(fullpath.c_str(), &buf) && S_ISDIR(buf.st_mode);
 }
  
-list<string> FileConfigTree::getChildren(const string &path)
+std::list<std::string> FileConfigTree::getChildren(const std::string &path)
 {
-    list<string> res;
+    std::list<std::string> res;
 
-    string fullpath;
+    std::string fullpath;
     fullpath = normalizePath(m_root + "/" + path);
 
     // first look at existing files
     if (!access(fullpath.c_str(), F_OK)) {
         ReadDir dir(fullpath);
-        BOOST_FOREACH(const string entry, dir) {
+        for (const std::string &entry: dir) {
             if (isNode(fullpath, entry)) {
                 res.push_back(entry);
             }
@@ -216,8 +214,8 @@ list<string> FileConfigTree::getChildren(const string &path)
     // but not saved yet. The full path must be
     // <path>/<childname>/<filename>.
     fullpath += "/";
-    BOOST_FOREACH(const NodeCache_t::value_type &node, m_nodes) {
-        string currpath = node.first;
+    for (const auto &node: m_nodes) {
+        std::string currpath = node.first;
         if (currpath.size() > fullpath.size() &&
             currpath.substr(0, fullpath.size()) == fullpath) {
             // path prefix matches, now check whether we have
@@ -231,7 +229,7 @@ list<string> FileConfigTree::getChildren(const string &path)
                 // directory level.
                 if (currpath.npos == currpath.find('/', end + 1)) {
                     // Insert it if not there yet.
-                    string name = currpath.substr(start, end - start);
+                    std::string name = currpath.substr(start, end - start);
                     if (res.end() == find(res.begin(), res.end(), name)) {
                         res.push_back(name);
                     }

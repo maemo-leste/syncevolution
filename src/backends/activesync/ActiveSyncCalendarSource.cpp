@@ -58,7 +58,7 @@ void ActiveSyncCalendarSource::beginSync(const std::string &lastToken, const std
         // re-populate cache from storage, without any item data
         ConfigProps props;
         m_trackingNode->readProperties(props);
-        BOOST_FOREACH(const StringPair &prop, props) {
+        for (const auto &prop: props) {
             const std::string &easid = prop.first;
             const std::string &value = prop.second;
             size_t pos = value.find('/');
@@ -70,9 +70,9 @@ void ActiveSyncCalendarSource::beginSync(const std::string &lastToken, const std
                     size_t nextpos = value.find('/', pos + 1);
                     if (nextpos != value.npos) {
                         std::string uid = m_escape.unescape(value.substr(pos + 1, nextpos - pos - 1));
-                        boost::shared_ptr<Event> &eventptr = m_cache[easid];
+                        std::shared_ptr<Event> &eventptr = m_cache[easid];
                         if (!eventptr) {
-                            eventptr = boost::shared_ptr<Event>(new Event);
+                            eventptr = std::make_shared<Event>();
                         }
                         eventptr->m_easid = easid;
                         eventptr->m_uid = uid;
@@ -104,7 +104,7 @@ void ActiveSyncCalendarSource::beginSync(const std::string &lastToken, const std
     for (bool firstIteration = true;
          moreAvailable;
          firstIteration = false) {
-        gchar *buffer = NULL;
+        gchar *buffer = nullptr;
         GErrorCXX gerror;
         EASItemsCXX created, updated;
         EASIdsCXX deleted;
@@ -142,7 +142,7 @@ void ActiveSyncCalendarSource::beginSync(const std::string &lastToken, const std
 
 
         // populate ID lists and content cache
-        BOOST_FOREACH(EasItemInfo *item, created) {
+        for (EasItemInfo *item: created) {
             if (!item->server_id) {
                 throwError(SE_HERE, "no server ID for new eas item");
             }
@@ -155,13 +155,13 @@ void ActiveSyncCalendarSource::beginSync(const std::string &lastToken, const std
                 throwError(SE_HERE, StringPrintf("no body returned for new eas item %s", easid.c_str()));
             }
             Event &event = setItemData(easid, item->data);
-            BOOST_FOREACH(const std::string &subid, event.m_subids) {
+            for (const std::string &subid: event.m_subids) {
                 SE_LOG_DEBUG(getDisplayName(), "new eas item %s = uid %s + rid %s",
                              easid.c_str(), event.m_uid.c_str(), subid.c_str());
                 addItem(createLUID(easid, subid), NEW);
             }
         }
-        BOOST_FOREACH(EasItemInfo *item, updated) {
+        for (EasItemInfo *item: updated) {
             if (!item->server_id) {
                 throwError(SE_HERE, "no server ID for updated eas item");
             }
@@ -174,13 +174,13 @@ void ActiveSyncCalendarSource::beginSync(const std::string &lastToken, const std
                 throwError(SE_HERE, StringPrintf("no body returned for updated eas item %s", easid.c_str()));
             }
             Event &event = setItemData(easid, item->data);
-            BOOST_FOREACH(const std::string &subid, event.m_subids) {
+            for (const std::string &subid: event.m_subids) {
                 SE_LOG_DEBUG(getDisplayName(), "deleted eas item %s = uid %s + rid %s",
                              easid.c_str(), event.m_uid.c_str(), subid.c_str());
                 addItem(createLUID(easid, subid), UPDATED);
             }
         }
-        BOOST_FOREACH(const char *serverID, deleted) {
+        for (const char *serverID: deleted) {
             if (!serverID) {
                 throwError(SE_HERE, "no server ID for deleted eas item");
             }
@@ -192,7 +192,7 @@ void ActiveSyncCalendarSource::beginSync(const std::string &lastToken, const std
             if (event.m_subids.empty()) {
                 SE_LOG_DEBUG(getDisplayName(), "deleted eas item %s empty?!", easid.c_str());
             } else {
-                BOOST_FOREACH(const std::string &subid, event.m_subids) {
+                for (const std::string &subid: event.m_subids) {
                     SE_LOG_DEBUG(getDisplayName(), "deleted eas item %s = uid %s + rid %s",
                                  easid.c_str(), event.m_uid.c_str(), subid.c_str());
                     addItem(createLUID(easid, subid), DELETED);
@@ -218,10 +218,10 @@ void ActiveSyncCalendarSource::beginSync(const std::string &lastToken, const std
 
     // now also generate full list of all current items:
     // old items + new (added to m_events above) - deleted (removed above)
-    BOOST_FOREACH(const EventCache::value_type &entry, m_cache) {
+    for (const auto &entry: m_cache) {
         const std::string &easid = entry.first;
-        const boost::shared_ptr<Event> &eventptr = entry.second;
-        BOOST_FOREACH(const std::string &subid, eventptr->m_subids) {
+        const std::shared_ptr<Event> &eventptr = entry.second;
+        for (const std::string &subid: eventptr->m_subids) {
             SE_LOG_DEBUG(getDisplayName(), "existing eas item %s = uid %s + rid %s",
                          easid.c_str(), eventptr->m_uid.c_str(), subid.c_str());
             addItem(createLUID(easid, subid), ANY);
@@ -233,13 +233,13 @@ std::string ActiveSyncCalendarSource::endSync(bool success)
 {
     m_trackingNode->clear();
     if (success) {
-        BOOST_FOREACH(const EventCache::value_type &entry, m_cache) {
+        for (const auto &entry: m_cache) {
             const std::string &easid = entry.first;
-            const boost::shared_ptr<Event> &eventptr = entry.second;
+            const std::shared_ptr<Event> &eventptr = entry.second;
             std::stringstream buffer;
             buffer << "//"; // use same format as in MapSyncSource, just in case - was '/' << m_escape.escape(ids.m_revision) << '/';
             buffer << m_escape.escape(eventptr->m_uid) << '/';
-            BOOST_FOREACH(const std::string &subid, eventptr->m_subids) {
+            for (const std::string &subid: eventptr->m_subids) {
                 buffer << m_escape.escape(subid) << '/';
             }
             m_trackingNode->setProperty(easid, buffer.str());
@@ -298,7 +298,7 @@ std::string ActiveSyncCalendarSource::getDescription(const string &luid)
 
 ActiveSyncCalendarSource::Event &ActiveSyncCalendarSource::findItem(const std::string &easid)
 {
-    EventCache::iterator it = m_cache.find(easid);
+    auto it = m_cache.find(easid);
     if (it == m_cache.end()) {
         throwError(SE_HERE, STATUS_NOT_FOUND, "merged event not found: " + easid);
     }
@@ -324,12 +324,12 @@ ActiveSyncCalendarSource::Event &ActiveSyncCalendarSource::loadItem(Event &event
 
 ActiveSyncCalendarSource::Event &ActiveSyncCalendarSource::setItemData(const std::string &easid, const std::string &data)
 {
-    boost::shared_ptr<Event> &eventptr = m_cache[easid];
+    std::shared_ptr<Event> &eventptr = m_cache[easid];
     if (eventptr) {
         eventptr->m_uid.clear();
         eventptr->m_subids.clear();
     } else {
-        eventptr = boost::shared_ptr<Event>(new Event);
+        eventptr = std::make_shared<Event>();
     }
 
     Event &event = *eventptr;
@@ -408,10 +408,10 @@ SyncSourceRaw::InsertItemResult ActiveSyncCalendarSource::insertItem(const std::
     const std::string &callerSubID = ids.second;
 
     // parse new event
-    boost::shared_ptr<Event> newEvent(new Event);
+    auto newEvent = std::make_shared<Event>();
     newEvent->m_calendar.set(icalcomponent_new_from_string((char *)item.c_str()), // hack for old libical
                              "parsing iCalendar 2.0");
-    icalcomponent *firstcomp = NULL;
+    icalcomponent *firstcomp = nullptr;
     for (icalcomponent *comp = firstcomp = icalcomponent_get_first_component(newEvent->m_calendar, ICAL_VEVENT_COMPONENT);
          comp;
          comp = icalcomponent_get_next_component(newEvent->m_calendar, ICAL_VEVENT_COMPONENT)) {
@@ -444,7 +444,7 @@ SyncSourceRaw::InsertItemResult ActiveSyncCalendarSource::insertItem(const std::
     // our caller didn't.
     std::string knownSubID = callerSubID;
     if (easid.empty()) {
-        EventCache::iterator it = m_cache.findByUID(newEvent->m_uid);
+        auto it = m_cache.findByUID(newEvent->m_uid);
         if (it != m_cache.end()) {
             easid = it->first;
             knownSubID = subid;
@@ -458,7 +458,7 @@ SyncSourceRaw::InsertItemResult ActiveSyncCalendarSource::insertItem(const std::
         InsertItemResult res = ActiveSyncSource::insertItem("", item);
         easid = res.m_luid;
 
-        EventCache::iterator it = m_cache.find(res.m_luid);
+        auto it = m_cache.find(res.m_luid);
         if (it != m_cache.end()) {
             // merge into existing Event
             Event &event = loadItem(*it->second);
@@ -499,7 +499,7 @@ SyncSourceRaw::InsertItemResult ActiveSyncCalendarSource::insertItem(const std::
             // the parent event or (if not found) the current event
             eptr<icalproperty> rid(icalproperty_new_recurrenceid(icaltime_from_string(knownSubID.c_str())),
                                    "new rid");
-            icalproperty *dtstart = NULL;
+            icalproperty *dtstart = nullptr;
             icalcomponent *comp;
             // look for parent first
             for (comp = icalcomponent_get_first_component(event.m_calendar, ICAL_VEVENT_COMPONENT);
@@ -541,7 +541,7 @@ SyncSourceRaw::InsertItemResult ActiveSyncCalendarSource::insertItem(const std::
             loadItem(event);
 
             // update cache: find old VEVENT and remove it before adding new one
-            icalcomponent *removeme = NULL;
+            icalcomponent *removeme = nullptr;
             for (icalcomponent *comp = icalcomponent_get_first_component(event.m_calendar, ICAL_VEVENT_COMPONENT);
                  comp;
                  comp = icalcomponent_get_next_component(event.m_calendar, ICAL_VEVENT_COMPONENT)) {
@@ -653,7 +653,7 @@ void ActiveSyncCalendarSource::deleteItem(const string &luid)
             throwError(SE_HERE, STATUS_NOT_FOUND, "sub event not found: " + subid + " in " + easid);
         } else {
             event.m_subids.clear();
-            event.m_calendar = NULL;
+            event.m_calendar = nullptr;
             ActiveSyncSource::deleteItem(ids.first);
         }
         m_cache.erase(easid);
@@ -689,7 +689,7 @@ void ActiveSyncCalendarSource::deleteItem(const string &luid)
 
 void ActiveSyncCalendarSource::removeAllItems()
 {
-    BOOST_FOREACH(const EventCache::value_type &entry, m_cache) {
+    for (const auto &entry: m_cache) {
         ActiveSyncSource::deleteItem(entry.first);
     }
     m_cache.clear();

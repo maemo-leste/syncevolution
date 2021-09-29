@@ -25,9 +25,7 @@
 #include <syncevo/util.h>
 
 #include <set>
-
-#include <boost/shared_ptr.hpp>
-#include <boost/scoped_array.hpp>
+#include <memory>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -127,7 +125,7 @@ protected:
     const char * const * m_argv;
 
     //array to store pointers of arguments
-    boost::scoped_array<const char *> m_argvArray;
+    std::vector<const char *> m_argvArray;
 
     /** result of sync, if one was executed */
     SyncReport m_report;
@@ -172,13 +170,13 @@ protected:
     Bool m_configModified;
 
     /** compose description of cmd line option with optional parameter */
-    static std::string cmdOpt(const char *opt, const char *param = NULL);
+    static std::string cmdOpt(const char *opt, const char *param = nullptr);
 
     /**
      * rename file or directory by appending .old or (if that already
      * exists) .old.x for x >= 1; updates config to point to the renamed directory
      */
-    void makeObsolete(boost::shared_ptr<SyncConfig> &from);
+    void makeObsolete(std::shared_ptr<SyncConfig> &from);
 
     /**
      * Copy from one config into another, with filters
@@ -186,15 +184,15 @@ protected:
      * if selectedSources is empty, otherwise only
      * those.
      */
-    void copyConfig(const boost::shared_ptr<SyncConfig> &from,
-                    const boost::shared_ptr<SyncConfig> &to,
+    void copyConfig(const std::shared_ptr<SyncConfig> &from,
+                    const std::shared_ptr<SyncConfig> &to,
                     const std::set<std::string> &selectedSources);
 
     /**
      * flush, move .synthesis dir, set ConsumerReady, ...
      */
-    void finishCopy(const boost::shared_ptr<SyncConfig> &from,
-                    const boost::shared_ptr<SyncContext> &to);
+    void finishCopy(const std::shared_ptr<SyncConfig> &from,
+                    const std::shared_ptr<SyncContext> &to);
 
     /**
      * migrate peer config; target context must be ready
@@ -206,14 +204,14 @@ protected:
      *
      * @param propertyType   sync, source, or unknown (in which case the property name must be given and must be unique)
      * @param opt            command line option as it appeard in argv (e.g. --sync|--sync-property|-z)
-     * @param param          the parameter following the opt, may be NULL if none given (error!)
+     * @param param          the parameter following the opt, may be nullptr if none given (error!)
      * @param propname       if given, then this is the property name and param contains the param value (--sync <param>)
      */
     
     bool parseProp(PropertyType propertyType,
                    const char *opt,
                    const char *param,
-                   const char *propname = NULL);
+                   const char *propname = nullptr);
 
     /**
      * parse keyword which sets a certain property,
@@ -306,8 +304,8 @@ protected:
      * parameter of the form "<longName|shortName>[=yes/1/t/true/no/0/f/false].
      *
      * @param opt        current index in m_argv
-     * @param longName   long form of the parameter, including --, may be NULL
-     * @param shortName  short form, including -, may be NULL
+     * @param longName   long form of the parameter, including --, may be nullptr
+     * @param shortName  short form, including -, may be nullptr
      * @param  def       default value if m_argv[opt] contains no explicit value
      * @retval value     if and only if m_argv[opt] matches, then this is set to to true or false
      * @retval ok        true if parsing succeeded, false if not and error message was printed
@@ -324,7 +322,7 @@ protected:
     /**
      * Invoke a callback for each local ID.
      */
-    void processLUIDs(SyncSource *source, const boost::function<void (const std::string &)> &callback);
+    void processLUIDs(SyncSource *source, const std::function<void (const std::string &)> &callback);
 
     /**
      * Add or update one item.

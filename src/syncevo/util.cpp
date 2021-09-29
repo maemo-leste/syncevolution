@@ -30,11 +30,7 @@
 
 #include <synthesis/syerror.h>
 
-#include <boost/scoped_array.hpp>
-#include <boost/foreach.hpp>
 #include <boost/algorithm/string/join.hpp>
-#include <boost/lambda/lambda.hpp>
-#include <boost/lambda/bind.hpp>
 #include <fstream>
 #include <iostream>
 
@@ -129,7 +125,7 @@ void splitPath(const string &path, string &dir, string &file)
 bool relToAbs(string &path)
 {
     char *buffer;
-    if ((buffer = realpath(path.c_str(), NULL)) != NULL) {
+    if ((buffer = realpath(path.c_str(), nullptr)) != nullptr) {
         path = buffer;
 	free(buffer);
         return true;
@@ -171,7 +167,7 @@ void mkdir_p(const string &path)
     }
 }
 
-void rm_r(const string &path, boost::function<bool (const string &,
+void rm_r(const string &path, std::function<bool (const string &,
                                                     bool)> filter)
 {
     struct stat buffer;
@@ -193,7 +189,7 @@ void rm_r(const string &path, boost::function<bool (const string &,
     }
 
     ReadDir dir(path);
-    BOOST_FOREACH(const string &entry, dir) {
+    for (const string &entry: dir) {
         rm_r(path + "/" + entry, filter);
     }
     if (filter(path, true) &&
@@ -207,7 +203,7 @@ void cp_r(const string &from, const string &to)
     if (isDir(from)) {
         mkdir_p(to);
         ReadDir dir(from);
-        BOOST_FOREACH(const string &entry, dir) {
+        for (const string &entry: dir) {
             cp_r(from + "/" + entry, to + "/" + entry);
         }
     } else {
@@ -294,7 +290,7 @@ int Execute(const std::string &cmd, ExecuteFlags flags) throw()
                 }
                 dup2(fd, STDERR_FILENO);
                 // - run command
-                execl("/bin/sh", "sh", "-c", cmd.c_str(), NULL);
+                execl("/bin/sh", "sh", "-c", cmd.c_str(), nullptr);
                 // - error handling if execl() failed (= returned)
                 std::cerr << cmd << ": execl() failed: " << strerror(errno);
                 exit(1);
@@ -337,7 +333,7 @@ UUID::UUID()
             ifstream seedsource("/dev/urandom");
             unsigned int seed;
             if (!seedsource.get((char *)&seed, sizeof(seed))) {
-                seed = time(NULL);
+                seed = time(nullptr);
             }
             srand(seed);
         }
@@ -350,7 +346,7 @@ UUID::UUID()
         InitSRand() {
             ifstream seedsource("/dev/urandom");
             if (!seedsource.get((char *)&m_seed, sizeof(m_seed))) {
-                m_seed = time(NULL);
+                m_seed = time(nullptr);
             }
         }
         int operator () () { return rand_r(&m_seed); }
@@ -374,7 +370,7 @@ UUID::UUID()
 
 ReadDir::ReadDir(const string &path, bool throwError) : m_path(path)
 {
-    DIR *dir = NULL;
+    DIR *dir = nullptr;
 
     try {
         dir = opendir(path.c_str());
@@ -410,7 +406,7 @@ ReadDir::ReadDir(const string &path, bool throwError) : m_path(path)
 
 std::string ReadDir::find(const string &entry, bool caseSensitive)
 {
-    BOOST_FOREACH(const string &e, *this) {
+    for (const string &e: *this) {
         if (caseSensitive ? e == entry : boost::iequals(e, entry)) {
             return m_path + "/" + e;
         }
@@ -454,7 +450,7 @@ unsigned long Hash(const std::string &str)
 {
     unsigned long hashval = 5381;
 
-    BOOST_FOREACH(int c, str) {
+    for (int c: str) {
         hashval = ((hashval << 5) + hashval) + c;
     }
 
@@ -479,7 +475,7 @@ std::string SHA_256(const std::string &data)
         // to work when multiple, independent libraries have to
         // use NSS is beyond me. Bad design. At least let's do the
         // best we can here.
-        NSS_NoDB_Init(NULL);
+        NSS_NoDB_Init(nullptr);
 	initialized = true;
     }
 
@@ -487,7 +483,7 @@ std::string SHA_256(const std::string &data)
         SE_THROW("NSS HASH_HashBuf() failed");
     }
     res.reserve(SHA256_LENGTH * 2);
-    BOOST_FOREACH(unsigned char value, hash) {
+    for (unsigned char value: hash) {
         res += StringPrintf("%02x", value);
     }
     return res;
@@ -516,7 +512,7 @@ string StringEscape::escape(const string &str) const
     char buffer[4];
 
     res.reserve(str.size() * 3);
-    BOOST_FOREACH(char c, str) {
+    for (char c: str) {
         if(c != m_escapeChar &&
            m_forbidden.find(c) == m_forbidden.end()) {
             res += c;
@@ -537,7 +533,7 @@ string StringEscape::escape(const string &str, char escapeChar, Mode mode)
     bool isLeadingSpace = true;
     res.reserve(str.size() * 3);
 
-    BOOST_FOREACH(char c, str) {
+    for (char c: str) {
         if(c != escapeChar &&
            (mode == STRICT ?
             (isalnum(c) ||
@@ -568,7 +564,7 @@ string StringEscape::escape(const string &str, char escapeChar, Mode mode)
             numspaces++;
         }
         res.resize(res.size() - numspaces);
-        BOOST_FOREACH(char c, str.substr(str.size() - numspaces)) {
+        for (char c: str.substr(str.size() - numspaces)) {
             sprintf(buffer, "%c%02x",
                     escapeChar,
                     (unsigned int)(unsigned char)c);
@@ -590,7 +586,7 @@ string StringEscape::unescape(const string &str, char escapeChar)
     while (curr < str.size()) {
         if (str[curr] == escapeChar) {
             string hex = str.substr(curr + 1, 2);
-            res += (char)strtol(hex.c_str(), NULL, 16);
+            res += (char)strtol(hex.c_str(), nullptr, 16);
             curr += 3;
         } else {
             res += str[curr];
@@ -717,7 +713,7 @@ std::string StringPrintfV(const char *format, va_list ap)
 {
     va_list aq;
 
-    char *buffer = NULL, *nbuffer = NULL;
+    char *buffer = nullptr, *nbuffer = nullptr;
     ssize_t size = 0;
     ssize_t realsize = 255;
     do {
@@ -737,7 +733,7 @@ std::string StringPrintfV(const char *format, va_list ap)
             buffer = nbuffer;
         }
 
-        // We never get here with buffer == NULL because of the size check.
+        // We never get here with buffer == nullptr because of the size check.
         // cppcheck-suppress nullPointer
         realsize = vsnprintf(buffer, size + 1, format, aq);
         if (realsize == -1) {
@@ -786,8 +782,7 @@ double Sleep(double seconds)
                                             SleepTimeout,
                                             &triggered),
                               "glib timeout");
-            GRunWhile(! boost::lambda::var(triggered) &&
-                      boost::lambda::bind(&SuspendFlags::getState, boost::ref(s)) == SuspendFlags::NORMAL);
+            GRunWhile([&triggered, &s] () { return !triggered && s.getState() == SuspendFlags::NORMAL; } );
             // SleepTimeout already removed the source if it was triggered
             // and returned false. No need to auto-destruct it again.
             if (triggered) {
@@ -805,7 +800,7 @@ double Sleep(double seconds)
             timeval delay;
             delay.tv_sec = 0;
             delay.tv_usec = 1e5;
-            select(0, NULL, NULL, NULL, &delay);
+            select(0, nullptr, nullptr, nullptr, &delay);
             // s.getState() will eventually return a different value than it did before.
             // cppcheck-suppress oppositeInnerCondition
             if (s.getState() != SuspendFlags::NORMAL) {
@@ -890,7 +885,7 @@ std::vector<std::string> unescapeJoinedString (const std::string& src, char sep)
         if (!((s1.length() - ((pos == s1.npos) ? 0: pos-1)) &1 )) {
             s2="";
             boost::trim (s1);
-            for (std::string::iterator i = s1.begin(); i != s1.end(); ++i) {
+            for (auto i = s1.begin(); i != s1.end(); ++i) {
                 //unescape characters
                 if (*i == '\\') {
                     if(++i == s1.end()) {
@@ -953,7 +948,7 @@ ScopedEnvChange::~ScopedEnvChange()
 
 std::string getCurrentTime()
 {
-    time_t seconds = time (NULL);
+    time_t seconds = time (nullptr);
     tm tmbuffer;
     tm *data = localtime_r(&seconds, &tmbuffer);
     if (!data) {

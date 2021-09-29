@@ -20,8 +20,6 @@
 
 #include <fstream>
 
-#include <boost/bind.hpp>
-
 #include <syncevo/GLibSupport.h>
 #include <syncevo/timeout.h>
 
@@ -37,31 +35,19 @@
 #include "network-manager-client.h"
 #include "presence-status.h"
 
-#include <boost/pointer_cast.hpp>
-
 using namespace GDBusCXX;
 
 SE_BEGIN_CXX
-
-void Server::onIdleChange(bool idle)
-{
-    SE_LOG_DEBUG(NULL, "server is %s", idle ? "idle" : "not idle");
-    if (idle) {
-        autoTermUnref();
-    } else {
-        autoTermRef();
-    }
-}
 
 class ServerLogger : public Logger
 {
     Logger::Handle m_parentLogger;
     // Currently a strong reference. Would be a weak reference
     // if we had proper reference counting for Server.
-    boost::shared_ptr<Server> m_server;
+    std::shared_ptr<Server> m_server;
 
 public:
-    ServerLogger(const boost::shared_ptr<Server> &server) :
+    ServerLogger(const std::shared_ptr<Server> &server) :
         m_parentLogger(Logger::instance()),
         m_server(server)
     {
@@ -75,7 +61,7 @@ public:
         // from holding onto the server while it tries to shut down.
         //
         // This is important because the server's live time is not
-        // really controlled via the boost::shared_ptr, it may
+        // really controlled via the std::shared_ptr, it may
         // destruct while there are still references. See
         // Server::m_logger instantiation below.
         RecMutex::Guard guard = lock();
@@ -99,7 +85,7 @@ public:
     }
 
     /**
-     * @param server    may be NULL, in which case logging only goes to parent
+     * @param server    may be nullptr, in which case logging only goes to parent
      */
     void message2DBus(Server *server,
                       const MessageOptions &options,
@@ -136,7 +122,7 @@ public:
 
 void Server::clientGone(Client *c)
 {
-    for (Clients_t::iterator it = m_clients.begin();
+    for (auto it = m_clients.begin();
         it != m_clients.end();
         ++it) {
         if (it->second.get() == c) {
@@ -191,16 +177,16 @@ StringMap Server::getVersions()
 }
 
 void Server::attachClient(const Caller_t &caller,
-                          const boost::shared_ptr<Watch> &watch)
+                          const std::shared_ptr<Watch> &watch)
 {
-    boost::shared_ptr<Client> client = addClient(caller, watch);
+    std::shared_ptr<Client> client = addClient(caller, watch);
     autoTermRef();
     client->increaseAttachCount();
 }
 
 void Server::detachClient(const Caller_t &caller)
 {
-    boost::shared_ptr<Client> client = findClient(caller);
+    std::shared_ptr<Client> client = findClient(caller);
     if (client) {
         autoTermUnref();
         client->decreaseAttachCount();
@@ -211,7 +197,7 @@ void Server::setNotifications(bool enabled,
                               const Caller_t &caller,
                               const string & /* notifications */)
 {
-    boost::shared_ptr<Client> client = findClient(caller);
+    std::shared_ptr<Client> client = findClient(caller);
     if (client && client->getAttachCount()) {
         client->setNotificationsEnabled(enabled);
     } else {
@@ -221,7 +207,7 @@ void Server::setNotifications(bool enabled,
 
 bool Server::notificationsEnabled()
 {
-    for (Clients_t::iterator it = m_clients.begin();
+    for (auto it = m_clients.begin();
         it != m_clients.end();
         ++it) {
         if (!it->second->getNotificationsEnabled()) {
@@ -232,7 +218,7 @@ bool Server::notificationsEnabled()
 }
 
 void Server::connect(const Caller_t &caller,
-                     const boost::shared_ptr<Watch> &watch,
+                     const std::shared_ptr<Watch> &watch,
                      const StringMap &peer,
                      bool must_authenticate,
                      const std::string &session,
@@ -249,17 +235,17 @@ void Server::connect(const Caller_t &caller,
     }
     std::string new_session = getNextSession();
 
-    boost::shared_ptr<Connection> c(Connection::createConnection(*this,
-                                                                 getConnection(),
-                                                                 new_session,
-                                                                 peer,
-                                                                 must_authenticate));
+    auto c = make_weak_shared::make<Connection>(*this,
+                                                getConnection(),
+                                                new_session,
+                                                peer,
+                                                must_authenticate);
     SE_LOG_DEBUG(NULL, "connecting D-Bus client %s with connection %s '%s'",
                  caller.c_str(),
                  c->getPath(),
                  c->m_description.c_str());
 
-    boost::shared_ptr<Client> client = addClient(caller,
+    std::shared_ptr<Client> client = addClient(caller,
                                                  watch);
     client->attach(c);
     c->activate();
@@ -268,7 +254,7 @@ void Server::connect(const Caller_t &caller,
 }
 
 void Server::startSessionWithFlags(const Caller_t &caller,
-                                   const boost::shared_ptr<Watch> &watch,
+                                   const std::shared_ptr<Watch> &watch,
                                    const std::string &server,
                                    const std::vector<std::string> &flags,
                                    DBusObject_t &object)
@@ -278,14 +264,14 @@ void Server::startSessionWithFlags(const Caller_t &caller,
         SE_THROW("server shutting down");
     }
 
-    boost::shared_ptr<Client> client = addClient(caller,
+    std::shared_ptr<Client> client = addClient(caller,
                                                  watch);
     std::string new_session = getNextSession();
-    boost::shared_ptr<Session> session = Session::createSession(*this,
-                                                                "is this a client or server session?",
-                                                                server,
-                                                                new_session,
-                                                                flags);
+    auto session = make_weak_shared::make<Session>(*this,
+                                                   "is this a client or server session?",
+                                                   server,
+                                                   new_session,
+                                                   flags);
     client->attach(session);
     session->activate();
     enqueue(session);
@@ -293,9 +279,9 @@ void Server::startSessionWithFlags(const Caller_t &caller,
 }
 
 
-boost::shared_ptr<Session> Server::startInternalSession(const std::string &server,
+std::shared_ptr<Session> Server::startInternalSession(const std::string &server,
                                                         SessionFlags flags,
-                                                        const boost::function<void (const boost::weak_ptr<Session> &session)> &callback)
+                                                        const std::function<void (const std::weak_ptr<Session> &session)> &callback)
 {
     if (m_shutdownRequested) {
         // don't allow new sessions, we cannot activate them
@@ -311,12 +297,12 @@ boost::shared_ptr<Session> Server::startInternalSession(const std::string &serve
     }
 
     std::string new_session = getNextSession();
-    boost::shared_ptr<Session> session = Session::createSession(*this,
-                                                                "is this a client or server session?",
-                                                                server,
-                                                                new_session,
-                                                                dbusFlags);
-    session->m_sessionActiveSignal.connect(boost::bind(callback, boost::weak_ptr<Session>(session)));
+    auto session = make_weak_shared::make<Session>(*this,
+                                                   "is this a client or server session?",
+                                                   server,
+                                                   new_session,
+                                                   dbusFlags);
+    session->m_sessionActiveSignal.connect([weakSessionPtr=std::weak_ptr<Session>(session), callback] () { callback(weakSessionPtr); });
     session->activate();
     enqueue(session);
     return session;
@@ -336,8 +322,8 @@ void Server::getSessions(std::vector<DBusObject_t> &sessions)
     if (m_activeSession) {
         sessions.push_back(m_activeSession->getPath());
     }
-    BOOST_FOREACH(boost::weak_ptr<Session> &session, m_workQueue) {
-        boost::shared_ptr<Session> s = session.lock();
+    for (std::weak_ptr<Session> &session: m_workQueue) {
+        std::shared_ptr<Session> s = session.lock();
         if (s) {
             sessions.push_back(s->getPath());
         }
@@ -345,20 +331,20 @@ void Server::getSessions(std::vector<DBusObject_t> &sessions)
 }
 
 Server::Server(GMainLoop *loop,
-               boost::shared_ptr<Restart> &restart,
+               std::shared_ptr<Restart> &restart,
                const DBusConnectionPtr &conn,
                int duration) :
     DBusObjectHelper(conn,
                      SessionCommon::SERVER_PATH,
                      SessionCommon::SERVER_IFACE,
-                     boost::bind(&Server::autoTermCallback, this)),
+                     [this] () { autoTermCallback(); }),
     m_loop(loop),
     m_suspendFlagsSource(0),
     m_shutdownRequested(false),
     m_restart(restart),
     m_conn(conn),
-    m_lastSession(time(NULL)),
-    m_activeSession(NULL),
+    m_lastSession(time(nullptr)),
+    m_activeSession(nullptr),
     m_lastInfoReq(0),
     m_bluezManager(new BluezManager(*this)),
     sessionChanged(*this, "SessionChanged"),
@@ -373,10 +359,10 @@ Server::Server(GMainLoop *loop,
     // This would help with dangling references to it when other threads
     // use it for logging, see ServerLogger. However, with mutex locking
     // in ServerLogger that shouldn't be a problem.
-    m_logger(new ServerLogger(boost::shared_ptr<Server>(this, NopDestructor())))
+    m_logger(new ServerLogger(std::shared_ptr<Server>(this, NopDestructor())))
 {
     struct timeval tv;
-    gettimeofday(&tv, NULL);
+    gettimeofday(&tv, nullptr);
     srand(tv.tv_usec);
     add(this, &Server::getCapabilities, "GetCapabilities");
     add(this, &Server::getVersions, "GetVersions");
@@ -405,28 +391,18 @@ Server::Server(GMainLoop *loop,
 
     // Log entering and leaving idle state and
     // allow/prevent auto-termination.
-    m_idleSignal.connect(boost::bind(&Server::onIdleChange, this, _1));
+    auto onIdleChange = [this] (bool idle) {
+        SE_LOG_DEBUG(NULL, "server is %s", idle ? "idle" : "not idle");
+        if (idle) {
+            autoTermUnref();
+        } else {
+            autoTermRef();
+        }
+    };
+    m_idleSignal.connect(onIdleChange);
 
     // connect ConfigChanged signal to source for that information
-    m_configChangedSignal.connect(boost::bind(boost::ref(configChanged)));
-}
-
-gboolean Server::onSuspendFlagsChange(GIOChannel *source,
-                                      GIOCondition condition,
-                                      gpointer data) throw ()
-{
-    Server *me = static_cast<Server *>(data);
-    try {
-        if (!SuspendFlags::getSuspendFlags().isNormal()) {
-            me->m_shutdownRequested = true;
-            g_main_loop_quit(me->m_loop);
-            SE_LOG_INFO(NULL, "server shutting down because of SIGINT or SIGTERM");
-        }
-    } catch (...) {
-        Exception::handle();
-    }
-    // Keep watching, just in case that we catch multiple signals.
-    return TRUE;
+    m_configChangedSignal.connect([this] (const std::string &configName) { configChanged(); });
 }
 
 void Server::activate()
@@ -434,6 +410,22 @@ void Server::activate()
     // Watch SuspendFlags fd to react to signals quickly.
     int fd = SuspendFlags::getSuspendFlags().getEventFD();
     GIOChannelCXX channel(g_io_channel_unix_new(fd), TRANSFER_REF);
+    auto onSuspendFlagsChange = [] (GIOChannel *source,
+                                    GIOCondition condition,
+                                    gpointer data) throw () {
+        Server *me = static_cast<Server *>(data);
+        try {
+            if (!SuspendFlags::getSuspendFlags().isNormal()) {
+                me->m_shutdownRequested = true;
+                g_main_loop_quit(me->m_loop);
+                SE_LOG_INFO(NULL, "server shutting down because of SIGINT or SIGTERM");
+            }
+        } catch (...) {
+            Exception::handle();
+        }
+        // Keep watching, just in case that we catch multiple signals.
+        return (gboolean)TRUE;
+    };
     m_suspendFlagsSource = g_io_add_watch(channel, G_IO_IN, onSuspendFlagsChange, this);
 
     // Activate our D-Bus object *before* interacting with D-Bus
@@ -517,7 +509,7 @@ void Server::fileModified(const std::string &file)
     m_lastFileMod = Timespec::monotonic();
     if (!m_activeSession) {
         m_shutdownTimer.activate(SHUTDOWN_QUIESENCE_SECONDS,
-                                 boost::bind(&Server::shutdown, this));
+                                 [this] () { return shutdown(); });
     }
     m_shutdownRequested = true;
 }
@@ -529,7 +521,7 @@ void Server::run()
     // plugins.
     StringMap map = getVersions();
     SE_LOG_DEBUG(NULL, "D-Bus server ready to run, versions:");
-    BOOST_FOREACH(const StringPair &entry, map) {
+    for (const auto &entry: map) {
         SE_LOG_DEBUG(NULL, "%s: %s", entry.first.c_str(), entry.second.c_str());
     }
 
@@ -546,10 +538,10 @@ void Server::run()
         }
     }
     in.close();
-    BOOST_FOREACH(const string &file, files) {
+    for (const string &file: files) {
         try {
             SE_LOG_DEBUG(NULL, "watching: %s", file.c_str());
-            boost::shared_ptr<SyncEvo::GLibNotify> notify(new GLibNotify(file.c_str(), boost::bind(&Server::fileModified, this, file)));
+            auto notify = std::make_shared<GLibNotify>(file.c_str(), [this, file] (GFile *, GFile *, GFileMonitorEvent) { fileModified(file); });
             m_files.push_back(notify);
         } catch (...) {
             // ignore errors for indidividual files
@@ -576,22 +568,22 @@ void Server::run()
 /**
  * look up client by its ID
  */
-boost::shared_ptr<Client> Server::findClient(const Caller_t &ID)
+std::shared_ptr<Client> Server::findClient(const Caller_t &ID)
 {
-    for (Clients_t::iterator it = m_clients.begin();
+    for (auto it = m_clients.begin();
         it != m_clients.end();
         ++it) {
         if (it->second->m_ID == ID) {
             return it->second;
         }
     }
-    return boost::shared_ptr<Client>();
+    return std::shared_ptr<Client>();
 }
 
-boost::shared_ptr<Client> Server::addClient(const Caller_t &ID,
-                                            const boost::shared_ptr<Watch> &watch)
+std::shared_ptr<Client> Server::addClient(const Caller_t &ID,
+                                            const std::shared_ptr<Watch> &watch)
 {
-    boost::shared_ptr<Client> client(findClient(ID));
+    std::shared_ptr<Client> client(findClient(ID));
     if (client) {
         return client;
     }
@@ -599,28 +591,29 @@ boost::shared_ptr<Client> Server::addClient(const Caller_t &ID,
     // add to our list *before* checking that peer exists, so
     // that clientGone() can remove it if the check fails
     m_clients.push_back(std::make_pair(watch, client));
-    watch->setCallback(boost::bind(&Server::clientGone, this, client.get()));
+    // Here we intentionally bind the raw pointer. It's only going to be used for
+    // comparisons.
+    watch->setCallback([this, clientPtr=client.get()] () { Server::clientGone(clientPtr); });
     return client;
 }
 
 
 void Server::detach(Resource *resource)
 {
-    BOOST_FOREACH(const Clients_t::value_type &client_entry,
-                  m_clients) {
+    for (const auto &client_entry: m_clients) {
         client_entry.second->detachAll(resource);
     }
 }
 
-void Server::enqueue(const boost::shared_ptr<Session> &session)
+void Server::enqueue(const std::shared_ptr<Session> &session)
 {
     bool idle = isIdle();
 
-    WorkQueue_t::iterator it = m_workQueue.end();
+    auto it = m_workQueue.end();
     while (it != m_workQueue.begin()) {
         --it;
         // skip over dead sessions, they will get cleaned up elsewhere
-        boost::shared_ptr<Session> session = it->lock();
+        std::shared_ptr<Session> session = it->lock();
         if (session && session->getPriority() <= session->getPriority()) {
             ++it;
             break;
@@ -637,15 +630,15 @@ void Server::enqueue(const boost::shared_ptr<Session> &session)
 void Server::killSessionsAsync(const std::string &peerDeviceID,
                                const SimpleResult &onResult)
 {
-    WorkQueue_t::iterator it = m_workQueue.begin();
+    auto it = m_workQueue.begin();
     while (it != m_workQueue.end()) {
-        boost::shared_ptr<Session> session = it->lock();
+        std::shared_ptr<Session> session = it->lock();
         if (session && session->getPeerDeviceID() == peerDeviceID) {
             SE_LOG_DEBUG(NULL, "removing pending session %s because it matches deviceID %s",
                          session->getSessionID().c_str(),
                          peerDeviceID.c_str());
             // remove session and its corresponding connection
-            boost::shared_ptr<Connection> c = session->getStubConnection().lock();
+            std::shared_ptr<Connection> c = session->getStubConnection().lock();
             if (c) {
                 c->shutdown();
             }
@@ -656,7 +649,7 @@ void Server::killSessionsAsync(const std::string &peerDeviceID,
     }
 
     // Check active session. We need to wait for it to shut down cleanly.
-    boost::shared_ptr<Session> active = m_activeSessionRef.lock();
+    std::shared_ptr<Session> active = m_activeSessionRef.lock();
     if (active &&
         active->getPeerDeviceID() == peerDeviceID) {
         SE_LOG_DEBUG(NULL, "aborting active session %s because it matches deviceID %s",
@@ -680,7 +673,7 @@ void Server::dequeue(Session *session)
         return;
     }
 
-    for (WorkQueue_t::iterator it = m_workQueue.begin();
+    for (auto it = m_workQueue.begin();
          it != m_workQueue.end();
          ++it) {
         if (it->lock().get() == session) {
@@ -694,7 +687,7 @@ void Server::dequeue(Session *session)
         // The session is releasing the lock, so someone else might
         // run now.
         sessionChanged(session->getPath(), false);
-        m_activeSession = NULL;
+        m_activeSession = nullptr;
         m_activeSessionRef.reset();
         if (m_lastFileMod && !m_shutdownTimer) {
             // File modification was detected while a session was active.
@@ -706,7 +699,7 @@ void Server::dequeue(Session *session)
             if (shutdown >= now) {
                 SE_LOG_DEBUG(NULL, "file modified, initiating shutdown after session finished");
                 m_shutdownTimer.activate((shutdown - now).seconds(),
-                                         boost::bind(&Server::shutdown, this));
+                                         [this] () { return this->shutdown(); });
             }
         }
         checkQueue();
@@ -753,12 +746,6 @@ void Server::removeSyncSession(Session *session)
     }
 }
 
-static void quitLoop(GMainLoop *loop)
-{
-    SE_LOG_DEBUG(NULL, "stopping server's event loop");
-    g_main_loop_quit(loop);
-}
-
 void Server::checkQueue()
 {
     if (m_activeSession) {
@@ -777,13 +764,17 @@ void Server::checkQueue()
         // then the server shut down immediately after Detach()).
         if (!m_shutdownTimer) {
             SE_LOG_DEBUG(NULL, "shutting down in checkQueue(), idle and shutdown was requested");
-            addTimeout(boost::bind(quitLoop, m_loop), 0);
+            addTimeout([this] () {
+                    SE_LOG_DEBUG(NULL, "stopping server's event loop");
+                    g_main_loop_quit(m_loop);
+                },
+                0);
         }
         return;
     }
 
     while (!m_workQueue.empty()) {
-        boost::shared_ptr<Session> session = m_workQueue.front().lock();
+        std::shared_ptr<Session> session = m_workQueue.front().lock();
         m_workQueue.pop_front();
         if (session) {
             // activate the session
@@ -797,13 +788,7 @@ void Server::checkQueue()
     }
 }
 
-void Server::sessionExpired(const boost::shared_ptr<Session> &session)
-{
-    SE_LOG_DEBUG(NULL, "session %s expired",
-                 session->getSessionID().c_str());
-}
-
-void Server::delaySessionDestruction(const boost::shared_ptr<Session> &session)
+void Server::delaySessionDestruction(const std::shared_ptr<Session> &session)
 {
     if (!session) {
         return;
@@ -811,9 +796,13 @@ void Server::delaySessionDestruction(const boost::shared_ptr<Session> &session)
 
     SE_LOG_DEBUG(NULL, "delaying destruction of session %s by one minute",
                  session->getSessionID().c_str());
-    addTimeout(boost::bind(&Server::sessionExpired,
-                           session),
-               60 /* 1 minute */);
+    // The trick here is to bind the shared pointer to the timeout instance
+    // for the duration of the timeout.
+    addTimeout([session] () {
+            SE_LOG_DEBUG(NULL, "session %s expired",
+                         session->getSessionID().c_str());
+        },
+        60 /* 1 minute */);
 }
 
 inline void insertPair(std::map<string, string> &params,
@@ -826,14 +815,14 @@ inline void insertPair(std::map<string, string> &params,
 }
 
 
-boost::shared_ptr<InfoReq> Server::passwordRequest(const string &descr,
+std::shared_ptr<InfoReq> Server::passwordRequest(const string &descr,
                                                    const ConfigPasswordKey &key,
-                                                   const boost::weak_ptr<Session> &s)
+                                                   const std::weak_ptr<Session> &s)
 {
-    boost::shared_ptr<Session> session = s.lock();
+    std::shared_ptr<Session> session = s.lock();
     if (!session) {
         // already gone, ignore request
-        return boost::shared_ptr<InfoReq>();
+        return std::shared_ptr<InfoReq>();
     }
 
     std::map<string, string> params;
@@ -845,36 +834,31 @@ boost::shared_ptr<InfoReq> Server::passwordRequest(const string &descr,
     insertPair(params, "protocol", key.protocol);
     insertPair(params, "authtype", key.authtype);
     insertPair(params, "port", key.port ? StringPrintf("%u",key.port) : "");
-    boost::shared_ptr<InfoReq> req = createInfoReq("password", params, *session);
+    std::shared_ptr<InfoReq> req = createInfoReq("password", params, *session);
     // Return password or failure to Session and thus the session helper.
-    req->m_responseSignal.connect(boost::bind(&Server::passwordResponse,
-                                              this,
-                                              _1,
-                                              s));
+    req->m_responseSignal.connect([this, s] (const InfoReq::InfoMap &response) { passwordResponse(response, s); });
     // Tell session about timeout.
     req->m_timeoutSignal.connect(InfoReq::TimeoutSignal_t::slot_type(&Session::passwordResponse,
                                                                      session.get(),
                                                                      true,
                                                                      false,
-                                                                     "").track(s));
+                                                                     "").track_foreign(s));
     // Request becomes obsolete when session is done.
-    session->m_doneSignal.connect(boost::bind(&Server::removeInfoReq,
-                                              this,
-                                              req->getId()));
+    session->m_doneSignal.connect([this, id=req->getId()] (SyncEvo::SyncMLStatus, const SyncEvo::SyncReport &) { removeInfoReq(id); });
 
     return req;
 }
 
 void Server::passwordResponse(const InfoReq::InfoMap &response,
-                              const boost::weak_ptr<Session> &s)
+                              const std::weak_ptr<Session> &s)
 {
-    boost::shared_ptr<Session> session = s.lock();
+    std::shared_ptr<Session> session = s.lock();
     if (!session) {
         // already gone, ignore request
         return;
     }
 
-    InfoReq::InfoMap::const_iterator it = response.find("password");
+    auto it = response.find("password");
     if (it == response.end()) {
         // no password provided, user wants to abort
         session->passwordResponse(false, true, "");
@@ -885,29 +869,24 @@ void Server::passwordResponse(const InfoReq::InfoMap &response,
 }
 
 
-bool Server::callTimeout(const boost::shared_ptr<Timeout> &timeout, const boost::function<void ()> &callback)
-{
-    callback();
-    // We are executing the timeout, don't invalidate the instance
-    // until later when our caller is no longer using the instance to
-    // call us.
-    delayDeletion(timeout);
-    m_timeouts.remove(timeout);
-    return false;
-}
-
-void Server::addTimeout(const boost::function<void ()> &callback,
+void Server::addTimeout(const std::function<void ()> &callback,
                         int seconds)
 {
-    boost::shared_ptr<Timeout> timeout(new Timeout);
+    auto timeout = std::make_shared<Timeout>();
     m_timeouts.push_back(timeout);
-    timeout->activate(seconds,
-                      boost::bind(&Server::callTimeout,
-                                  this,
-                                  // avoid copying the shared pointer here,
-                                  // otherwise the Timeout will never be deleted
-                                  boost::ref(m_timeouts.back()),
-                                  callback));
+    auto callTimeout = [this, timeoutWeak=std::weak_ptr<Timeout>(timeout), callback] () {
+        auto timeout = timeoutWeak.lock();
+        if (timeout) {
+            callback();
+            // We are executing the timeout, don't invalidate the instance
+            // until later when our caller is no longer using the instance to
+            // call us.
+            delayDeletion(timeout);
+            m_timeouts.remove(timeout);
+        }
+        return false;
+    };
+    timeout->activate(seconds, callTimeout);
 }
 
 void Server::infoResponse(const Caller_t &caller,
@@ -915,29 +894,26 @@ void Server::infoResponse(const Caller_t &caller,
                           const std::string &state,
                           const std::map<string, string> &response)
 {
-    InfoReqMap::iterator it = m_infoReqMap.find(id);
+    auto it = m_infoReqMap.find(id);
     // if not found, ignore
     if (it != m_infoReqMap.end()) {
-        const boost::shared_ptr<InfoReq> infoReq = it->second.lock();
+        const std::shared_ptr<InfoReq> infoReq = it->second.lock();
         if (infoReq) {
             infoReq->setResponse(caller, state, response);
         }
     }
 }
 
-boost::shared_ptr<InfoReq> Server::createInfoReq(const string &type,
-                                                 const std::map<string, string> &parameters,
-                                                 const Session &session)
+std::shared_ptr<InfoReq> Server::createInfoReq(const string &type,
+                                               const std::map<std::string, std::string> &parameters,
+                                               const Session &session)
 {
-    boost::shared_ptr<InfoReq> infoReq(new InfoReq(*this, type, parameters, session.getPath()));
+    auto infoReq = std::make_shared<InfoReq>(*this, type, parameters, session.getPath());
     m_infoReqMap.insert(std::make_pair(infoReq->getId(), infoReq));
     // will be removed automatically
-    infoReq->m_responseSignal.connect(boost::bind(&Server::removeInfoReq,
-                                                  this,
-                                                  infoReq->getId()));
-    infoReq->m_timeoutSignal.connect(boost::bind(&Server::removeInfoReq,
-                                                 this,
-                                                 infoReq->getId()));
+    auto remove = [this, id=infoReq->getId()] () { removeInfoReq(id); };
+    infoReq->m_responseSignal.connect([this, id=infoReq->getId()] (const std::map<std::string, std::string> &) { removeInfoReq(id); });
+    infoReq->m_timeoutSignal.connect([this, id=infoReq->getId()] () { removeInfoReq(id); });
     return infoReq;
 }
 
@@ -983,22 +959,22 @@ void Server::getDeviceList(SyncConfig::DeviceList &devices)
 }
 
 void Server::addPeerTempl(const string &templName,
-                          const boost::shared_ptr<SyncConfig::TemplateDescription> peerTempl)
+                          const std::shared_ptr<SyncConfig::TemplateDescription> &peerTempl)
 {
     std::string lower = templName;
     boost::to_lower(lower);
     m_matchedTempls.insert(MatchedTemplates::value_type(lower, peerTempl));
 }
 
-boost::shared_ptr<SyncConfig::TemplateDescription> Server::getPeerTempl(const string &peer)
+std::shared_ptr<SyncConfig::TemplateDescription> Server::getPeerTempl(const string &peer)
 {
     std::string lower = peer;
     boost::to_lower(lower);
-    MatchedTemplates::iterator it = m_matchedTempls.find(lower);
+    auto it = m_matchedTempls.find(lower);
     if(it != m_matchedTempls.end()) {
         return it->second;
     } else {
-        return boost::shared_ptr<SyncConfig::TemplateDescription>();
+        return std::shared_ptr<SyncConfig::TemplateDescription>();
     }
 }
 
@@ -1009,7 +985,7 @@ bool Server::getDevice(const string &deviceId, SyncConfig::DeviceDescription &de
         if (boost::equals(syncDevIt->m_deviceId, deviceId)) {
             device = *syncDevIt;
             if (syncDevIt->m_pnpInformation) {
-                device.m_pnpInformation = boost::shared_ptr<SyncConfig::PnpInformation>(
+                device.m_pnpInformation = std::shared_ptr<SyncConfig::PnpInformation>(
                     new SyncConfig::PnpInformation(syncDevIt->m_pnpInformation->m_vendor,
                                                    syncDevIt->m_pnpInformation->m_product));
             }

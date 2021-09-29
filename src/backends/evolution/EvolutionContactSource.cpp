@@ -22,7 +22,6 @@
 #include <map>
 #include <sstream>
 #include <list>
-using namespace std;
 
 #include "config.h"
 #include "EvolutionSyncSource.h"
@@ -41,8 +40,6 @@ using namespace std;
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/foreach.hpp>
-#include <boost/lambda/lambda.hpp>
 
 #include <syncevo/declarations.h>
 
@@ -121,8 +118,8 @@ EvolutionSyncSource::Databases EvolutionContactSource::getDatabases()
                              E_SOURCE_EXTENSION_ADDRESS_BOOK,
                              e_source_registry_ref_default_address_book);
 #else
-    ESourceList *sources = NULL;
-    if (!e_book_get_addressbooks(&sources, NULL)) {
+    ESourceList *sources = nullptr;
+    if (!e_book_get_addressbooks(&sources, nullptr)) {
         Exception::throwError(SE_HERE, "unable to access address books");
     }
 
@@ -290,7 +287,7 @@ bool EvolutionContactSource::isEmpty()
 #ifdef USE_EDS_CLIENT
 class EBookClientViewSyncHandler {
     public:
-        typedef boost::function<void (const GSList *list)> Process_t;
+        typedef std::function<void (const GSList *list)> Process_t;
 
         EBookClientViewSyncHandler(const EBookClientViewCXX &view,
                                    const Process_t &process) :
@@ -300,12 +297,12 @@ class EBookClientViewSyncHandler {
 
         bool process(GErrorCXX &gerror) {
             // Listen for view signals
-            m_view.connectSignal<void (EBookClientView *ebookview,
-                                       const GSList *contacts)>("objects-added",
-                                                                boost::bind(m_process, _2));
-            m_view.connectSignal<void (EBookClientView *ebookview,
-                                       const GError *error)>("complete",
-                                                             boost::bind(&EBookClientViewSyncHandler::completed, this, _2));
+            m_view.connectSignal<EBookClientView *,
+                                 const GSList *>()("objects-added",
+                                                   [this] (EBookClientView *, const GSList *list) { m_process(list); } );
+            m_view.connectSignal<EBookClientView *,
+                                 const GError *>()("complete",
+                                                   [this] (EBookClientView *, const GError *gerror) { completed(gerror); });
 
             // Start the view
             e_book_client_view_start (m_view, m_error);
@@ -316,7 +313,7 @@ class EBookClientViewSyncHandler {
 
             // Async -> Sync
             m_loop.run();
-            e_book_client_view_stop (m_view, NULL); 
+            e_book_client_view_stop (m_view, nullptr); 
 
             if (m_error) {
                 std::swap(gerror, m_error);
@@ -337,39 +334,12 @@ class EBookClientViewSyncHandler {
 
     private:
         // Process list callback
-        boost::function<void (const GSList *list)> m_process;
+        std::function<void (const GSList *list)> m_process;
         // View watched
         EBookClientViewCXX m_view;
         // Possible error while watching the view
         GErrorCXX m_error;
 };
-
-static void list_revisions(const GSList *contacts, EvolutionContactSource::RevisionMap_t *revisions)
-{
-    const GSList *l;
-
-    for (l = contacts; l; l = l->next) {
-        EContact *contact = E_CONTACT(l->data);
-        if (!contact) {
-            SE_THROW("contact entry without data");
-        }
-        pair<string, string> revmapping;
-        const char *uid = (const char *)e_contact_get_const(contact,
-                                                            E_CONTACT_UID);
-        if (!uid || !uid[0]) {
-            SE_THROW("contact entry without UID");
-        }
-        revmapping.first = uid;
-        const char *rev = (const char *)e_contact_get_const(contact,
-                                                            E_CONTACT_REV);
-        if (!rev || !rev[0]) {
-            SE_THROW(string("contact entry without REV: ") + revmapping.first);
-        }
-        revmapping.second = rev;
-        revisions->insert(revmapping);
-    }
-}
-
 #endif
 
 void EvolutionContactSource::listAllItems(RevisionMap_t &revisions)
@@ -387,7 +357,7 @@ void EvolutionContactSource::listAllItems(RevisionMap_t &revisions)
         sexp = buffer;
     }
 
-    if (!e_book_client_get_view_sync(m_addressbook, sexp, &view, NULL, gerror)) {
+    if (!e_book_client_get_view_sync(m_addressbook, sexp, &view, nullptr, gerror)) {
         throwError(SE_HERE, "getting the view" , gerror);
     }
     EBookClientViewCXX viewPtr = EBookClientViewCXX::steal(view);
@@ -402,7 +372,28 @@ void EvolutionContactSource::listAllItems(RevisionMap_t &revisions)
         gerror.clear();
     }
 
-    EBookClientViewSyncHandler handler(viewPtr, boost::bind(list_revisions, _1, &revisions));
+    auto process = [&revisions] (const GSList *contacts) {
+        const GSList *l;
+
+        for (l = contacts; l; l = l->next) {
+            EContact *contact = E_CONTACT(l->data);
+            if (!contact) {
+                SE_THROW("contact entry without data");
+            }
+            const char *uid = (const char *)e_contact_get_const(contact,
+                                                                E_CONTACT_UID);
+            if (!uid || !uid[0]) {
+                SE_THROW("contact entry without UID");
+            }
+            const char *rev = (const char *)e_contact_get_const(contact,
+                                                                E_CONTACT_REV);
+            if (!rev || !rev[0]) {
+                SE_THROW(string("contact entry without REV: ") + uid);
+            }
+            revisions[uid] = rev;
+        }
+    };
+    EBookClientViewSyncHandler handler(viewPtr, process);
     if (!handler.process(gerror)) {
         throwError(SE_HERE, "watching view", gerror);
     }
@@ -456,7 +447,7 @@ string EvolutionContactSource::getRevision(const string &luid)
         !e_book_client_get_contact_sync(m_addressbook,
                                         luid.c_str(),
                                         &contact,
-                                        NULL,
+                                        nullptr,
                                         gerror)
 #else
         !e_book_get_contact(m_addressbook,
@@ -528,7 +519,7 @@ void EvolutionContactSource::getReadAheadOrder(ReadAheadOrder &order,
     luids = m_nextLUIDs;
 }
 
-void EvolutionContactSource::checkCacheForError(boost::shared_ptr<ContactCache> &cache)
+void EvolutionContactSource::checkCacheForError(std::shared_ptr<ContactCache> &cache)
 {
     if (cache->m_gerror) {
         GErrorCXX gerror;
@@ -544,10 +535,10 @@ void EvolutionContactSource::invalidateCachedContact(const std::string &luid)
     invalidateCachedContact(m_contactCacheNext, luid);
 }
 
-void EvolutionContactSource::invalidateCachedContact(boost::shared_ptr<ContactCache> &cache, const std::string &luid)
+void EvolutionContactSource::invalidateCachedContact(std::shared_ptr<ContactCache> &cache, const std::string &luid)
 {
     if (cache) {
-        ContactCache::iterator it = cache->find(luid);
+        auto it = cache->find(luid);
         if (it != cache->end()) {
             SE_LOG_DEBUG(getDisplayName(), "reading: remove contact %s from cache because of remove or update", luid.c_str());
             // If we happen to read that contact (unlikely), it'll be
@@ -591,7 +582,7 @@ bool EvolutionContactSource::getContact(const string &luid, EContact **contact, 
         return e_book_client_get_contact_sync(m_addressbook,
                                               luid.c_str(),
                                               contact,
-                                              NULL,
+                                              nullptr,
                                               gerror);
     } else {
         return getContactFromCache(luid, contact, gerror);
@@ -600,7 +591,7 @@ bool EvolutionContactSource::getContact(const string &luid, EContact **contact, 
 
 bool EvolutionContactSource::getContactFromCache(const string &luid, EContact **contact, GErrorCXX &gerror)
 {
-    *contact = NULL;
+    *contact = nullptr;
 
     // Use ContactCache.
     if (m_contactCache) {
@@ -609,7 +600,7 @@ bool EvolutionContactSource::getContactFromCache(const string &luid, EContact **
         checkCacheForError(m_contactCache);
 
         // Does the cache cover our item?
-        ContactCache::const_iterator it = m_contactCache->find(luid);
+        auto it = m_contactCache->find(luid);
         if (it == m_contactCache->end()) {
             if (m_contactCacheNext) {
                 SE_LOG_DEBUG(getDisplayName(), "reading: not in cache, try cache %s",
@@ -628,7 +619,7 @@ bool EvolutionContactSource::getContactFromCache(const string &luid, EContact **
             SE_LOG_DEBUG(getDisplayName(), "reading: in %s cache", m_contactCache->m_running ? "running" : "loaded");
             if (m_contactCache->m_running) {
                 m_cacheStalls++;
-                GRunWhile(boost::lambda::var(m_contactCache->m_running));
+                GRunWhile([this] () { return this->m_contactCache->m_running; });
             }
             // Problem?
             checkCacheForError(m_contactCache);
@@ -673,7 +664,7 @@ static int MaxBatchSize()
     return maxBatchSize;
 }
 
-boost::shared_ptr<ContactCache> EvolutionContactSource::startReading(const std::string &luid, ReadingMode mode)
+std::shared_ptr<ContactCache> EvolutionContactSource::startReading(const std::string &luid, ReadingMode mode)
 {
     SE_LOG_DEBUG(getDisplayName(), "reading: %s contact %s",
                  mode == START ? "must read" :
@@ -695,7 +686,7 @@ boost::shared_ptr<ContactCache> EvolutionContactSource::startReading(const std::
         const Items_t &items = getAllItems();
         const Items_t &newItems = getNewItems();
         const Items_t &updatedItems = getUpdatedItems();
-        Items_t::const_iterator it = items.find(luid);
+        auto it = items.find(luid);
 
         // Always read the requested item, even if not found in item list?
         if (mode == START) {
@@ -727,7 +718,7 @@ boost::shared_ptr<ContactCache> EvolutionContactSource::startReading(const std::
         break;
     }
     case READ_SELECTED_ITEMS: {
-        ReadAheadItems::const_iterator it = boost::find(std::make_pair(m_nextLUIDs.begin(), m_nextLUIDs.end()), luid);
+        auto it = boost::find(std::make_pair(m_nextLUIDs.begin(), m_nextLUIDs.end()), luid);
         // Always read the requested item, even if not found in item list?
         if (mode == START) {
             uids[0] = &luid;
@@ -767,10 +758,10 @@ boost::shared_ptr<ContactCache> EvolutionContactSource::startReading(const std::
         m_readAheadOrder = READ_NONE;
     }
 
-    boost::shared_ptr<ContactCache> cache;
+    std::shared_ptr<ContactCache> cache;
     if (size) {
         // Prepare parameter for EDS C call. Ownership of query instances is in uidQueries array.
-        boost::scoped_array<EBookQuery *> queries(new EBookQuery *[size]);
+        auto queries = std::make_unique<EBookQuery *[]>(size);
         for (int i = 0; i < size; i++) {
             // This shouldn't compile because we don't specify how ownership is handled.
             // The reset() method always bumps the ref count, which is not what we want here!
@@ -787,50 +778,43 @@ boost::shared_ptr<ContactCache> EvolutionContactSource::startReading(const std::
         cache->m_running = true;
         cache->m_name = StringPrintf("%s-%s (%d)", uids[0]->c_str(), uids[size - 1]->c_str(), size);
         cache->m_lastLUID = *uids[size - 1];
-        BOOST_FOREACH (const std::string *uid, std::make_pair(uids.begin(), uids.begin() + size)) {
+        for (const std::string *uid: boost::make_iterator_range(uids.begin(), uids.begin() + size)) {
             (*cache)[*uid] = EContactCXX();
         }
         m_contactsFromDB += size;
         m_contactQueries++;
-        SYNCEVO_GLIB_CALL_ASYNC(e_book_client_get_contacts,
-                                boost::bind(&EvolutionContactSource::completedRead,
-                                            this,
-                                            boost::weak_ptr<ContactCache>(cache),
-                                            _1, _2, _3),
-                                m_addressbook, sexp, NULL);
+        auto process = [this, cachePtr=std::weak_ptr<ContactCache>(cache)] (gboolean success, GSList *contactsPtr, const GError *gerror) noexcept {
+            try {
+                using ContactListCXX = GListCXX< EContact, GSList, GObjectDestructor<EContact> >;
+                ContactListCXX contacts(contactsPtr); // transfers ownership
+                std::shared_ptr<ContactCache> cache = cachePtr.lock();
+                if (!cache) {
+                    SE_LOG_DEBUG(getDisplayName(), "reading: contact read finished, results no longer needed: %s", gerror ? gerror->message : "<<successful>>");
+                    return;
+                }
+
+                SE_LOG_DEBUG(getDisplayName(), "reading: contact read %s finished: %s",
+                             cache->m_name.c_str(),
+                             gerror ? gerror->message : "<<successful>>");
+                if (success) {
+                    for (EContact *contact: contacts) {
+                        const char *uid = (const char *)e_contact_get_const(contact, E_CONTACT_UID);
+                        SE_LOG_DEBUG(getDisplayName(), "reading: contact read %s got %s", cache->m_name.c_str(), uid);
+                        (*cache)[uid] = EContactCXX(contact, ADD_REF);
+                    }
+                } else {
+                    cache->m_gerror = gerror;
+                }
+                cache->m_running = false;
+            } catch (...) {
+                Exception::handle(HANDLE_EXCEPTION_FATAL);
+            }
+        };
+        SYNCEVO_GLIB_CALL_ASYNC(e_book_client_get_contacts, process,
+                                m_addressbook, sexp, nullptr);
         SE_LOG_DEBUG(getDisplayName(), "reading: started contact read %s", cache->m_name.c_str());
     }
     return cache;
-}
-
-typedef GListCXX< EContact, GSList, GObjectDestructor<EContact> > ContactListCXX;
-
-void EvolutionContactSource::completedRead(const boost::weak_ptr<ContactCache> &cachePtr, gboolean success, GSList *contactsPtr, const GError *gerror) throw()
-{
-    try {
-        ContactListCXX contacts(contactsPtr); // transfers ownership
-        boost::shared_ptr<ContactCache> cache = cachePtr.lock();
-        if (!cache) {
-            SE_LOG_DEBUG(getDisplayName(), "reading: contact read finished, results no longer needed: %s", gerror ? gerror->message : "<<successful>>");
-            return;
-        }
-
-        SE_LOG_DEBUG(getDisplayName(), "reading: contact read %s finished: %s",
-                     cache->m_name.c_str(),
-                     gerror ? gerror->message : "<<successful>>");
-        if (success) {
-            BOOST_FOREACH (EContact *contact, contacts) {
-                const char *uid = (const char *)e_contact_get_const(contact, E_CONTACT_UID);
-                SE_LOG_DEBUG(getDisplayName(), "reading: contact read %s got %s", cache->m_name.c_str(), uid);
-                (*cache)[uid] = EContactCXX(contact, ADD_REF);
-            }
-        } else {
-            cache->m_gerror = gerror;
-        }
-        cache->m_running = false;
-    } catch (...) {
-        Exception::handle(HANDLE_EXCEPTION_FATAL);
-    }
 }
 
 void EvolutionContactSource::logCacheStats(Logger::Level level)
@@ -873,7 +857,7 @@ void EvolutionContactSource::readItem(const string &luid, std::string &item, boo
     // Inline PHOTO data if exporting, leave VALUE=uri references unchanged
     // when processing inside engine (will be inlined by engine as needed).
     // The function for doing the inlining was added in EDS 3.4.
-    // In compatibility mode, we must check the function pointer for non-NULL.
+    // In compatibility mode, we must check the function pointer for non-nullptr.
     // In direct call mode, the existence check is done by configure.
     if (raw) {
 #if defined(HAVE_E_CONTACT_INLINE_LOCAL_PHOTOS)
@@ -893,81 +877,17 @@ void EvolutionContactSource::readItem(const string &luid, std::string &item, boo
 }
 
 #ifdef USE_EDS_CLIENT
-TrackingSyncSource::InsertItemResult EvolutionContactSource::checkBatchedInsert(const boost::shared_ptr<Pending> &pending)
+TrackingSyncSource::InsertItemResult EvolutionContactSource::checkBatchedInsert(const std::shared_ptr<Pending> &pending)
 {
     SE_LOG_DEBUG(pending->m_name, "checking operation: %s", pending->m_status == MODIFYING ? "waiting" : "inserted");
     if (pending->m_status == MODIFYING) {
-        return TrackingSyncSource::InsertItemResult(boost::bind(&EvolutionContactSource::checkBatchedInsert, this, pending));
+        return TrackingSyncSource::InsertItemResult([this, pending] () { return checkBatchedInsert(pending); });
     }
     if (pending->m_gerror) {
         pending->m_gerror.throwError(SE_HERE, pending->m_name);
     }
     string newrev = getRevision(pending->m_uid);
     return TrackingSyncSource::InsertItemResult(pending->m_uid, newrev, ITEM_OKAY);
-}
-
-void EvolutionContactSource::completedAdd(const boost::shared_ptr<PendingContainer_t> &batched, gboolean success, GSList *uids, const GError *gerror) throw()
-{
-    try {
-        // The destructor ensures that the pending operations complete
-        // before destructing the instance, so our "this" pointer is
-        // always valid here.
-        SE_LOG_DEBUG(getDisplayName(), "batch add of %d contacts completed", (int)batched->size());
-        m_numRunningOperations--;
-        PendingContainer_t::iterator it = (*batched).begin();
-        GSList *uid = uids;
-        while (it != (*batched).end() && uid) {
-            SE_LOG_DEBUG((*it)->m_name, "completed: %s",
-                         success ? "<<successfully>>" :
-                         gerror ? gerror->message :
-                         "<<unknown failure>>");
-            if (success) {
-                (*it)->m_uid = static_cast<gchar *>(uid->data);
-                // Get revision when engine checks the item.
-                (*it)->m_status = REVISION;
-            } else {
-                (*it)->m_status = DONE;
-                (*it)->m_gerror = gerror;
-            }
-            ++it;
-            uid = uid->next;
-        }
-
-        while (it != (*batched).end()) {
-            // Should never happen.
-            SE_LOG_DEBUG((*it)->m_name, "completed: missing uid?!");
-            (*it)->m_status = DONE;
-            ++it;
-        }
-
-        g_slist_free_full(uids, g_free);
-    } catch (...) {
-        Exception::handle(HANDLE_EXCEPTION_FATAL);
-    }
-}
-
-void EvolutionContactSource::completedUpdate(const boost::shared_ptr<PendingContainer_t> &batched, gboolean success, const GError *gerror) throw()
-{
-    try {
-        SE_LOG_DEBUG(getDisplayName(), "batch update of %d contacts completed", (int)batched->size());
-        m_numRunningOperations--;
-        PendingContainer_t::iterator it = (*batched).begin();
-        while (it != (*batched).end()) {
-            SE_LOG_DEBUG((*it)->m_name, "completed: %s",
-                         success ? "<<successfully>>" :
-                         gerror ? gerror->message :
-                         "<<unknown failure>>");
-            if (success) {
-                (*it)->m_status = REVISION;
-            } else {
-                (*it)->m_status = DONE;
-                (*it)->m_gerror = gerror;
-            }
-            ++it;
-        }
-    } catch (...) {
-        Exception::handle(HANDLE_EXCEPTION_FATAL);
-    }
 }
 
 void EvolutionContactSource::flushItemChanges()
@@ -977,34 +897,94 @@ void EvolutionContactSource::flushItemChanges()
         m_numRunningOperations++;
         GListCXX<EContact, GSList> contacts;
         // Iterate backwards, push to front (cheaper for single-linked list) -> same order in the end.
-        BOOST_REVERSE_FOREACH (const boost::shared_ptr<Pending> &pending, m_batchedAdd) {
+        for (const auto &pending: reverse(m_batchedAdd)) {
             contacts.push_front(pending->m_contact.get());
         }
         // Transfer content without copying and then copy only the shared pointer.
-        boost::shared_ptr<PendingContainer_t> batched(new PendingContainer_t);
+        auto batched = std::make_shared<PendingContainer_t>();
         std::swap(*batched, m_batchedAdd);
-        SYNCEVO_GLIB_CALL_ASYNC(e_book_client_add_contacts,
-                                boost::bind(&EvolutionContactSource::completedAdd,
-                                            this,
-                                            batched,
-                                            _1, _2, _3),
-                                m_addressbook, contacts, NULL);
+        auto process = [this, batched] (gboolean success, GSList *uids, const GError *gerror) noexcept {
+            try {
+                // The destructor ensures that the pending operations complete
+                // before destructing the instance, so our "this" pointer is
+                // always valid here.
+                SE_LOG_DEBUG(getDisplayName(), "batch add of %d contacts completed", (int)batched->size());
+                m_numRunningOperations--;
+                auto it = (*batched).begin();
+                GSList *uid = uids;
+                while (it != (*batched).end() && uid) {
+                    SE_LOG_DEBUG((*it)->m_name, "completed: %s",
+                                 success ? "<<successfully>>" :
+                                 gerror ? gerror->message :
+                                 "<<unknown failure>>");
+                    if (success) {
+                        (*it)->m_uid = static_cast<gchar *>(uid->data);
+                        // Get revision when engine checks the item.
+                        (*it)->m_status = REVISION;
+                    } else {
+                        (*it)->m_status = DONE;
+                        (*it)->m_gerror = gerror;
+                    }
+                    ++it;
+                    uid = uid->next;
+                }
+
+                while (it != (*batched).end()) {
+                    // Should never happen.
+                    SE_LOG_DEBUG((*it)->m_name, "completed: missing uid?!");
+                    (*it)->m_status = DONE;
+                    ++it;
+                }
+
+                g_slist_free_full(uids, g_free);
+            } catch (...) {
+                Exception::handle(HANDLE_EXCEPTION_FATAL);
+            }
+        };
+        SYNCEVO_GLIB_CALL_ASYNC(e_book_client_add_contacts, process,
+                                m_addressbook, contacts,
+#ifdef HAVE_E_BOOK_OPERATION_FLAGS
+                                E_BOOK_OPERATION_FLAG_NONE,
+#endif
+                                nullptr);
     }
     if (!m_batchedUpdate.empty()) {
         SE_LOG_DEBUG(getDisplayName(), "batch update of %d contacts starting", (int)m_batchedUpdate.size());
         m_numRunningOperations++;
         GListCXX<EContact, GSList> contacts;
-        BOOST_REVERSE_FOREACH (const boost::shared_ptr<Pending> &pending, m_batchedUpdate) {
+        for (const auto &pending: reverse(m_batchedUpdate)) {
             contacts.push_front(pending->m_contact.get());
         }
-        boost::shared_ptr<PendingContainer_t> batched(new PendingContainer_t);
+        auto batched = std::make_shared<PendingContainer_t>();
         std::swap(*batched, m_batchedUpdate);
-        SYNCEVO_GLIB_CALL_ASYNC(e_book_client_modify_contacts,
-                                boost::bind(&EvolutionContactSource::completedUpdate,
-                                            this,
-                                            batched,
-                                            _1, _2),
-                                m_addressbook, contacts, NULL);
+        auto process = [this, batched] (gboolean success, const GError *gerror) noexcept {
+            try {
+                SE_LOG_DEBUG(getDisplayName(), "batch update of %d contacts completed", (int)batched->size());
+                m_numRunningOperations--;
+                auto it = (*batched).begin();
+                while (it != (*batched).end()) {
+                    SE_LOG_DEBUG((*it)->m_name, "completed: %s",
+                                 success ? "<<successfully>>" :
+                                 gerror ? gerror->message :
+                                 "<<unknown failure>>");
+                    if (success) {
+                        (*it)->m_status = REVISION;
+                    } else {
+                        (*it)->m_status = DONE;
+                        (*it)->m_gerror = gerror;
+                    }
+                    ++it;
+                }
+            } catch (...) {
+                Exception::handle(HANDLE_EXCEPTION_FATAL);
+            }
+        };
+        SYNCEVO_GLIB_CALL_ASYNC(e_book_client_modify_contacts, process,
+                                m_addressbook, contacts,
+#ifdef HAVE_E_BOOK_OPERATION_FLAGS
+                                E_BOOK_OPERATION_FLAG_NONE,
+#endif
+                                nullptr);
     }
 }
 
@@ -1013,7 +993,7 @@ void EvolutionContactSource::finishItemChanges()
     if (m_numRunningOperations) {
         SE_LOG_DEBUG(getDisplayName(), "waiting for %d pending operations to complete", m_numRunningOperations.get());
         while (m_numRunningOperations) {
-            g_main_context_iteration(NULL, true);
+            g_main_context_iteration(nullptr, true);
         }
         SE_LOG_DEBUG(getDisplayName(), "pending operations completed");
     }
@@ -1028,7 +1008,7 @@ EvolutionContactSource::insertItem(const string &uid, const std::string &item, b
     if (contact) {
         e_contact_set(contact, E_CONTACT_UID,
                       uid.empty() ?
-                      NULL :
+                      nullptr :
                       const_cast<char *>(uid.c_str()));
         GErrorCXX gerror;
 #ifdef USE_EDS_CLIENT
@@ -1037,14 +1017,22 @@ EvolutionContactSource::insertItem(const string &uid, const std::string &item, b
         case SYNCHRONOUS:
             if (uid.empty()) {
                 gchar* newuid;
-                if (!e_book_client_add_contact_sync(m_addressbook, contact, &newuid, NULL, gerror)) {
+                if (!e_book_client_add_contact_sync(m_addressbook, contact,
+#ifdef HAVE_E_BOOK_OPERATION_FLAGS
+                                                    E_BOOK_OPERATION_FLAG_NONE,
+#endif
+                                                    &newuid, nullptr, gerror)) {
                     throwError(SE_HERE, "add new contact", gerror);
                 }
                 PlainGStr newuidPtr(newuid);
                 string newrev = getRevision(newuid);
                 return InsertItemResult(newuid, newrev, ITEM_OKAY);
             } else {
-                if (!e_book_client_modify_contact_sync(m_addressbook, contact, NULL, gerror)) {
+                if (!e_book_client_modify_contact_sync(m_addressbook, contact,
+#ifdef HAVE_E_BOOK_OPERATION_FLAGS
+                                                       E_BOOK_OPERATION_FLAG_NONE,
+#endif
+                                                       nullptr, gerror)) {
                     throwError(SE_HERE, "updating contact "+ uid, gerror);
                 }
                 string newrev = getRevision(uid);
@@ -1058,7 +1046,7 @@ EvolutionContactSource::insertItem(const string &uid, const std::string &item, b
                                             uid.empty() ? "add" : ("insert " + uid).c_str(),
                                             m_asyncOpCounter++);
             SE_LOG_DEBUG(name, "queueing for batched %s", uid.empty() ? "add" : "update");
-            boost::shared_ptr<Pending> pending(new Pending);
+            auto pending = std::make_shared<Pending>();
             pending->m_name = name;
             pending->m_contact = contact;
             pending->m_uid = uid;
@@ -1069,7 +1057,7 @@ EvolutionContactSource::insertItem(const string &uid, const std::string &item, b
             }
             // SyncSource is going to live longer than Synthesis
             // engine, so using "this" is safe here.
-            return InsertItemResult(boost::bind(&EvolutionContactSource::checkBatchedInsert, this, pending));
+            return InsertItemResult([this, pending] () { return checkBatchedInsert(pending); });
             break;
         }
 #else
@@ -1102,7 +1090,11 @@ void EvolutionContactSource::removeItem(const string &uid)
     if (
 #ifdef USE_EDS_CLIENT
         (invalidateCachedContact(uid),
-         !e_book_client_remove_contact_by_uid_sync(m_addressbook, uid.c_str(), NULL, gerror))
+         !e_book_client_remove_contact_by_uid_sync(m_addressbook, uid.c_str(),
+#ifdef HAVE_E_BOOK_OPERATION_FLAGS
+                                                   E_BOOK_OPERATION_FLAG_NONE,
+#endif
+                                                   nullptr, gerror))
 #else
         !e_book_remove_contact(m_addressbook, uid.c_str(), gerror)
 #endif

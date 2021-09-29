@@ -38,9 +38,8 @@
 
 #include <syncevo/GLibSupport.h>
 #include <syncevo/GVariantSupport.h>
-#include <pcrecpp.h>
 
-#include <boost/lambda/core.hpp>
+#include <regex>
 
 SE_GOBJECT_TYPE(SignonAuthService)
 SE_GOBJECT_TYPE(SignonAuthSession)
@@ -111,8 +110,8 @@ public:
             SE_THROW("Username or password missing");
         }
         Credentials credentials;
-        credentials.m_username = g_variant_get_string(usernameVar, NULL);
-        credentials.m_password = g_variant_get_string(passwordVar, NULL);
+        credentials.m_username = g_variant_get_string(usernameVar, nullptr);
+        credentials.m_password = g_variant_get_string(passwordVar, nullptr);
         if (credentials.m_password.empty()) {
             SE_THROW("Got an empty password");
         } else if (m_invalidateCache &&
@@ -145,7 +144,7 @@ public:
         if (!tokenVar) {
             SE_THROW("no AccessToken in OAuth2 response");
         }
-        std::string newToken = g_variant_get_string(tokenVar, NULL);
+        std::string newToken = g_variant_get_string(tokenVar, nullptr);
         if (newToken.empty()) {
             SE_THROW("AccessToken did not contain a string value");
         } else if (m_invalidateCache && newToken == m_accessToken) {
@@ -175,8 +174,8 @@ private:
 
 #define signon_auth_session_process_async_finish signon_auth_session_process_finish
         SYNCEVO_GLIB_CALL_SYNC(resultData, gerror, signon_auth_session_process_async,
-                               m_authSession, sessionData, mechanism, NULL);
-        buffer.reset(resultData ? g_variant_print(resultData, true) : NULL);
+                               m_authSession, sessionData, mechanism, nullptr);
+        buffer.reset(resultData ? g_variant_print(resultData, true) : nullptr);
         SE_LOG_DEBUG(NULL, "authentication result: %s, %s",
                      buffer.get() ? buffer.get() : "<<null>>",
                      gerror ? gerror->message : "???");
@@ -210,21 +209,22 @@ static void StoreIdentityCB(SignonIdentity *self,
     data->m_gerror = error;
 }
 
-boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &username,
+std::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &username,
                                                          const InitStateString &password)
 {
-    boost::shared_ptr<AuthProvider> provider;
+    std::shared_ptr<AuthProvider> provider;
 
     // Split username into <account ID> and <service name>.
     // Be flexible and allow leading/trailing white space.
     // Comma is optional.
-    static const pcrecpp::RE re("^\\s*(\\d+)\\s*,?\\s*(.*)\\s*$");
-    AgAccountId accountID;
-    std::string serviceName;
-    if (!re.FullMatch(username, &accountID, &serviceName)) {
+    static const std::regex re(R"del(\s*(\d+)\s*,?\s*(.*)\s*)del");
+    std::smatch match;
+    if (!std::regex_match(username, match, re)) {
         SE_THROW(StringPrintf("username must have the format " SE_SIGNON_PROVIDER_ID ":<account ID>,<service name>: %s",
                               username.c_str()));
     }
+    AgAccountId accountID = std::stol(match[1].str());
+    std::string serviceName = match[2].str();
     SE_LOG_DEBUG(NULL, "looking up account ID %d and service '%s'",
                  accountID,
                  serviceName.c_str());
@@ -243,10 +243,10 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
     }
     AgAccountServiceCXX accountService;
     if (serviceName.empty()) {
-        accountService = AgAccountServiceCXX::steal(ag_account_service_new(account, NULL));
+        accountService = AgAccountServiceCXX::steal(ag_account_service_new(account, nullptr));
     } else {
         ServiceListCXX services(ag_account_list_enabled_services(account));
-        BOOST_FOREACH (AgService *service, services) {
+        for (AgService *service: services) {
             const char *name = ag_service_get_name(service);
             SE_LOG_DEBUG(NULL, "enabled service: %s", name);
             if (serviceName == name) {

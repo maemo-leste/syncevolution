@@ -35,7 +35,7 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-static SyncSource *createSource(const SyncSourceParams &params)
+static std::unique_ptr<SyncSource> createSource(const SyncSourceParams &params)
 {
     SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
     bool isMe;
@@ -44,7 +44,7 @@ static SyncSource *createSource(const SyncSourceParams &params)
     if (isMe) {
         return
 #ifdef ENABLE_ACTIVESYNC
-            new ActiveSyncContactSource(params)
+            std::make_unique<ActiveSyncContactSource>(params)
 #else
             RegisterSyncSource::InactiveSource(params)
 #endif
@@ -55,7 +55,7 @@ static SyncSource *createSource(const SyncSourceParams &params)
     if (isMe) {
         return
 #ifdef ENABLE_ACTIVESYNC
-            new ActiveSyncCalendarSource(params, EAS_ITEM_CALENDAR)
+            std::make_unique<ActiveSyncCalendarSource>(params, EAS_ITEM_CALENDAR)
 #else
             RegisterSyncSource::InactiveSource(params)
 #endif
@@ -66,7 +66,7 @@ static SyncSource *createSource(const SyncSourceParams &params)
     if (isMe) {
         return
 #ifdef ENABLE_ACTIVESYNC
-            new ActiveSyncCalFormatSource(params, EAS_ITEM_TODO)
+            std::make_unique<ActiveSyncCalFormatSource>(params, EAS_ITEM_TODO)
 #else
             RegisterSyncSource::InactiveSource(params)
 #endif
@@ -77,14 +77,14 @@ static SyncSource *createSource(const SyncSourceParams &params)
     if (isMe) {
         return
 #ifdef ENABLE_ACTIVESYNC
-            new ActiveSyncCalFormatSource(params, EAS_ITEM_JOURNAL)
+            std::make_unique<ActiveSyncCalFormatSource>(params, EAS_ITEM_JOURNAL)
 #else
             RegisterSyncSource::InactiveSource(params)
 #endif
             ;
     }
 
-    return NULL;
+    return nullptr;
 }
 
 static RegisterSyncSource registerMe("ActiveSync",
@@ -114,11 +114,11 @@ class ActiveSyncsTest : public CppUnit::TestFixture {
 
 protected:
     void testInstantiate() {
-        boost::shared_ptr<SyncSource> source;
-        source.reset(SyncSource::createTestingSource("contacts", "ActiveSync Address Book", true));
-        source.reset(SyncSource::createTestingSource("events", "ActiveSync Events", true));
-        source.reset(SyncSource::createTestingSource("todos", "ActiveSync Todos", true));
-        source.reset(SyncSource::createTestingSource("memos", "ActiveSync Memos", true));
+        std::unique_ptr<SyncSource> source;
+        source = SyncSource::createTestingSource("contacts", "ActiveSync Address Book", true);
+        source = SyncSource::createTestingSource("events", "ActiveSync Events", true);
+        source = SyncSource::createTestingSource("todos", "ActiveSync Todos", true);
+        source = SyncSource::createTestingSource("memos", "ActiveSync Memos", true);
     }
 };
 
@@ -151,7 +151,7 @@ static int DumpItems(ClientTest &client, TestingSyncSource &source, const std::s
     // each server ID might appear multiple times, once for each
     // recurrence associated with it
     std::set<std::string> easids;
-    BOOST_FOREACH (const std::string &luid, eassource.getAllItems()) {
+    for (const std::string &luid: eassource.getAllItems()) {
         // slight hack: we know that luids in ActiveSyncSource base
         // class pass through this method unmodified, so no need to
         // avoid it
@@ -159,7 +159,7 @@ static int DumpItems(ClientTest &client, TestingSyncSource &source, const std::s
         easids.insert(ids.first);
     }
 
-    BOOST_FOREACH(const std::string &easid, easids) {
+    for (const std::string &easid: easids) {
         std::string item;
         if (forceBaseReadItem) {
             // This bypasses the more specialized
@@ -183,10 +183,10 @@ static int DumpItems(ClientTest &client, TestingSyncSource &source, const std::s
     return 0;
 }
 
-static TestingSyncSource *createEASSource(const ClientTestConfig::createsource_t &create,
-                                          ClientTest &client,
-                                          const std::string &clientID,
-                                          int source, bool isSourceA)
+static std::unique_ptr<TestingSyncSource> createEASSource(const ClientTestConfig::createsource_t &create,
+                                                          ClientTest &client,
+                                                          const std::string &clientID,
+                                                          int source, bool isSourceA)
 {
     std::unique_ptr<TestingSyncSource> res(create(client, clientID, source, isSourceA));
 
@@ -201,12 +201,12 @@ static TestingSyncSource *createEASSource(const ClientTestConfig::createsource_t
     }
 
     if (res->getDatabaseID().empty()) {
-        return res.release();
+        return res;
     } else {
         // sorry, no database
         SE_LOG_ERROR(NULL, "cannot create EAS datastore for database %s, check config",
                      res->getDatabaseID().c_str());
-        return NULL;
+        return nullptr;
     }
 }
 
@@ -218,17 +218,20 @@ static void updateConfigEAS(const RegisterSyncSourceTest */* me */,
         // cannot run tests involving a second database:
         // wrap orginal source creation, set default database for
         // database #0 and refuse to return a source for database #1
-        config.m_createSourceA = boost::bind(createEASSource, config.m_createSourceA,
-                                             _1, _2, _3, _4);
-        config.m_createSourceB = boost::bind(createEASSource, config.m_createSourceB,
-                                             _1, _2, _3, _4);
-
-        config.m_dump = boost::bind(DumpItems, _1, _2, _3,
-                                    type == EAS_ITEM_CONTACT ||
-                                    // need to read from our cache for Google Calendar,
-                                    // because it does not support Fetch
-                                    strcmp(getEnv("CLIENT_TEST_SERVER", ""), "googleeas")
-                                    );
+        config.m_createSourceA = [create=config.m_createSourceA] (ClientTest &client, const std::string &clientID, int source, bool isSourceA) {
+            return createEASSource(create, client, clientID, source, isSourceA);
+        };
+        config.m_createSourceB = [create=config.m_createSourceB] (ClientTest &client, const std::string &clientID, int source, bool isSourceA) {
+            return createEASSource(create, client, clientID, source, isSourceA);
+        };
+        config.m_dump = [type] (ClientTest &client, TestingSyncSource &source, const std::string &file) {
+            return DumpItems(client, source, file,
+                             type == EAS_ITEM_CONTACT ||
+                             // need to read from our cache for Google Calendar,
+                             // because it does not support Fetch
+                             strcmp(getEnv("CLIENT_TEST_SERVER", ""), "googleeas")
+                             );
+        };
         config.m_sourceLUIDsAreVolatile = true;
         // TODO: find out how ActiveSync/Exchange handle children without parent;
         // at the moment, the child is stored as if it was a stand-alone event

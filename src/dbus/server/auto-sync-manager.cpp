@@ -43,17 +43,16 @@ static void updatePresence(Timespec *t, bool present)
         Timespec();
 }
 
-boost::shared_ptr<AutoSyncManager> AutoSyncManager::createAutoSyncManager(Server &server)
+std::shared_ptr<AutoSyncManager> AutoSyncManager::createAutoSyncManager(Server &server)
 {
-    boost::shared_ptr<AutoSyncManager> result(new AutoSyncManager(server));
-    result->m_me = result;
+    auto result = make_weak_shared::make<AutoSyncManager>(server);
     result->init();
 
     // update cached information about a config each time it changes
-    server.m_configChangedSignal.connect(Server::ConfigChangedSignal_t::slot_type(&AutoSyncManager::initConfig, result.get(), _1).track(result));
+    server.m_configChangedSignal.connect(Server::ConfigChangedSignal_t::slot_type(&AutoSyncManager::initConfig, result.get(), boost::placeholders::_1).track_foreign(result));
 
     // monitor running sessions
-    server.m_newSyncSessionSignal.connect(Server::NewSyncSessionSignal_t::slot_type(&AutoSyncManager::sessionStarted, result.get(), _1).track(result));
+    server.m_newSyncSessionSignal.connect(Server::NewSyncSessionSignal_t::slot_type(&AutoSyncManager::sessionStarted, result.get(), boost::placeholders::_1).track_foreign(result));
 
     // Keep track of the time when a transport became online. As with
     // time of last sync, we are pessimistic here and assume that the
@@ -65,13 +64,13 @@ boost::shared_ptr<AutoSyncManager> AutoSyncManager::createAutoSyncManager(Server
     }
     p.m_btPresenceSignal.connect(PresenceStatus::PresenceSignal_t::slot_type(updatePresence,
                                                                              &result->m_btStartTime,
-                                                                             _1).track(result));
+                                                                             boost::placeholders::_1).track_foreign(result));
     if (p.getHttpPresence()) {
         result->m_httpStartTime = now;
     }
     p.m_httpPresenceSignal.connect(PresenceStatus::PresenceSignal_t::slot_type(updatePresence,
                                                                                &result->m_httpStartTime,
-                                                                               _1).track(result));
+                                                                               boost::placeholders::_1).track_foreign(result));
 
     return result;
 }
@@ -83,7 +82,7 @@ void AutoSyncManager::init()
 
     m_peerMap.clear();
     SyncConfig::ConfigList list = SyncConfig::getConfigs();
-    BOOST_FOREACH(const SyncConfig::ConfigList::value_type &server, list) {
+    for (const auto &server: list) {
         initConfig(server.first);
     }
 }
@@ -97,15 +96,15 @@ void AutoSyncManager::initConfig(const std::string &configName)
         // about (might have been removed) and all existing configs
         // (might have been modified).
         std::set<std::string> configs;
-        BOOST_FOREACH (const PeerMap::value_type &entry, m_peerMap) {
+        for (const auto &entry: m_peerMap) {
             const std::string &configName = entry.first;
             configs.insert(configName);
         }
-        BOOST_FOREACH (const StringPair &entry, SyncConfig::getConfigs()) {
+        for (const auto &entry: SyncConfig::getConfigs()) {
             const std::string &configName = entry.first;
             configs.insert(configName);
         }
-        BOOST_FOREACH (const std::string &configName, configs) {
+        for (const std::string &configName: configs) {
             if (!configName.empty()) {
                 initConfig(configName);
             }
@@ -122,7 +121,7 @@ void AutoSyncManager::initConfig(const std::string &configName)
     // Create anew or update, directly in map. Never remove
     // old entries, because we want to keep the m_lastSyncTime
     // in cases where configs get removed and recreated.
-    boost::shared_ptr<AutoSyncTask> &task = m_peerMap[configName];
+    std::shared_ptr<AutoSyncTask> &task = m_peerMap[configName];
     if (!task) {
         task.reset(new AutoSyncTask(configName));
         // We should check past sessions here. Instead we assume
@@ -153,9 +152,8 @@ void AutoSyncManager::initConfig(const std::string &configName)
             bt = true;
             any = true;
         } else {
-            BOOST_FOREACH(std::string op,
-                          boost::tokenizer< boost::char_separator<char> >(autoSync,
-                                                                          boost::char_separator<char>(","))) {
+            for (std::string op: boost::tokenizer< boost::char_separator<char> >(autoSync,
+                                                                                 boost::char_separator<char>(","))) {
                 if(boost::iequals(op, "http")) {
                     http = true;
                 } else if(boost::iequals(op, "obex-bt")) {
@@ -186,7 +184,7 @@ void AutoSyncManager::initConfig(const std::string &configName)
                      task->m_interval, task->m_delay);
 
         task->m_urls.clear();
-        BOOST_FOREACH(std::string url, urls) {
+        for (const std::string &url: urls) {
             AutoSyncTask::Transport transport = AutoSyncTask::NEEDS_OTHER; // fallback for unknown sync URL
             if (boost::istarts_with(url, "http")) {
                 transport = AutoSyncTask::NEEDS_HTTP;
@@ -249,9 +247,9 @@ void AutoSyncManager::schedule(const std::string &reason)
 
     // Now look for a suitable task that is ready to run.
     Timespec now = Timespec::monotonic();
-    BOOST_FOREACH (const PeerMap::value_type &entry, m_peerMap) {
+    for (const auto &entry: m_peerMap) {
         const std::string &configName = entry.first;
-        const boost::shared_ptr<AutoSyncTask> &task = entry.second;
+        const std::shared_ptr<AutoSyncTask> &task = entry.second;
 
         if (task->m_interval <= 0 || // not enabled
             task->m_permanentFailure) { // don't try again
@@ -270,18 +268,16 @@ void AutoSyncManager::schedule(const std::string &reason)
                          configName.c_str(),
                          seconds);
             task->m_intervalTimeout.runOnce(seconds,
-                                            boost::bind(&AutoSyncManager::schedule,
-                                                        this,
-                                                        configName + " interval timer"));
+                                            [this, configName] () { schedule(configName + " interval timer"); });
             continue;
         }
 
         std::string readyURL;
-        BOOST_FOREACH (const AutoSyncTask::URLInfo_t::value_type &urlinfo, task->m_urls) {
+        for (const auto &urlinfo: task->m_urls) {
             // check m_delay against presence of transport
-            Timespec *starttime = NULL;
-            PresenceStatus::PresenceSignal_t *signal = NULL;
-            Timeout *timeout = NULL;
+            Timespec *starttime = nullptr;
+            PresenceStatus::PresenceSignal_t *signal = nullptr;
+            Timeout *timeout = nullptr;
             switch (urlinfo.first) {
             case AutoSyncTask::NEEDS_HTTP:
                 SE_LOG_DEBUG(NULL, "auto sync: %s: %s uses HTTP",
@@ -320,7 +316,7 @@ void AutoSyncManager::schedule(const std::string &reason)
                 // check again when it becomes present
                 signal->connect(PresenceStatus::PresenceSignal_t::slot_type(&AutoSyncManager::schedule,
                                                                             this,
-                                                                            "presence change").track(m_me));
+                                                                            "presence change").track_foreign(shared_from_this()));
                 SE_LOG_DEBUG(NULL, "auto sync: %s: transport for %s not present",
                              configName.c_str(),
                              urlinfo.second.c_str());
@@ -332,9 +328,7 @@ void AutoSyncManager::schedule(const std::string &reason)
                              urlinfo.second.c_str(),
                              seconds);
                 timeout->runOnce(seconds,
-                                 boost::bind(&AutoSyncManager::schedule,
-                                             this,
-                                             configName + " transport timer"));
+                                 [this, configName] () { schedule(configName + " transport timer"); });
             }
         }
 
@@ -348,25 +342,21 @@ void AutoSyncManager::schedule(const std::string &reason)
             m_server.delaySessionDestruction(m_session);
 
             task->m_syncSuccessStart = false;
-            m_session = Session::createSession(m_server,
-                                               task->m_remoteDeviceId,
-                                               configName,
-                                               m_server.getNextSession());
+            m_session = make_weak_shared::make<Session>(m_server,
+                                                        task->m_remoteDeviceId,
+                                                        configName,
+                                                        m_server.getNextSession());
 
             // Temporarily set sync URL to the one which we picked above
             // once the session is active (setConfig() not allowed earlier).
-            ReadOperations::Config_t config;
-            config[""]["syncURL"] = readyURL;
-            m_session->m_sessionActiveSignal.connect(boost::bind(&Session::setConfig,
-                                                                 m_session.get(),
-                                                                 true, true,
-                                                                 config));
-
             // Run sync as soon as it is active.
-            m_session->m_sessionActiveSignal.connect(boost::bind(&Session::sync,
-                                                                 m_session.get(),
-                                                                 "",
-                                                                 SessionCommon::SourceModes_t()));
+            m_session->m_sessionActiveSignal.connect([session=m_session.get(), readyURL] () {
+                    ReadOperations::Config_t config;
+                    config[""]["syncURL"] = readyURL;
+
+                    session->setConfig(true, true, config);
+                    session->sync("", {});
+                });
 
             // Now run it.
             m_session->activate();
@@ -387,32 +377,34 @@ void AutoSyncManager::connectIdle()
     m_idleConnection =
         m_server.m_idleSignal.connect(Server::IdleSignal_t::slot_type(&AutoSyncManager::schedule,
                                                                       this,
-                                                                      "server is idle").track(m_me));
+                                                                      "server is idle").track_foreign(shared_from_this()));
 }
 
-void AutoSyncManager::sessionStarted(const boost::shared_ptr<Session> &session)
+void AutoSyncManager::sessionStarted(const std::shared_ptr<Session> &session)
 {
     // Do we have a task for this config?
     std::string configName = session->getConfigName();
-    PeerMap::iterator it = m_peerMap.find(configName);
+    auto it = m_peerMap.find(configName);
     if (it == m_peerMap.end()) {
         SE_LOG_DEBUG(NULL, "auto sync: ignore running sync %s without config",
                      configName.c_str());
         return;
     }
 
-    boost::shared_ptr<AutoSyncManager> me = m_me.lock();
-    if (!me) {
+    std::shared_ptr<AutoSyncManager> me;
+    try {
+        me = shared_from_this();
+    } catch (...) {
         SE_LOG_DEBUG(NULL, "auto sync: already destructing, ignore new sync %s",
                      configName.c_str());
         return;
     }
 
-    const boost::shared_ptr<AutoSyncTask> &task = it->second;
+    const std::shared_ptr<AutoSyncTask> &task = it->second;
     task->m_lastSyncTime = Timespec::monotonic();
 
     // track permanent failure
-    session->m_doneSignal.connect(Session::DoneSignal_t::slot_type(&AutoSyncManager::anySyncDone, this, task.get(), _1).track(task).track(me));
+    session->m_doneSignal.connect(Session::DoneSignal_t::slot_type(&AutoSyncManager::anySyncDone, this, task.get(), boost::placeholders::_1).track_foreign(task).track_foreign(me));
 
     if (m_session == session) {
         // Only for our own auto sync session: notify user once session starts successful.
@@ -420,18 +412,18 @@ void AutoSyncManager::sessionStarted(const boost::shared_ptr<Session> &session)
         // In the (unlikely) case that the AutoSyncTask gets deleted, the
         // slot won't get involved, thus skipping user notifications.
         // Also protects against manager destructing before session.
-        session->m_syncSuccessStartSignal.connect(Session::SyncSuccessStartSignal_t::slot_type(&AutoSyncManager::autoSyncSuccessStart, this, task.get()).track(task).track(me));
+        session->m_syncSuccessStartSignal.connect(Session::SyncSuccessStartSignal_t::slot_type(&AutoSyncManager::autoSyncSuccessStart, this, task.get()).track_foreign(task).track_foreign(me));
 
         // Notify user once session ends, with or without failure.
         // Same instance tracking as for sync success start.
-        session->m_doneSignal.connect(Session::DoneSignal_t::slot_type(&AutoSyncManager::autoSyncDone, this, task.get(), _1).track(task).track(me));
+        session->m_doneSignal.connect(Session::DoneSignal_t::slot_type(&AutoSyncManager::autoSyncDone, this, task.get(), boost::placeholders::_1).track_foreign(task).track_foreign(me));
     }
 }
 
 bool AutoSyncManager::preventTerm()
 {
-    BOOST_FOREACH (const PeerMap::value_type &entry, m_peerMap) {
-        const boost::shared_ptr<AutoSyncTask> &task = entry.second;
+    for (const auto &entry: m_peerMap) {
+        const std::shared_ptr<AutoSyncTask> &task = entry.second;
         if (task->m_interval > 0 &&
             !task->m_permanentFailure &&
             !task->m_urls.empty()) {

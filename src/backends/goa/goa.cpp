@@ -26,7 +26,6 @@
 #include <gdbus-cxx-bridge.h>
 
 #include <boost/algorithm/string/join.hpp>
-#include <boost/foreach.hpp>
 
 #include <algorithm>
 
@@ -65,7 +64,7 @@ class GOAManager : private GDBusCXX::DBusRemoteObject
                      Properties
                      > Interfaces;
     typedef std::map<GDBusCXX::DBusObject_t, Interfaces> ManagedObjects;
-    GDBusCXX::DBusClientCall1<ManagedObjects> m_getManagedObjects;
+    GDBusCXX::DBusClientCall<ManagedObjects> m_getManagedObjects;
 
  public:
     GOAManager(const GDBusCXX::DBusConnectionPtr &conn);
@@ -75,7 +74,7 @@ class GOAManager : private GDBusCXX::DBusRemoteObject
      * (the unique user visible string). The account must support OAuth2,
      * otherwise an error is thrown.
      */
-    boost::shared_ptr<GOAAccount> lookupAccount(const std::string &representationID);
+    std::shared_ptr<GOAAccount> lookupAccount(const std::string &representationID);
 };
 
 class GOAAccount
@@ -88,8 +87,8 @@ public:
     GOAAccount(const GDBusCXX::DBusConnectionPtr &conn,
                const std::string &path);
 
-    GDBusCXX::DBusClientCall1<int32_t> m_ensureCredentials;
-    GDBusCXX::DBusClientCall1<std::string> m_getAccessToken;
+    GDBusCXX::DBusClientCall<int32_t> m_ensureCredentials;
+    GDBusCXX::DBusClientCall<std::string> m_getAccessToken;
 };
 
 GOAManager::GOAManager(const GDBusCXX::DBusConnectionPtr &conn) :
@@ -98,7 +97,7 @@ GOAManager::GOAManager(const GDBusCXX::DBusConnectionPtr &conn) :
 {
 }
 
-boost::shared_ptr<GOAAccount> GOAManager::lookupAccount(const std::string &username)
+std::shared_ptr<GOAAccount> GOAManager::lookupAccount(const std::string &username)
 {
     SE_LOG_DEBUG(NULL, "Looking up all accounts in GNOME Online Accounts, searching for '%s'.", username.c_str());
     ManagedObjects objects = m_getManagedObjects();
@@ -107,26 +106,26 @@ boost::shared_ptr<GOAAccount> GOAManager::lookupAccount(const std::string &usern
     bool unique = true;
     bool hasOAuth2 = false;
     std::vector<std::string> accounts;
-    BOOST_FOREACH (const ManagedObjects::value_type &object, objects) {
+    for (const auto &object: objects) {
         const GDBusCXX::DBusObject_t &path = object.first;
         const Interfaces &interfaces = object.second;
         // boost::adaptors::keys() would be nicer, but is not available on Ubuntu Lucid.
         std::list<std::string> interfaceKeys;
-        BOOST_FOREACH (const Interfaces::value_type &entry, interfaces) {
+        for (const auto &entry: interfaces) {
             interfaceKeys.push_back(entry.first);
         }
         SE_LOG_DEBUG(NULL, "GOA object %s implements %s", path.c_str(),
                      boost::join(interfaceKeys, ", ").c_str());
-        Interfaces::const_iterator it = interfaces.find(GOA_ACCOUNT_INTERFACE);
+        auto it = interfaces.find(GOA_ACCOUNT_INTERFACE);
         if (it != interfaces.end()) {
             const Properties &properties = it->second;
-            Properties::const_iterator id = properties.find(GOA_ACCOUNT_ID);
-            Properties::const_iterator presentationID = properties.find(GOA_ACCOUNT_PRESENTATION_IDENTITY);
+            auto id = properties.find(GOA_ACCOUNT_ID);
+            auto presentationID = properties.find(GOA_ACCOUNT_PRESENTATION_IDENTITY);
             if (id != properties.end() &&
                 presentationID != properties.end()) {
                 const std::string &idStr = boost::get<std::string>(id->second);
                 const std::string &presentationIDStr = boost::get<std::string>(presentationID->second);
-                Properties::const_iterator provider = properties.find(GOA_ACCOUNT_PROVIDER_NAME);
+                auto provider = properties.find(GOA_ACCOUNT_PROVIDER_NAME);
                 std::string description = StringPrintf("%s, %s = %s",
                                                        provider == properties.end() ? "???" : boost::get<std::string>(provider->second).c_str(),
                                                        presentationIDStr.c_str(),
@@ -173,7 +172,7 @@ boost::shared_ptr<GOAAccount> GOAManager::lookupAccount(const std::string &usern
                               username.c_str()));
     }
 
-    boost::shared_ptr<GOAAccount> account(new GOAAccount(getConnection(), accountPath));
+    auto account = std::make_shared<GOAAccount>(getConnection(), accountPath);
     return account;
 }
 
@@ -188,10 +187,10 @@ GOAAccount::GOAAccount(const GDBusCXX::DBusConnectionPtr &conn,
 
 class GOAAuthProvider : public AuthProvider
 {
-    boost::shared_ptr<GOAAccount> m_account;
+    std::shared_ptr<GOAAccount> m_account;
 
 public:
-    GOAAuthProvider(const boost::shared_ptr<GOAAccount> &account) :
+    GOAAuthProvider(const std::shared_ptr<GOAAccount> &account) :
         m_account(account)
     {}
 
@@ -209,13 +208,13 @@ public:
     virtual std::string getUsername() const { return ""; }
 };
 
-boost::shared_ptr<AuthProvider> createGOAAuthProvider(const InitStateString &username,
+std::shared_ptr<AuthProvider> createGOAAuthProvider(const InitStateString &username,
                                                       const InitStateString &password)
 {
     // Because we share the connection, hopefully this won't be too expensive.
     GDBusCXX::DBusErrorCXX err;
     GDBusCXX::DBusConnectionPtr conn = dbus_get_bus_connection("SESSION",
-                                                               NULL,
+                                                               nullptr,
                                                                false,
                                                                &err);
     if (!conn) {
@@ -223,8 +222,8 @@ boost::shared_ptr<AuthProvider> createGOAAuthProvider(const InitStateString &use
     }
 
     GOAManager manager(conn);
-    boost::shared_ptr<GOAAccount> account = manager.lookupAccount(username);
-    boost::shared_ptr<AuthProvider> provider(new GOAAuthProvider(account));
+    std::shared_ptr<GOAAccount> account = manager.lookupAccount(username);
+    auto provider = std::make_shared<GOAAuthProvider>(account);
     return provider;
 }
 

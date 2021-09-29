@@ -33,9 +33,9 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-void SQLiteUtil::throwError(const SourceLocation &here, const string &operation)
+void SQLiteUtil::throwError(const SourceLocation &here, const std::string &operation)
 {
-    string descr = m_name + ": '" + m_fileid + "': " + operation + " failed";
+    std::string descr = m_name + ": '" + m_fileid + "': " + operation + " failed";
 
     if (m_db) {
         const char *error = sqlite3_errmsg(m_db);
@@ -48,7 +48,7 @@ void SQLiteUtil::throwError(const SourceLocation &here, const string &operation)
 
 sqlite3_stmt *SQLiteUtil::prepareSQLWrapper(const char *sql, const char **nextsql)
 {
-    sqlite3_stmt *stmt = NULL;
+    sqlite3_stmt *stmt = nullptr;
 
     checkSQL(sqlite3_prepare(m_db, sql, -1, &stmt, nextsql), sql);
     return stmt;
@@ -59,7 +59,7 @@ sqlite3_stmt *SQLiteUtil::prepareSQL(const char *sqlfmt, ...)
     va_list ap;
    
     va_start(ap, sqlfmt);
-    string s = StringPrintfV (sqlfmt, ap);
+    std::string s = StringPrintfV (sqlfmt, ap);
     va_end(ap);
     return prepareSQLWrapper(s.c_str());
 }
@@ -77,7 +77,7 @@ SQLiteUtil::key_t SQLiteUtil::findKey(const char *database, const char *keyname,
     }
 }
 
-string SQLiteUtil::findColumn(const char *database, const char *keyname, const char *key, const char *column, const char *def)
+std::string SQLiteUtil::findColumn(const char *database, const char *keyname, const char *key, const char *column, const char *def)
 {
     sqliteptr query(prepareSQL("SELECT %s FROM %s WHERE %s = '%s';", column, database, keyname, key));
 
@@ -91,7 +91,7 @@ string SQLiteUtil::findColumn(const char *database, const char *keyname, const c
     }
 }
 
-string SQLiteUtil::getTextColumn(sqlite3_stmt *stmt, int col, const char *def)
+std::string SQLiteUtil::getTextColumn(sqlite3_stmt *stmt, int col, const char *def)
 {
     const unsigned char *text = sqlite3_column_text(stmt, col);
     return text ? (const char *)text : def;
@@ -103,15 +103,15 @@ SQLiteUtil::syncml_time_t SQLiteUtil::getTimeColumn(sqlite3_stmt *stmt, int col)
     return sqlite3_column_int64(stmt, col);
 }
 
-string SQLiteUtil::time2str(SQLiteUtil::syncml_time_t t)
+std::string SQLiteUtil::time2str(SQLiteUtil::syncml_time_t t)
 {
     char buffer[128];
     sprintf(buffer, "%lu", t);
     return buffer;
 }
 
-void SQLiteUtil::open(const string &name,
-                      const string &fileid,
+void SQLiteUtil::open(const std::string &name,
+                      const std::string &fileid,
                       const SQLiteUtil::Mapping *mapping,
                       const char *schema)
 {
@@ -119,12 +119,12 @@ void SQLiteUtil::open(const string &name,
     m_name = name;
     m_fileid = fileid;
 
-    const string prefix("file://");
+    const std::string prefix("file://");
     bool create = fileid.substr(0, prefix.size()) == prefix;
-    string filename = create ? fileid.substr(prefix.size()) : fileid;
+    std::string filename = create ? fileid.substr(prefix.size()) : fileid;
 
     if (!create && access(filename.c_str(), F_OK)) {
-        throw runtime_error(m_name + ": no such database: '" + filename + "'");
+        throw std::runtime_error(m_name + ": no such database: '" + filename + "'");
     }
 
     sqlite3 *db;
@@ -167,7 +167,7 @@ void SQLiteUtil::open(const string &name,
     for (i = 0; mapping[i].colname; i++) ;
     m_mapping.set(new Mapping[i + 1]);
     sqliteptr query;
-    string tablename;
+    std::string tablename;
     for (i = 0; mapping[i].colname; i++) {
         m_mapping[i] = mapping[i];
 
@@ -192,7 +192,7 @@ void SQLiteUtil::open(const string &name,
 
 void SQLiteUtil::close()
 {
-    m_db = NULL;
+    m_db = nullptr;
 }
 
 

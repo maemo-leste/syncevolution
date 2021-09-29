@@ -22,10 +22,7 @@
 #include <string.h>
 #include <errno.h>
 
-#include <boost/bind.hpp>
-
 #include <syncevo/declarations.h>
-using namespace std;
 SE_BEGIN_CXX
 
 
@@ -50,14 +47,6 @@ LoggerStdout::~LoggerStdout()
     }
 }
 
-static void appendOutput(std::string &output, std::string &chunk, size_t expectedTotal)
-{
-    if (expectedTotal) {
-        output.reserve(expectedTotal);
-    }
-    output.append(chunk);
-}
-
 void LoggerStdout::write(FILE *file,
                          Level msglevel,
                          Level filelevel,
@@ -70,11 +59,17 @@ void LoggerStdout::write(FILE *file,
         msglevel <= filelevel) {
         // TODO: print debugging information, perhaps only in log file
         std::string output;
+        auto appendOutput = [&output] (std::string &chunk, size_t expectedTotal) {
+            if (expectedTotal) {
+                output.reserve(expectedTotal);
+            }
+            output.append(chunk);
+        };
         formatLines(msglevel, filelevel,
                     procname,
                     prefix,
                     format, args,
-                    boost::bind(appendOutput, boost::ref(output), _1, _2));
+                    appendOutput);
         fwrite(output.c_str(), 1, output.size(), file);
         fflush(file);
     }

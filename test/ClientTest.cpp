@@ -61,17 +61,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#include <boost/bind.hpp>
 #include <boost/tokenizer.hpp>
-#include <boost/assign.hpp>
-#include <boost/lambda/lambda.hpp>
-#include <boost/lambda/bind.hpp>
-#include <boost/lambda/if.hpp>
-#include <boost/lambda/casts.hpp>
-#include <boost/lambda/switch.hpp>
-#include <boost/typeof/typeof.hpp>
 
-#include <pcrecpp.h>
+#include <regex>
 
 #include <syncevo/declarations.h>
 
@@ -94,7 +86,7 @@ struct ItemCount
 static std::ostream &operator << (ostream &out, const ItemCount &count)
 {
     out << count.size() << " ( ";
-    BOOST_FOREACH(const std::string &id, count.m_items) {
+    for (const std::string &id: count.m_items) {
         out << id << " ";
     }
     out << ")";
@@ -154,16 +146,16 @@ public:
         }
         va_end(argList);
         m_argc = m_args.size();
-        m_argvArray.reset(new const char *[m_args.size()]);
-        for (int i = 0; i < m_argc; i++) {
-            m_argvArray[i] = m_args[i].c_str();
+        m_argvArray.reserve(m_args.size());
+        for (auto &arg: m_args) {
+            m_argvArray.push_back(arg.c_str());
         }
-        m_argv = m_argvArray.get();
+        m_argv = m_argvArray.data();
     }
 
     virtual SyncContext *createSyncClient() {
         std::unique_ptr<SyncContext> context(new SyncContext(m_server, true));
-        boost::shared_ptr<SimpleUserInterface> ui(new SimpleUserInterface(context->getKeyring()));
+        auto ui = std::make_shared<SimpleUserInterface>(context->getKeyring());
         context->setUserInterface(ui);
         return context.release();
     }
@@ -212,7 +204,7 @@ std::pair<std::string, std::string> getPeerConfig(const std::string &source)
     static const char LOCAL_SYNC[] = "local://";
     SyncConfig local(currentServer() + "_1");
     std::vector<std::string> syncURLs = local.getSyncURL();
-    boost::shared_ptr<PersistentSyncSourceConfig> sourceConfig(local.getSyncSourceConfig(source));
+    std::shared_ptr<PersistentSyncSourceConfig> sourceConfig(local.getSyncSourceConfig(source));
     std::string uri = sourceConfig->getURI();
     if (uri.empty()) {
         uri = source;
@@ -233,7 +225,7 @@ std::pair<std::string, std::string> getPeerConfig(const std::string &source)
     if (peerConfig.empty()) {
         // Check for local HTTP server.
         std::string deviceId = local.getDevID();
-        BOOST_FOREACH (const StringPair &peer, SyncConfig::getConfigs()) {
+        for (const auto &peer: SyncConfig::getConfigs()) {
             SyncConfig remote(peer.first);
             if (remote.getRemoteDevID() == deviceId) {
                 peerConfig = peer.first;
@@ -388,7 +380,7 @@ public:
         // exception, but then forwards it, and thus does not
         // prevent the exception from escaping.
         if (!std::uncaught_exception()) {
-            CT_ASSERT_NO_THROW(reset(NULL));
+            CT_ASSERT_NO_THROW(reset(nullptr));
         }
     }
 
@@ -400,17 +392,13 @@ public:
         INCREMENTAL     /**< allow source to do incremental data read */
     };
 
-    void reset(TestingSyncSource *source = NULL, Flags flags = INCREMENTAL)
+    void reset(std::unique_ptr<TestingSyncSource> source = {}, Flags flags = INCREMENTAL)
     {
         if (get() && m_active) {
             stopAccess();
         }
-        // avoid deleting the instance that we are setting
-        // (shouldn't happen)
-        if (get() != source) {
-            base_t::reset(source);
-        }
-        if (source) {
+        base_t::reset(source.release());
+        if (get()) {
             startAccess(flags);
         }
     }
@@ -482,7 +470,7 @@ std::list<std::string> listItemsOfType(TestingSyncSource *source, int state)
 {
     std::list<std::string> res;
 
-    BOOST_FOREACH(const string &luid, source->getItems(SyncSourceChanges::State(state))) {
+    for (const string &luid: source->getItems(SyncSourceChanges::State(state))) {
         res.push_back(luid);
     }
     return res;
@@ -635,7 +623,7 @@ void LocalTests::addTests() {
             // Create a sub-suite for each set of linked items.
             // items.size() can be fairly large for these tests,
             // so avoid testing all possible combinations.
-            BOOST_FOREACH(const ClientTestConfig::LinkedItems_t &items,
+            for (const ClientTestConfig::LinkedItems_t &items:
                           config.m_linkedItemsSubset) {
                 CppUnit::TestSuite *linked = new CppUnit::TestSuite(getName() + "::LinkedItems" + items.m_name);
                 int stride = (items.size() + 4) / 5;
@@ -709,7 +697,7 @@ std::string LocalTests::insert(const CreateSource &createSource, const std::stri
 }
 
 /** deletes specific item locally via sync source */
-static std::string updateItem(const CreateSource &createSource, const ClientTestConfig &config, const std::string &uid, const std::string &data, std::string *updated = NULL) {
+static std::string updateItem(const CreateSource &createSource, const ClientTestConfig &config, const std::string &uid, const std::string &data, std::string *updated = nullptr) {
     std::string newuid;
 
     CT_ASSERT(createSource.createSource);
@@ -838,7 +826,7 @@ static void deleteItem(const CreateSource &createSource, const std::string &uid)
  * takes two databases, exports them,
  * then compares them using synccompare
  *
- * @param refFile      existing file with source reference items, NULL uses a dump of sync source A instead
+ * @param refFile      existing file with source reference items, nullptr uses a dump of sync source A instead
  * @param copy         a sync source which contains the copied items, begin/endSync will be called
  * @param raiseAssert  raise assertion if comparison yields differences (defaults to true)
  */
@@ -875,7 +863,7 @@ bool LocalTests::compareDatabases(const std::string &refFile, const std::string 
 }
 
 /**
- * compare data in source with vararg list of std::string pointers, NULL terminated
+ * compare data in source with vararg list of std::string pointers, nullptr terminated
  */
 void LocalTests::compareDatabases(TestingSyncSource *copy,
                                   ...)
@@ -886,7 +874,7 @@ void LocalTests::compareDatabases(TestingSyncSource *copy,
     va_list ap;
     va_start(ap, copy);
     std::string *item;
-    while ((item = va_arg(ap, std::string *)) != NULL) {
+    while ((item = va_arg(ap, std::string *)) != nullptr) {
         out << *item;
     }
     va_end(ap);
@@ -900,7 +888,7 @@ void LocalTests::compareDatabasesRef(TestingSyncSource &copy,
     std::string sourceFile = getCurrentTest() + ".ref.test.dat";
     simplifyFilename(sourceFile);
     ofstream out(sourceFile.c_str());
-    BOOST_FOREACH(const std::string &item, items) {
+    for (const std::string &item: items) {
         out << item;
     }
     out.close();
@@ -917,7 +905,7 @@ std::string LocalTests::createItem(int item, const std::string &revision, int si
     // avoid adding white space (not sure whether it is valid for UID)
     prefix << std::setfill('0') << std::setw(3) << item << "-";
 
-    BOOST_FOREACH (std::string curProp,
+    for (std::string curProp:
                    boost::tokenizer< boost::char_separator<char> >(config.m_uniqueProperties,
                                                                    boost::char_separator<char>(":"))) {
         std::string property;
@@ -1059,7 +1047,7 @@ void LocalTests::updateManyItems(const CreateSource &createSource, int startInde
     }
     int lastIndex = firstIndex + (numItems >= 1 ? numItems : defNumItems()) - 1;
     std::string revstring = StringPrintf("REVISION #%d", revision);
-    std::list<std::string>::const_iterator it = luids.begin();
+    auto it = luids.begin();
     for (int i = 0; i < offset && it != luids.end(); i++, ++it) {}
     for (int item = firstIndex;
          item <= lastIndex && it != luids.end();
@@ -1078,7 +1066,7 @@ void LocalTests::removeManyItems(const CreateSource &createSource, int numItems,
     TestingSyncSourcePtr source;
     SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
 
-    std::list<std::string>::const_iterator it = luids.begin();
+    auto it = luids.begin();
     for (int i = 0; i < offset && it != luids.end(); i++, ++it) {}
     for (int item = 0;
          item < numItems && it != luids.end();
@@ -1095,7 +1083,7 @@ void LocalTests::updateData(const CreateSource &createSource) {
 
     TestingSyncSourcePtr source;
     SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSource()));
-    BOOST_FOREACH(const string &luid, source->getAllItems()) {
+    for (const string &luid: source->getAllItems()) {
         string item;
         CT_ASSERT_NO_THROW(source->readItemRaw(luid, item));
         CT_ASSERT_NO_THROW(config.m_update(item));
@@ -1114,7 +1102,7 @@ void LocalTests::testOpen() {
     // call open directly. That way it is a bit more clear
     // what happens and where it fails, if it fails.
     std::unique_ptr<TestingSyncSource> source;
-    CT_ASSERT_NO_THROW(source.reset(createSourceA()));
+    CT_ASSERT_NO_THROW(source = createSourceA());
     // got a sync source?
     CT_ASSERT(source.get() != 0);
     // can it be opened?
@@ -1176,7 +1164,7 @@ void LocalTests::doInsert(bool withUID)
 {
     // check requirements
     CT_ASSERT(!config.m_insertItem.empty());
-    CT_ASSERT(!config.m_createSourceA.empty());
+    CT_ASSERT(config.m_createSourceA);
 
     std::string item = config.m_insertItem;
     if (!withUID) {
@@ -1356,7 +1344,7 @@ void LocalTests::doChanges(bool restart) {
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
 
     CLIENT_TEST_LOG("insert another item via source A");
-    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, NULL, "-C"));
+    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, nullptr, "-C"));
     CLIENT_TEST_LOG("check for new item via source B");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     SOURCE_ASSERT_EQUAL(source.get(), 1, countItems(source.get()));
@@ -1404,7 +1392,7 @@ void LocalTests::doChanges(bool restart) {
     CLIENT_TEST_LOG("create and update an item in source A");
     // Must use a UID different than the one used before despite that data being gone,
     // to keep Google CalDAV server happy.
-    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, NULL, "-D"));
+    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, nullptr, "-D"));
     CT_ASSERT_NO_THROW(update(createSourceA, config.m_updateItem, "-D"));
     CLIENT_TEST_LOG("should only be listed as new or updated in source B, but not both");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
@@ -1418,9 +1406,9 @@ void LocalTests::doChanges(bool restart) {
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
     CT_ASSERT_NO_THROW(restart ? source.stopAccess() : source.reset());
     CLIENT_TEST_LOG("create, delete and recreate an item in source A");
-    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, NULL, "-E"));
+    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, nullptr, "-E"));
     CT_ASSERT_NO_THROW(deleteAll(createSourceA));
-    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, NULL, "-F"));
+    CT_ASSERT_NO_THROW(insert(createSourceA, config.m_insertItem, false, nullptr, "-F"));
     CLIENT_TEST_LOG("should only be listed as new or updated in source B, even if\n "
                     "(as for calendar with UID) the same LUID gets reused");
     SOURCE_ASSERT_NO_FAILURE(source.get(), restart ? source.startAccess() : source.reset(createSourceB()));
@@ -1468,11 +1456,11 @@ void LocalTests::testLinkedSources()
 {
     // make changes in each of the sources (doesn't have t be
     // the current one)
-    BOOST_FOREACH (LocalTests *main, m_linkedSources) {
+    for (LocalTests *main: m_linkedSources) {
         CLIENT_TEST_LOG("making changes in %s", main->getSourceName().c_str());
 
         // first delete via *all* sources
-        BOOST_FOREACH (LocalTests *test, m_linkedSources) {
+        for (LocalTests *test: m_linkedSources) {
             CLIENT_TEST_LOG("clean via source A of %s", test->getSourceName().c_str());
             CT_ASSERT_NO_THROW(test->deleteAll(test->createSourceA));
             // reset change tracking in source B
@@ -1481,7 +1469,7 @@ void LocalTests::testLinkedSources()
         }
 
         std::map<std::string, TestingSyncSourcePtr> sourcesA;
-        BOOST_FOREACH (LocalTests *test, m_linkedSources) {
+        for (LocalTests *test: m_linkedSources) {
             if (test == main) {
                 continue;
             }
@@ -1494,7 +1482,7 @@ void LocalTests::testLinkedSources()
         // insert one item
         CLIENT_TEST_LOG("inserting into %s", main->getSourceName().c_str());
         CT_ASSERT_NO_THROW(main->doInsert());
-        BOOST_FOREACH (LocalTests *test, m_linkedSources) {
+        for (LocalTests *test: m_linkedSources) {
             if (test == main) {
                 continue;
             }
@@ -1520,7 +1508,7 @@ void LocalTests::testLinkedSources()
         // update one item
         CLIENT_TEST_LOG("updating in %s", main->getSourceName().c_str());
         CT_ASSERT_NO_THROW(main->update(main->createSourceA, main->config.m_updateItem));
-        BOOST_FOREACH (LocalTests *test, m_linkedSources) {
+        for (LocalTests *test: m_linkedSources) {
             if (test == main) {
                 continue;
             }
@@ -1546,7 +1534,7 @@ void LocalTests::testLinkedSources()
         // delete one item
         CLIENT_TEST_LOG("deleting in %s", main->getSourceName().c_str());
         CT_ASSERT_NO_THROW(main->deleteAll(main->createSourceA));
-        BOOST_FOREACH (LocalTests *test, m_linkedSources) {
+        for (LocalTests *test: m_linkedSources) {
             if (test == main) {
                 continue;
             }
@@ -1587,7 +1575,7 @@ void LocalTests::doImport(const std::string &testcases) {
     SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(createSourceA()));
     restoreStorage(config, client);
     std::string actualData;
-    std::string importFailures = config.m_import(client, *source.get(), config, testcases, actualData, NULL);
+    std::string importFailures = config.m_import(client, *source.get(), config, testcases, actualData, nullptr);
     backupStorage(config, client);
     CT_ASSERT_NO_THROW(source.reset());
 
@@ -1650,8 +1638,6 @@ void LocalTests::testRemoveProperties() {
     std::list<std::string> items;
     std::string dummy;
     CT_ASSERT_NO_THROW(ClientTest::getItems(testcases, items, dummy));
-    static const pcrecpp::RE bodyre("^BEGIN:(VCARD|VEVENT|VTODO|VJOURNAL)\\r?\\n(.*)^(END:\\g1)",
-                                    pcrecpp::RE_Options().set_multiline(true).set_dotall(true));
     std::string updated = getCurrentTest();
     updated += ".updated.";
     updated += config.m_sourceName;
@@ -1659,23 +1645,26 @@ void LocalTests::testRemoveProperties() {
     simplifyFilename(updated);
     ofstream out(updated.c_str());
 
-    BOOST_FOREACH (std::string &item, items) {
-        std::string kind;
-        pcrecpp::StringPiece body;
-        CT_ASSERT(bodyre.PartialMatch(item, &kind, &body));
-        static const pcrecpp::RE propre("^((\\S[^;:]*).*\\n(?:\\s.*\\n)*)",
-                                        pcrecpp::RE_Options().set_multiline(true));
-        pcrecpp::StringPiece input(body);
-        pcrecpp::StringPiece prop;
-        std::string propname;
+    for (std::string &item: items) {
+        std::smatch match;
+        static const std::regex bodyre(R"del(\bBEGIN:(VCARD|VEVENT|VTODO|VJOURNAL)\r?\n([\s\S]*)\b(END:\1))del");
+        CT_ASSERT(std::regex_search(item, match, bodyre));
+        auto body = match[2];
+
+        static const std::regex propre(R"del(((\S[^;:]*).*\r?\n(?:\s.*\r?\n)*))del");
         std::list<std::string> result;
-        while (propre.Consume(&input, &prop, &propname)) {
+        for (auto it = std::sregex_iterator(body.first, body.second, propre);
+             it != std::sregex_iterator();
+             ++it) {
+            auto match = *it;
+            auto prop = match[1];
+            auto propname = match[2];
             if (config.m_essentialProperties.find(propname) != config.m_essentialProperties.end()) {
-                result.push_back(prop.as_string());
+                result.push_back(prop);
             }
         }
 
-        item.replace(body.data() - item.c_str(), body.size(),
+        item.replace(std::distance(item.cbegin(), body.first), body.length(),
                      boost::join(result, ""));
         out << item << "\n";
     }
@@ -1770,7 +1759,7 @@ void LocalTests::testLinkedItemsParent() {
 
     // check that exactly the parent is listed as new
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -1817,7 +1806,7 @@ void LocalTests::testLinkedItemsChild() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -1863,7 +1852,7 @@ void LocalTests::testLinkedItemsParentChild() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -1947,7 +1936,7 @@ void LocalTests::testLinkedItemsChildParent() {
     CT_ASSERT_NO_THROW(parent = insert(createSourceA, items[0], true, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -1994,7 +1983,7 @@ void LocalTests::testLinkedItemsChildChangesParent() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2007,7 +1996,7 @@ void LocalTests::testLinkedItemsChildChangesParent() {
     CT_ASSERT_NO_THROW(parent = insert(createSourceA, items[0], true, &parentData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countNewItems(copy.get()));
     if (!config.m_sourceLUIDsAreVolatile) {
@@ -2060,7 +2049,7 @@ void LocalTests::testLinkedItemsRemoveParentFirst() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2074,7 +2063,7 @@ void LocalTests::testLinkedItemsRemoveParentFirst() {
     CT_ASSERT_NO_THROW(deleteItem(createSourceA, parent));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
     // deleting the parent may or may not modify the child
@@ -2122,7 +2111,7 @@ void LocalTests::testLinkedItemsRemoveNormal() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2163,7 +2152,7 @@ void LocalTests::testLinkedItemsRemoveNormal() {
             }
         }
 
-        CT_ASSERT_NO_THROW(compareDatabases(source.get(), &parentData, (void *)NULL));
+        CT_ASSERT_NO_THROW(compareDatabases(source.get(), &parentData, nullptr));
         SOURCE_ASSERT_EQUAL(source.get(), 1, countItems(source.get()));
         SOURCE_ASSERT_EQUAL(source.get(), 0, countNewItems(source.get()));
         SOURCE_ASSERT_EQUAL(source.get(), 0, countUpdatedItems(source.get()));
@@ -2220,7 +2209,7 @@ void LocalTests::testLinkedItemsInsertParentTwice() {
     CT_ASSERT_NO_THROW(parent = insert(createSourceA, items[0], false, &parentData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2233,7 +2222,7 @@ void LocalTests::testLinkedItemsInsertParentTwice() {
     CT_ASSERT_NO_THROW(parent = insert(createSourceA, items[0], false, &parentData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countUpdatedItems(copy.get()));
@@ -2278,7 +2267,7 @@ void LocalTests::testLinkedItemsInsertChildTwice() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2291,7 +2280,7 @@ void LocalTests::testLinkedItemsInsertChildTwice() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1]));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countUpdatedItems(copy.get()));
@@ -2336,7 +2325,7 @@ void LocalTests::testLinkedItemsParentUpdate() {
     CT_ASSERT_NO_THROW(parent = insert(createSourceA, items[0], false, &parentData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2349,7 +2338,7 @@ void LocalTests::testLinkedItemsParentUpdate() {
     CT_ASSERT_NO_THROW(parent = updateItem(createSourceA, config, parent, items[0], &parentData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countUpdatedItems(copy.get()));
@@ -2395,7 +2384,7 @@ void LocalTests::testLinkedItemsUpdateChild() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2408,7 +2397,7 @@ void LocalTests::testLinkedItemsUpdateChild() {
     CT_ASSERT_NO_THROW(child = updateItem(createSourceA, config, child, items[1], &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 1, countUpdatedItems(copy.get()));
@@ -2454,7 +2443,7 @@ void LocalTests::testLinkedItemsInsertBothUpdateChild() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2469,7 +2458,7 @@ void LocalTests::testLinkedItemsInsertBothUpdateChild() {
 
     // child has to be listed as modified, parent may be
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
     SOURCE_ASSERT(copy.get(), 1 <= countUpdatedItems(copy.get()));
@@ -2519,7 +2508,7 @@ void LocalTests::testLinkedItemsInsertBothUpdateParent() {
     CT_ASSERT_NO_THROW(child = insert(createSourceA, items[1], false, &childData));
 
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countNewItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countUpdatedItems(copy.get()));
@@ -2534,7 +2523,7 @@ void LocalTests::testLinkedItemsInsertBothUpdateParent() {
 
     // parent has to be listed as modified, child may be
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceB()));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
     SOURCE_ASSERT_EQUAL(copy.get(), 2, countItems(copy.get()));
     SOURCE_ASSERT_EQUAL(copy.get(), 0, countNewItems(copy.get()));
     SOURCE_ASSERT(copy.get(), 1 <= countUpdatedItems(copy.get()));
@@ -2589,7 +2578,7 @@ void LocalTests::testLinkedItemsInsertBothUpdateChildNoIDs() {
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceA()));
     CT_ASSERT_NO_THROW(insertProperty(childData, uid, "END:VEVENT"));
     CT_ASSERT_NO_THROW(insertProperty(childData, rid, "END:VEVENT"));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &parentData, &childData, nullptr));
 }
 
 // - insert child
@@ -2617,7 +2606,7 @@ void LocalTests::testLinkedItemsUpdateChildNoIDs() {
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(createSourceA()));
     CT_ASSERT_NO_THROW(insertProperty(childData, uid, "END:VEVENT"));
     CT_ASSERT_NO_THROW(insertProperty(childData, rid, "END:VEVENT"));
-    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, (void *)NULL));
+    CT_ASSERT_NO_THROW(compareDatabases(copy.get(), &childData, nullptr));
 }
 
 // insert parent, try to delete or retrieve non-existent child:
@@ -2707,18 +2696,21 @@ void LocalTests::testLinkedItemsMany404() {
 void LocalTests::testSubset()
 {
     ClientTestConfig::LinkedItems_t items = getParentChildData();
-    int start, skip;
     std::string test = getCurrentTest();
-    pcrecpp::RE re("testSubsetStart(\\d+)(?:Skip(\\d+)|(Exdate))");
-    std::string exdate, optSkip;
-    CT_ASSERT(re.PartialMatch(test, &start, &optSkip, &exdate));
-    if (exdate.empty()) {
+    static const std::regex re(R"del(testSubsetStart(\d+)(?:Skip(\d+)|(Exdate)))del");
+    std::smatch match;
+    CT_ASSERT(std::regex_search(test, match, re));
+    int start = atoi(match[1].str().c_str());
+    int skip;
+    auto optSkip = match[2];
+    auto exdate = match[3];
+    if (!exdate.matched) {
         // skip case
-        CT_ASSERT(!optSkip.empty());
-        skip = atoi(optSkip.c_str());
+        CT_ASSERT(optSkip.length());
+        skip = atoi(optSkip.str().c_str());
     } else {
         // EXDATE case
-        CT_ASSERT_EQUAL(std::string("Exdate"), exdate);
+        CT_ASSERT_EQUAL(std::string("Exdate"), exdate.str());
         skip = -1;
     }
     CT_ASSERT(items.size() > (size_t)start);
@@ -2783,12 +2775,12 @@ ClientTestConfig::LinkedItems_t LocalTests::getParentChildData()
     size_t end = test.find(':', off);
     CT_ASSERT(end != test.npos);
     std::string name = test.substr(off, end - off);
-    BOOST_FOREACH(const ClientTestConfig::LinkedItems_t &items, config.m_linkedItems) {
+    for (const ClientTestConfig::LinkedItems_t &items: config.m_linkedItems) {
         if (items.m_name == name) {
             return items;
         }
     }
-    BOOST_FOREACH(const ClientTestConfig::LinkedItems_t &items, config.m_linkedItemsSubset) {
+    for (const ClientTestConfig::LinkedItems_t &items: config.m_linkedItemsSubset) {
         if (items.m_name == name) {
             return items;
         }
@@ -2802,7 +2794,7 @@ SyncTests::SyncTests(const std::string &name, ClientTest &cl, std::vector<int> s
     client(cl) {
     sourceArray = new int[sourceIndices.size() + 1];
     int offset = 0;
-    for (std::vector<int>::iterator it = sourceIndices.begin();
+    for (auto it = sourceIndices.begin();
          it != sourceIndices.end();
          ++it) {
         ClientTest::Config config;
@@ -2815,7 +2807,7 @@ SyncTests::SyncTests(const std::string &name, ClientTest &cl, std::vector<int> s
                 boost::split (subs, config.m_subConfigs, boost::is_any_of(","));
                 offset++;
                 ClientTest::Config subConfig;
-                BOOST_FOREACH (string sub, subs) {
+                for (string sub: subs) {
                 client.getSourceConfig (sub, subConfig);
                 sources.push_back(std::pair<int,LocalTests *>(*it, cl.createLocalTests(sub, client.getLocalSourcePosition(sub), subConfig)));
                 offset--;
@@ -3077,7 +3069,7 @@ bool SyncTests::compareDatabases(const char *refFileBase, bool raiseAssert) {
                 equal = false;
             }
         } else {
-            if (!it1->second->compareDatabases(NULL, *copy.get(), raiseAssert)) {
+            if (!it1->second->compareDatabases(nullptr, *copy.get(), raiseAssert)) {
                 equal = false;
             }
         }
@@ -3132,7 +3124,7 @@ void SyncTests::doCopy() {
     CT_ASSERT_NO_THROW(deleteAll());
     accessClientB->deleteAll();
 
-    bool allowLocalUpdate = getenv("CLIENT_TEST_MAY_COPY_BACK") != NULL;
+    bool allowLocalUpdate = getenv("CLIENT_TEST_MAY_COPY_BACK") != nullptr;
 
     // insert into first database, copy to server
     CT_ASSERT_NO_THROW(allSourcesInsert());
@@ -3315,11 +3307,6 @@ void SyncTests::testRefreshStatus() {
                        CheckSyncReport(0,0,0, 0,0,0, true, SYNC_TWO_WAY)));
 }
 
-static void log(const char *text)
-{
-    CLIENT_TEST_LOG("%s", text);
-}
-
 static void logSyncSourceReport(const SyncSource *source)
 {
     CLIENT_TEST_LOG("source %s, start of cycle #%d: local new/mod/del/conflict %d/%d/%d/%d, remote %d/%d/%d/%d, mode %s",
@@ -3349,7 +3336,7 @@ bool connectSourceSignal(SyncContext &context,
                          M getSignal,
                          const S &slot)
 {
-    BOOST_FOREACH(const SyncSource *source, *context.getSources())  {
+    for (const SyncSource *source: *context.getSources())  {
         ((source->getOperations().*operation).*getSignal)().connect(slot);
     }
     return false;
@@ -3372,17 +3359,15 @@ void SyncTests::doRestartSync(SyncMode mode)
     // Also requests a restart at the very beginning, once. Must be
     // done before m_endDataWrite, because then it might be too late
     // to restart.
-    boost::function<SyncSource::Operations::StartDataRead_t::PreSignal::signature_type> start =
-        (boost::lambda::if_then(boost::lambda::bind(&Cycles_t::empty, boost::ref(results)),
-                                (boost::lambda::bind(log, "requesting restart"),
-                                 boost::lambda::bind(SyncContext::requestAnotherSync))),
-         (boost::lambda::var(results)[boost::lambda::bind(&SyncSource::getRestarts, &boost::lambda::_1)]
-          [boost::lambda::bind(&SyncSource::getName, &boost::lambda::_1)] =
-          boost::lambda::_1),
-         boost::lambda::bind(logSyncSourceReport,
-                             &boost::lambda::_1),
-         boost::lambda::constant(STATUS_OK)
-         );
+    auto start = [&results] (SyncSource &source, const char *, const char *) {
+        if (results.empty()) {
+            CLIENT_TEST_LOG("requesting restart");
+            SyncContext::requestAnotherSync();
+        }
+        results[source.getRestarts()][source.getName()] = source;
+        logSyncSourceReport(&source);
+        return STATUS_OK;
+    };
 
     // Triggered at the end of each m_endDataWrite.
     //
@@ -3390,36 +3375,25 @@ void SyncTests::doRestartSync(SyncMode mode)
     // it. Because the cycle is other, those changes won't
     // interfere with the cycle. Doing real concurrent
     // changes is something for another tests...
-    boost::function<SyncSource::Operations::EndDataWrite_t::PostSignal::signature_type> end =
-        boost::bind(boost::function<SyncMLStatus ()>(
-                                                     (boost::lambda::if_then(++boost::lambda::var(startCount) == sources.size(),
-                                                                             (boost::lambda::bind(log, "inserting one item"),
-                                                                              boost::lambda::bind(&SyncTests::allSourcesInsert, this, true))),
-                                                      boost::lambda::constant(STATUS_OK)
-                                                      )));
+    std::function<SyncSource::Operations::EndDataWrite_t::PostSignal::signature_type> end;
+    end = [&startCount, this] (SyncSource &source, OperationExecution, sysync::TSyError, bool, char **) mutable {
+        if (++startCount == (int)this->sources.size()) {
+            CLIENT_TEST_LOG("inserting one item");
+            this->allSourcesInsert(true);
+        }
+        return STATUS_OK;
+    };
 
-    SyncOptions::Callback_t setup =
-        (boost::lambda::if_then(boost::lambda::var(needToConnect),
-                                (boost::lambda::var(needToConnect) = false,
-                                 boost::lambda::bind(connectSourceSignal<SyncSource::Operations::StartDataRead_t,
-                                                                         BOOST_TYPEOF(&SyncSource::Operations::StartDataRead_t::getPreSignal),
-                                                                         BOOST_TYPEOF(start)>,
-                                                         boost::lambda::_1,
-                                                         &SyncSource::Operations::m_startDataRead,
-                                                         &SyncSource::Operations::StartDataRead_t::getPreSignal,
-                                                         boost::cref(start)),
-                                 boost::lambda::bind(connectSourceSignal<SyncSource::Operations::EndDataWrite_t,
-                                                                         BOOST_TYPEOF(&SyncSource::Operations::EndDataWrite_t::getPostSignal),
-                                                                         BOOST_TYPEOF(end)>,
-                                                         boost::lambda::_1,
-                                                         &SyncSource::Operations::m_endDataWrite,
-                                                         &SyncSource::Operations::EndDataWrite_t::getPostSignal,
-                                                         boost::cref(end))
-                                )),
-         boost::lambda::constant(false)
-        );
+    auto setup = [&needToConnect, start, &end] (SyncContext &context, SyncOptions &options) mutable {
+        if (needToConnect) {
+            needToConnect = false;
+            connectSourceSignal(context, &SyncSource::Operations::m_startDataRead, &SyncSource::Operations::StartDataRead_t::getPreSignal, start);
+            connectSourceSignal(context,  &SyncSource::Operations::m_endDataWrite, &SyncSource::Operations::EndDataWrite_t::getPostSignal, end);
+        }
+        return false;
+    };
 
-    bool canRestart = getenv("CLIENT_TEST_PEER_CAN_RESTART") != NULL &&
+    bool canRestart = getenv("CLIENT_TEST_PEER_CAN_RESTART") != nullptr &&
         !isServerMode();
 
     CT_ASSERT_NO_THROW(doSync(__FILE__, __LINE__,
@@ -3448,9 +3422,9 @@ void SyncTests::doRestartSync(SyncMode mode)
     CT_ASSERT_EQUAL((size_t)(canRestart ? 2 : 1), results.size());
 
     // nothing transfered before first or second cycle
-    BOOST_FOREACH(const Cycles_t::value_type &cycle, results) {
+    for (const auto &cycle: results) {
         CT_ASSERT_EQUAL(sources.size(), cycle.second.size());
-        BOOST_FOREACH(const Reports_t::value_type &entry, cycle.second) {
+        for (const auto &entry: cycle.second) {
             CT_ASSERT_NO_THROW(CheckSyncReport(0,0, 0,
                                                0,0,0)
                                .setRestarts(cycle.first)
@@ -3460,7 +3434,7 @@ void SyncTests::doRestartSync(SyncMode mode)
 
     // one item exists now, in all cases
     // (but see remark about refresh-from-remote!)
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         TestingSyncSourcePtr source;
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(source_pair.second->createSourceA()));
         CT_ASSERT_EQUAL(1, countItems(source.get()));
@@ -3479,19 +3453,16 @@ void SyncTests::doRestartSync(SyncMode mode)
     }
 
     // update item while the sync runs
-#ifndef __clang_analyzer__
     needToConnect = true;
-#endif
     startCount = 0;
     results.clear();
-    end =
-        boost::bind(boost::function<SyncMLStatus ()>(
-                                                     (boost::lambda::if_then(++boost::lambda::var(startCount) == sources.size(),
-                                                                             (boost::lambda::bind(log, "update one item"),
-                                                                              boost::lambda::bind(&SyncTests::allSourcesUpdate, this))),
-                                                      STATUS_OK)
-                                                     ));
-
+    end = [&startCount, this] (SyncSource &source, OperationExecution, sysync::TSyError, bool, char **) mutable {
+        if (++startCount == (int)this->sources.size()) {
+            CLIENT_TEST_LOG("update one item");
+            this->allSourcesUpdate();
+        }
+        return STATUS_OK;
+    };
 
     CT_ASSERT_NO_THROW(doSync(__FILE__, __LINE__,
                               "update",
@@ -3515,10 +3486,10 @@ void SyncTests::doRestartSync(SyncMode mode)
     CT_ASSERT_EQUAL((size_t)2, results.size());
 
     // nothing transfered before first or second cycle
-    BOOST_FOREACH(const Cycles_t::value_type &cycle, results) {
+    for (const auto &cycle: results) {
         CLIENT_TEST_LOG("checking cycle #%d", cycle.first);
         CT_ASSERT_EQUAL(sources.size(), cycle.second.size());
-        BOOST_FOREACH(const Reports_t::value_type &entry, cycle.second) {
+        for (const auto &entry: cycle.second) {
             CT_ASSERT_NO_THROW(CheckSyncReport(0,0,0,
 
                                                // refresh-from-local and slow sync transfer existing item
@@ -3534,25 +3505,23 @@ void SyncTests::doRestartSync(SyncMode mode)
 
     // one item exists now, in all cases
     // (but see remark about refresh-from-remote!)
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         TestingSyncSourcePtr source;
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(source_pair.second->createSourceA()));
         CT_ASSERT_EQUAL(1, countItems(source.get()));
     }
 
     // delete item while the sync runs
-#ifndef __clang_analyzer__
     needToConnect = true;
-#endif
     startCount = 0;
     results.clear();
-    end =
-        boost::bind(boost::function<SyncMLStatus ()>(
-                                                     (boost::lambda::if_then(++boost::lambda::var(startCount) == sources.size(),
-                                                                             (boost::lambda::bind(log, "delete one item"),
-                                                                              boost::lambda::bind(&SyncTests::allSourcesDeleteAll, this))),
-                                                      STATUS_OK)
-                                                     ));
+    end = [&startCount, this] (SyncSource &source, OperationExecution, sysync::TSyError, bool, char **) mutable {
+        if (++startCount == (int)this->sources.size()) {
+            CLIENT_TEST_LOG("delete one item");
+            this->allSourcesDeleteAll();
+        }
+        return STATUS_OK;
+    };
 
     CT_ASSERT_NO_THROW(doSync(__FILE__, __LINE__,
                               "delete",
@@ -3576,9 +3545,9 @@ void SyncTests::doRestartSync(SyncMode mode)
     CT_ASSERT_EQUAL((size_t)2, results.size());
 
     // nothing transfered before first or second cycle
-    BOOST_FOREACH(const Cycles_t::value_type &cycle, results) {
+    for (const auto &cycle: results) {
         CT_ASSERT_EQUAL(sources.size(), cycle.second.size());
-        BOOST_FOREACH(const Reports_t::value_type &entry, cycle.second) {
+        for (const auto &entry: cycle.second) {
             CT_ASSERT_NO_THROW(CheckSyncReport(0,0, 0,
                                                // refresh-from-local and slow sync transfer existing item
                                                // in first cycle anew
@@ -3592,7 +3561,7 @@ void SyncTests::doRestartSync(SyncMode mode)
     }
 
     // no item exists now, in all cases
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         TestingSyncSourcePtr source;
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(source_pair.second->createSourceA()));
         CT_ASSERT_EQUAL(0, countItems(source.get()));
@@ -3666,98 +3635,52 @@ void SyncTests::testManyRestarts()
     //
     // It records the current source statistics for later checking,
     // logs it, and does the item changes.
-    boost::function<SyncSource::Operations::StartDataRead_t::PreSignal::signature_type> start =
-        (boost::lambda::if_then(boost::lambda::var(startCount) % sources.size() == 0,
-         (
-           boost::lambda::switch_statement(boost::lambda::var(startCount) / sources.size(),
-               boost::lambda::case_statement<0>(
-                  (boost::lambda::bind(log, "insert 1 item, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesInsertMany, this, 1, 1, boost::ref(luids)),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<1>(
-                  (boost::lambda::bind(log, "insert 2 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesInsertMany, this, 2, 2, boost::ref(luids)),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<2>(
-                  (boost::lambda::bind(log, "insert 4 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesInsertMany, this, 4, 4, boost::ref(luids)),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<3>(
-                  (boost::lambda::bind(log, "insert 8 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesInsertMany, this, 8, 8, boost::ref(luids)),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<4>(
-                  (boost::lambda::bind(log, "update 1 item, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesUpdateMany, this, 1, 1, 1, boost::ref(luids), 0),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<5>(
-                  (boost::lambda::bind(log, "update 2 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesUpdateMany, this, 2, 2, 1, boost::ref(luids), 1),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<6>(
-                  (boost::lambda::bind(log, "update 4 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesUpdateMany, this, 4, 4, 1, boost::ref(luids), 3),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<7>(
-                  (boost::lambda::bind(log, "update 8 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesUpdateMany, this, 8, 8, 1, boost::ref(luids), 7),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  ))
-           ),
-           // must break up switch statement, it only has a limited number of case slots
-           boost::lambda::switch_statement(boost::lambda::var(startCount) / sources.size(),
-               boost::lambda::case_statement<8>(
-                  (boost::lambda::bind(log, "delete 1 item, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesRemoveMany, this, 1, boost::ref(luids), 0),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<9>(
-                  (boost::lambda::bind(log, "delete 2 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesRemoveMany, this, 2, boost::ref(luids), 1),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<10>(
-                  (boost::lambda::bind(log, "delete 4 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesRemoveMany, this, 4, boost::ref(luids), 3),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  )),
-               boost::lambda::case_statement<11>(
-                  (boost::lambda::bind(log, "delete 8 items, restart"),
-                   boost::lambda::bind(&SyncTests::allSourcesRemoveMany, this, 8, boost::ref(luids), 7),
-                   boost::lambda::bind(SyncContext::requestAnotherSync)
-                  ))
-           )
-          )
-         ),
-         (boost::lambda::var(results)[boost::lambda::bind(&SyncSource::getRestarts, &boost::lambda::_1)]
-          [boost::lambda::bind(&SyncSource::getName, &boost::lambda::_1)] = boost::lambda::_1
-         ),
-         boost::lambda::bind(logSyncSourceReport,
-                             &boost::lambda::_1),
-         ++boost::lambda::var(startCount),
-         boost::lambda::constant(STATUS_OK)
-         );
+    auto start = [&startCount, &results, this, &luids] (SyncSource &source, const char *, const char *) mutable {
+        if (startCount % this->sources.size() == 0) {
+            int count;
+            switch (startCount / this->sources.size()) {
+            case 0:
+            case 1:
+            case 2:
+            case 3:
+                count = 1 << (startCount / this->sources.size()); // 1, 2, 4, 8
+                CLIENT_TEST_LOG("insert %d item, restart", count);
+                this->allSourcesInsertMany(count, count, luids);
+                SyncContext::requestAnotherSync();
+                break;
+            case 4:
+            case 5:
+            case 6:
+            case 7:
+                count = 1 << (startCount / this->sources.size() - 4); // 1, 2, 4, 8
+                CLIENT_TEST_LOG("insert %d item, restart", count);
+                this->allSourcesUpdateMany(count, count, 1, luids, count - 1);
+                SyncContext::requestAnotherSync();
+                break;
+            case 8:
+            case 9:
+            case 10:
+            case 11:
+                count = 1 << (startCount / this->sources.size() - 8); // 1, 2, 4, 8
+                CLIENT_TEST_LOG("delete %d item, restart", count);
+                this->allSourcesRemoveMany(count, luids, count - 1);
+                SyncContext::requestAnotherSync();
+                break;
+            }
+        }
+        results[source.getRestarts()][source.getName()] = source;
+        logSyncSourceReport(&source);
+        ++startCount;
+        return STATUS_OK;
+    };
 
-    SyncOptions::Callback_t setup =
-        (boost::lambda::if_then(boost::lambda::var(needToConnect),
-                                (boost::lambda::var(needToConnect) = false,
-                                 boost::lambda::bind(connectSourceSignal<SyncSource::Operations::StartDataRead_t,
-                                                                         BOOST_TYPEOF(&SyncSource::Operations::StartDataRead_t::getPreSignal),
-                                                                         BOOST_TYPEOF(start)>,
-                                                         boost::lambda::_1,
-                                                         &SyncSource::Operations::m_startDataRead,
-                                                         &SyncSource::Operations::StartDataRead_t::getPreSignal,
-                                                         boost::cref(start))
-                                )),
-         boost::lambda::constant(false)
-        );
+    auto setup = [&needToConnect, start] (SyncContext &context, SyncOptions &options) mutable {
+        if (needToConnect) {
+            needToConnect = false;
+            connectSourceSignal(context, &SyncSource::Operations::m_startDataRead, &SyncSource::Operations::StartDataRead_t::getPreSignal, start);
+        }
+        return false;
+    };
 
     CT_ASSERT_NO_THROW(doSync(__FILE__, __LINE__,
                               SyncOptions(SYNC_TWO_WAY,
@@ -3790,9 +3713,9 @@ void SyncTests::testManyRestarts()
         { 15, 15,  7 },
         { 15, 15, 15 }
     };
-    BOOST_FOREACH(const Cycles_t::value_type &cycle, results) {
+    for (const auto &cycle: results) {
         CT_ASSERT_EQUAL(sources.size(), cycle.second.size());
-        BOOST_FOREACH(const Reports_t::value_type &entry, cycle.second) {
+        for (const auto &entry: cycle.second) {
             const int *c = changes[cycle.first];
             CLIENT_TEST_LOG("Checking stats before cycle #%d, source %s: expected remote %d/%d/%d",
                             cycle.first, entry.first.c_str(),
@@ -3805,7 +3728,7 @@ void SyncTests::testManyRestarts()
     }
 
     // no item exists now
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         TestingSyncSourcePtr source;
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(source_pair.second->createSourceA()));
         CT_ASSERT_EQUAL(0, countItems(source.get()));
@@ -4338,69 +4261,65 @@ void SyncTests::testOneWayFromLocal()
 // to and from the internal field list
 void SyncTests::testConversion() {
     bool success = false;
-    SyncOptions::Callback_t callback = boost::bind(&SyncTests::doConversionCallback, this, &success, _1, _2);
+    auto doConversionCallback = [this, &success] (SyncContext &syncClient,
+                                                  SyncOptions &options) {
+        success = false;
 
+        for (source_it it = sources.begin(); it != sources.end(); ++it) {
+            const ClientTest::Config *config = &it->second->config;
+            TestingSyncSource *source = static_cast<TestingSyncSource *>(syncClient.findSource(config->m_sourceName));
+            CT_ASSERT(source);
+
+            std::string type = source->getNativeDatatypeName();
+            if (type.empty()) {
+                continue;
+            }
+
+            std::list<std::string> items;
+            std::string testcases;
+            ClientTest::getItems(config->m_testcases, items, testcases);
+            std::string converted = getCurrentTest();
+            converted += ".converted.";
+            converted += config->m_sourceName;
+            converted += ".dat";
+            simplifyFilename(converted);
+            std::ofstream out(converted.c_str());
+            for (const string &item: items) {
+                string convertedItem = item;
+                if(!sysync::DataConversion(syncClient.getSession().get(),
+                                           type.c_str(),
+                                           type.c_str(),
+                                           convertedItem)) {
+                    SE_LOG_ERROR(NULL, "failed parsing as %s:\n%s",
+                                 type.c_str(),
+                                 item.c_str());
+                } else {
+                    out << convertedItem << "\n";
+                }
+            }
+            out.close();
+
+            // The test used peer-specific test cases, but the actual
+            // result does not depend on the peer because we haven't
+            // received the peer's DevInf at the point where we
+            // import/export the test cases (=> don't apply peer-specific
+            // synccompare workarounds).
+            //
+            // Due to the lack of DevInf, properties and parameters which
+            // need to be enabled via DevInf get lost (= filter them out).
+            ScopedEnvChange env("CLIENT_TEST_SERVER", "");
+            ScopedEnvChange envParams("CLIENT_TEST_STRIP_PARAMETERS", "X-EVOLUTION-UI-SLOT");
+            CT_ASSERT(config->m_compare(client, testcases, converted));
+        }
+
+        // abort sync after completing the test successfully (no exception so far!)
+        success = true;
+        return true;
+    };
     doSync(__FILE__, __LINE__,
            SyncOptions(SYNC_TWO_WAY, CheckSyncReport(-1,-1,-1, -1,-1,-1, false))
-           .setStartCallback(callback));
+           .setStartCallback(doConversionCallback));
     CT_ASSERT(success);
-}
-
-bool SyncTests::doConversionCallback(bool *success,
-                                     SyncContext &syncClient,
-                                     SyncOptions &options) {
-    *success = false;
-
-    for (source_it it = sources.begin(); it != sources.end(); ++it) {
-        const ClientTest::Config *config = &it->second->config;
-        TestingSyncSource *source = static_cast<TestingSyncSource *>(syncClient.findSource(config->m_sourceName));
-        CT_ASSERT(source);
-
-        std::string type = source->getNativeDatatypeName();
-        if (type.empty()) {
-            continue;
-        }
-
-        std::list<std::string> items;
-        std::string testcases;
-        ClientTest::getItems(config->m_testcases, items, testcases);
-        std::string converted = getCurrentTest();
-        converted += ".converted.";
-        converted += config->m_sourceName;
-        converted += ".dat";
-        simplifyFilename(converted);
-        std::ofstream out(converted.c_str());
-        BOOST_FOREACH(const string &item, items) {
-            string convertedItem = item;
-            if(!sysync::DataConversion(syncClient.getSession().get(),
-                                       type.c_str(),
-                                       type.c_str(),
-                                       convertedItem)) {
-                SE_LOG_ERROR(NULL, "failed parsing as %s:\n%s",
-                             type.c_str(),
-                             item.c_str());
-            } else {
-                out << convertedItem << "\n";
-            }
-        }
-        out.close();
-
-        // The test used peer-specific test cases, but the actual
-        // result does not depend on the peer because we haven't
-        // received the peer's DevInf at the point where we
-        // import/export the test cases (=> don't apply peer-specific
-        // synccompare workarounds).
-        //
-        // Due to the lack of DevInf, properties and parameters which
-        // need to be enabled via DevInf get lost (= filter them out).
-        ScopedEnvChange env("CLIENT_TEST_SERVER", "");
-        ScopedEnvChange envParams("CLIENT_TEST_STRIP_PARAMETERS", "X-EVOLUTION-UI-SLOT");
-        CT_ASSERT(config->m_compare(client, testcases, converted));
-    }
-
-    // abort sync after completing the test successfully (no exception so far!)
-    *success = true;
-    return true;
 }
 
 // imports test data, transmits it from client A to the server to
@@ -4459,7 +4378,7 @@ void SyncTests::testExtensions() {
         TestingSyncSourcePtr source;
         int counter = 0;
         SOURCE_ASSERT_NO_FAILURE(source.get(), source.reset(it->second->createSourceB()));
-        BOOST_FOREACH(const string &luid, source->getAllItems()) {
+        for (const string &luid: source->getAllItems()) {
             string item;
             source->readItemRaw(luid, item);
             CT_ASSERT_NO_THROW(it->second->config.m_update(item));
@@ -4852,7 +4771,7 @@ bool addBothSidesAddStatsBroken = false;
 // if true, then the peer is a SyncML server which does not
 // support UID/RECURRENCE-ID and thus doesn't detect
 // duplicates itself; the client needs to do that
-bool addBothSidesServerIsDumb = getenv("CLIENT_TEST_ADD_BOTH_SIDES_SERVER_IS_DUMB") != NULL;
+bool addBothSidesServerIsDumb = getenv("CLIENT_TEST_ADD_BOTH_SIDES_SERVER_IS_DUMB") != nullptr;
 
 static void testAddBothSidesFixUpdateItem(std::string &updateItem)
 {
@@ -4956,7 +4875,7 @@ void SyncTests::testAddBothSides()
     // now compare client A against reference data
     TestingSyncSourcePtr copy;
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(sources[0].second->createSourceB()));
-    sources[0].second->compareDatabases(copy.get(), &data, (void *)NULL);
+    sources[0].second->compareDatabases(copy.get(), &data, nullptr);
     CT_ASSERT_NO_THROW(copy.reset());
 }
 
@@ -5053,7 +4972,7 @@ void SyncTests::testAddBothSidesRefresh()
     // now compare client A against reference data
     TestingSyncSourcePtr copy;
     SOURCE_ASSERT_NO_FAILURE(copy.get(), copy.reset(sources[0].second->createSourceB()));
-    sources[0].second->compareDatabases(copy.get(), &data, (void *)NULL);
+    sources[0].second->compareDatabases(copy.get(), &data, nullptr);
     CT_ASSERT_NO_THROW(copy.reset());
 }
 
@@ -5533,7 +5452,7 @@ public:
  * message. Set to -1 to just do the uninterrupted run.
  */
 void SyncTests::doInterruptResume(int changes, 
-                  boost::shared_ptr<TransportWrapper> wrapper)
+                  std::shared_ptr<TransportWrapper> wrapper)
 {
     int interruptAtMessage = -1;
     const char *t = getenv("CLIENT_TEST_INTERRUPT_AT");
@@ -5544,8 +5463,8 @@ void SyncTests::doInterruptResume(int changes,
     std::string refFileBase = getCurrentTest() + ".ref.";
     bool equal = true;
     bool resend = wrapper->getResendFailureThreshold() != -1;
-    bool suspend = dynamic_cast <UserSuspendInjector *> (wrapper.get()) != NULL;
-    bool interrupt = dynamic_cast <TransportFaultInjector *> (wrapper.get()) != NULL;
+    bool suspend = dynamic_cast <UserSuspendInjector *> (wrapper.get()) != nullptr;
+    bool interrupt = dynamic_cast <TransportFaultInjector *> (wrapper.get()) != nullptr;
 
     // better be large enough for complete DevInf, 20000 is already a
     // bit small when running with many stores
@@ -5692,7 +5611,7 @@ void SyncTests::doInterruptResume(int changes,
                     interruptAtMessage != 0 &&
                     interruptAtMessage + 1 != maxMsgNum &&
                     report.size() == 1) {
-                    BOOST_FOREACH(const SyncReport::SourceReport_t &sourceReport, report) {
+                    for (const auto &sourceReport: report) {
                         CT_ASSERT(sourceReport.second.isResumeSync());
                     }
                 }
@@ -5710,7 +5629,7 @@ void SyncTests::doInterruptResume(int changes,
                 interruptAtMessage << std::endl;
             std::cerr.flush();
         }
-        if (!compareDatabases(NULL, false)) {
+        if (!compareDatabases(nullptr, false)) {
             equal = false;
             std::cerr << "====> comparison of client A and B failed after interrupting at message #" <<
                 interruptAtMessage << std::endl;
@@ -5768,222 +5687,188 @@ void SyncTests::doInterruptResume(int changes,
 
 void SyncTests::testInterruptResumeClientAdd()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeClientRemove()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_REMOVE, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_REMOVE, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeClientUpdate()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeServerAdd()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeServerRemove()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_REMOVE, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_REMOVE, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeServerUpdate()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeClientAddBig()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD|BIG, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD|BIG, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeClientUpdateBig()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE|BIG, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE|BIG, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeServerAddBig()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD|BIG, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD|BIG, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeServerUpdateBig()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE|BIG, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE|BIG, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testInterruptResumeFull()
 {
     CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD|CLIENT_REMOVE|CLIENT_UPDATE|
-                                         SERVER_ADD|SERVER_REMOVE|SERVER_UPDATE, boost::shared_ptr<TransportWrapper> (new TransportFaultInjector())));
+                                         SERVER_ADD|SERVER_REMOVE|SERVER_UPDATE, std::make_shared<TransportFaultInjector>()));
 }
 
 void SyncTests::testUserSuspendClientAdd()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendClientRemove()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_REMOVE, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_REMOVE, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendClientUpdate()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendServerAdd()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendServerRemove()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_REMOVE, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_REMOVE, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendServerUpdate()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendClientAddBig()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD|BIG, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD|BIG, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendClientUpdateBig()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE|BIG, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE|BIG, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendServerAddBig()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD|BIG, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD|BIG, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendServerUpdateBig()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE|BIG, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE|BIG, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testUserSuspendFull()
 {
     CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD|CLIENT_REMOVE|CLIENT_UPDATE|
-                                         SERVER_ADD|SERVER_REMOVE|SERVER_UPDATE, boost::shared_ptr<TransportWrapper> (new UserSuspendInjector())));
+                                         SERVER_ADD|SERVER_REMOVE|SERVER_UPDATE, std::make_shared<UserSuspendInjector>()));
 }
 
 void SyncTests::testResendClientAdd()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD, boost::shared_ptr<TransportWrapper> (new TransportResendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD, std::make_shared<TransportResendInjector>()));
 }
 
 void SyncTests::testResendClientRemove()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_REMOVE, boost::shared_ptr<TransportWrapper> (new TransportResendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_REMOVE, std::make_shared<TransportResendInjector>()));
 }
 
 void SyncTests::testResendClientUpdate()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE, boost::shared_ptr<TransportWrapper> (new TransportResendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE, std::make_shared<TransportResendInjector>()));
 }
 
 void SyncTests::testResendServerAdd()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD, boost::shared_ptr<TransportWrapper> (new TransportResendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD, std::make_shared<TransportResendInjector>()));
 }
 
 void SyncTests::testResendServerRemove()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_REMOVE, boost::shared_ptr<TransportWrapper> (new TransportResendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_REMOVE, std::make_shared<TransportResendInjector>()));
 }
 
 void SyncTests::testResendServerUpdate()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE, boost::shared_ptr<TransportWrapper> (new TransportResendInjector())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE, std::make_shared<TransportResendInjector>()));
 }
 
 void SyncTests::testResendFull()
 {
     CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD|CLIENT_REMOVE|CLIENT_UPDATE|
                                          SERVER_ADD|SERVER_REMOVE|SERVER_UPDATE, 
-                                         boost::shared_ptr<TransportWrapper> (new TransportResendInjector())));
+                                         std::make_shared<TransportResendInjector>()));
 }
 
 void SyncTests::testResendProxyClientAdd()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD, boost::shared_ptr<TransportWrapper> (new TransportResendProxy())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD, std::make_shared<TransportResendProxy>()));
 }
 
 void SyncTests::testResendProxyClientRemove()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_REMOVE, boost::shared_ptr<TransportWrapper> (new TransportResendProxy())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_REMOVE, std::make_shared<TransportResendProxy>()));
 }
 
 void SyncTests::testResendProxyClientUpdate()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE, boost::shared_ptr<TransportWrapper> (new TransportResendProxy())));
+    CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_UPDATE, std::make_shared<TransportResendProxy>()));
 }
 
 void SyncTests::testResendProxyServerAdd()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD, boost::shared_ptr<TransportWrapper> (new TransportResendProxy())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_ADD, std::make_shared<TransportResendProxy>()));
 }
 
 void SyncTests::testResendProxyServerRemove()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_REMOVE, boost::shared_ptr<TransportWrapper> (new TransportResendProxy())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_REMOVE, std::make_shared<TransportResendProxy>()));
 }
 
 void SyncTests::testResendProxyServerUpdate()
 {
-    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE, boost::shared_ptr<TransportWrapper> (new TransportResendProxy())));
+    CT_ASSERT_NO_THROW(doInterruptResume(SERVER_UPDATE, std::make_shared<TransportResendProxy>()));
 }
 
 void SyncTests::testResendProxyFull()
 {
     CT_ASSERT_NO_THROW(doInterruptResume(CLIENT_ADD|CLIENT_REMOVE|CLIENT_UPDATE|
                                          SERVER_ADD|SERVER_REMOVE|SERVER_UPDATE, 
-                                         boost::shared_ptr<TransportWrapper> (new TransportResendProxy())));
-}
-
-static bool setDeadSyncURL(SyncContext &context,
-                           SyncOptions &options,
-                           int port,
-                           bool *skipped)
-{
-    vector<string> urls = context.getSyncURL();
-    string url;
-    if (urls.size() == 1) {
-        url = urls.front();
-    }
-
-    // use IPv4 localhost address, that's what we listen on
-    string fakeURL = StringPrintf("http://127.0.0.1:%d/foobar", port);
-
-    if (boost::starts_with(url, "http")) {
-        context.setSyncURL(fakeURL, true);
-        context.setSyncUsername("foo", true);
-        context.setSyncPassword("bar", true);
-        return false;
-    } else if (boost::starts_with(url, "local://")) {
-        FullProps props = context.getConfigProps();
-        string target = url.substr(strlen("local://"));
-        props[target].m_syncProps["syncURL"] = fakeURL;
-        props[target].m_syncProps["retryDuration"] = InitStateString("10", true);
-        props[target].m_syncProps["retryInterval"] = InitStateString("10", true);
-        context.setConfigProps(props);
-        return false;
-    } else {
-        // cannot run test, tell parent
-        *skipped = true;
-        return true;
-    }
+                                         std::make_shared<TransportResendProxy>()));
 }
 
 void SyncTests::testTimeout()
@@ -5992,7 +5877,7 @@ void SyncTests::testTimeout()
     // which points towards localhost at that port. Do this with no
     // message resending and a very short overall timeout. The
     // expectation is that the transmission timeout strikes.
-    time_t start = time(NULL);
+    time_t start = time(nullptr);
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     CT_ASSERT(fd != -1);
     struct sockaddr_in servaddr;
@@ -6008,15 +5893,45 @@ void SyncTests::testTimeout()
     CT_ASSERT_EQUAL(0, res);
     bool skipped = false;
     SyncReport report;
+    auto setDeadSyncURL = [this, port=ntohs(servaddr.sin_port), &skipped] (SyncContext &context,
+                                                                           SyncOptions &options) {
+        vector<string> urls = context.getSyncURL();
+        string url;
+        if (urls.size() == 1) {
+            url = urls.front();
+        }
+
+        // use IPv4 localhost address, that's what we listen on
+        string fakeURL = StringPrintf("http://127.0.0.1:%d/foobar", port);
+
+        if (boost::starts_with(url, "http")) {
+            context.setSyncURL(fakeURL, true);
+            context.setSyncUsername("foo", true);
+            context.setSyncPassword("bar", true);
+            return false;
+        } else if (boost::starts_with(url, "local://")) {
+            FullProps props = context.getConfigProps();
+            string target = url.substr(strlen("local://"));
+            props[target].m_syncProps["syncURL"] = fakeURL;
+            props[target].m_syncProps["retryDuration"] = InitStateString("10", true);
+            props[target].m_syncProps["retryInterval"] = InitStateString("10", true);
+            context.setConfigProps(props);
+            return false;
+        } else {
+            // cannot run test, tell parent
+            skipped = true;
+            return true;
+        }
+    };
     doSync(__FILE__, __LINE__,
            "timeout",
            SyncOptions(SYNC_SLOW,
                        CheckSyncReport(-1, -1, -1, -1, -1, -1,
                                        false).setReport(&report))
-           .setPrepareCallback(boost::bind(setDeadSyncURL, _1, _2, ntohs(servaddr.sin_port), &skipped))
+           .setPrepareCallback(setDeadSyncURL)
            .setRetryDuration(20)
            .setRetryInterval(20));
-    time_t end = time(NULL);
+    time_t end = time(nullptr);
     close(fd);
     if (!skipped) {
         CT_ASSERT_EQUAL(STATUS_TRANSPORT_FAILURE, report.getStatus());
@@ -6045,7 +5960,7 @@ static void UpdateLocal(const std::string &config, const std::string &source,
                                   actualLocalData.c_str(),
                                   config.c_str(),
                                   source.c_str(),
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE("export " + currentServer() + "_1 " +  source, cmdline->run());
 
@@ -6059,7 +5974,7 @@ static void UpdateLocal(const std::string &config, const std::string &source,
                                   localModified.c_str(),
                                   config.c_str(),
                                   source.c_str(),
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE("update " + config + " " +  source, cmdline->run());
 }
@@ -6106,7 +6021,7 @@ void SyncTests::testUpload()
                                   actualData.c_str(),
                                   peer.c_str(),
                                   peerSource.c_str(),
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE(peer + " " + peerSource, cmdline->run());
 
@@ -6131,7 +6046,7 @@ void SyncTests::testUpload()
                                   remoteModified.c_str(),
                                   peer.c_str(),
                                   peerSource.c_str(),
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE("update " + peer + " " + peerSource, cmdline->run());
 
@@ -6179,7 +6094,7 @@ void SyncTests::testDownload()
                                   peer.c_str(),
                                   peerSource.c_str(),
                                   "*",
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE(peer + " " + peerSource, cmdline->run());
     cmdline.reset(new TestCmdline("--daemon=no",
@@ -6187,7 +6102,7 @@ void SyncTests::testDownload()
                                   remoteTestdata.c_str(),
                                   peer.c_str(),
                                   peerSource.c_str(),
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE(peer + " " + peerSource, cmdline->run());
 
@@ -6230,7 +6145,7 @@ void SyncTests::testDownload()
                                   syncedRemoteData.c_str(),
                                   peer.c_str(),
                                   peerSource.c_str(),
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE("export " + peer + " " + peerSource, cmdline->run());
 
@@ -6285,7 +6200,7 @@ void SyncTests::doUpdateConflict(const std::string &testname, bool localWins)
                                   actualRemoteData.c_str(),
                                   peer.c_str(),
                                   peerSource.c_str(),
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE("export " + peer + " " + peerSource, cmdline->run());
 
@@ -6317,7 +6232,7 @@ void SyncTests::doUpdateConflict(const std::string &testname, bool localWins)
                                           remoteModified.c_str(),
                                           peer.c_str(),
                                           peerSource.c_str(),
-                                          (const char *)NULL));
+                                          nullptr));
             CT_ASSERT(cmdline->parse());
             CT_ASSERT_MESSAGE("update " + peer + " " + peerSource, cmdline->run());
 
@@ -6331,14 +6246,14 @@ void SyncTests::doUpdateConflict(const std::string &testname, bool localWins)
                                           remoteActualModified.c_str(),
                                           peer.c_str(),
                                           peerSource.c_str(),
-                                          (const char *)NULL));
+                                          nullptr));
             CT_ASSERT(cmdline->parse());
             CT_ASSERT_MESSAGE("export " + peer + " " + peerSource, cmdline->run());
 
             // Copy all unmodified items before the comparison.
             ReadDir dir(remoteModified);
             std::set<std::string> modified(dir.begin(), dir.end());
-            BOOST_FOREACH(const std::string &luid, ReadDir(actualRemoteData)) {
+            for (const std::string &luid: ReadDir(actualRemoteData)) {
                 if (modified.find(luid) == modified.end()) {
                     std::string content;
                     CT_ASSERT(ReadFile(actualRemoteData + "/" + luid, content));
@@ -6385,7 +6300,7 @@ void SyncTests::doUpdateConflict(const std::string &testname, bool localWins)
                                   syncedRemoteData.c_str(),
                                   peer.c_str(),
                                   peerSource.c_str(),
-                                  (const char *)NULL));
+                                  nullptr));
     CT_ASSERT(cmdline->parse());
     CT_ASSERT_MESSAGE("export " + peer + " " + peerSource, cmdline->run());
 
@@ -6433,7 +6348,7 @@ void SyncTests::doSync(const SyncOptions &options)
 
     std::string prefix;
     prefix.reserve(80);
-    for (std::list<std::string>::iterator it = logPrefixes.begin();
+    for (auto it = logPrefixes.begin();
          it != logPrefixes.end();
          ++it) {
         prefix += ".";
@@ -6472,14 +6387,14 @@ void SyncTests::postSync(int res, const std::string &logname)
 
 void SyncTests::allSourcesInsert(bool withUID)
 {
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         CT_ASSERT_NO_THROW(source_pair.second->doInsert(withUID));
     }
 }
 
 void SyncTests::allSourcesUpdate()
 {
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         CT_ASSERT_NO_THROW(source_pair.second->update(source_pair.second->createSourceA,
                                                       source_pair.second->config.m_updateItem));
     }
@@ -6487,7 +6402,7 @@ void SyncTests::allSourcesUpdate()
 
 void SyncTests::allSourcesDeleteAll()
 {
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         CT_ASSERT_NO_THROW(source_pair.second->deleteAll(source_pair.second->createSourceA));
     }
 }
@@ -6495,7 +6410,7 @@ void SyncTests::allSourcesDeleteAll()
 void SyncTests::allSourcesInsertMany(int startIndex, int numItems,
                                      std::map<int, std::list<std::string> > &luids)
 {
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         std::list<std::string> l;
         CT_ASSERT_NO_THROW(l = source_pair.second->insertManyItems(source_pair.second->createSourceA,
                                                                    startIndex,
@@ -6513,7 +6428,7 @@ void SyncTests::allSourcesUpdateMany(int startIndex, int numItems,
                                      std::map<int, std::list<std::string> > &luids,
                                      int offset)
 {
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         CT_ASSERT_NO_THROW(source_pair.second->updateManyItems(source_pair.second->createSourceA,
                                                                startIndex,
                                                                numItems,
@@ -6528,7 +6443,7 @@ void SyncTests::allSourcesRemoveMany(int numItems,
                                      std::map<int, std::list<std::string> > &luids,
                                      int offset)
 {
-    BOOST_FOREACH(source_array_t::value_type &source_pair, sources)  {
+    for (auto &source_pair: sources)  {
         CT_ASSERT_NO_THROW(source_pair.second->removeManyItems(source_pair.second->createSourceA,
                                                                numItems,
                                                                luids[source_pair.first],
@@ -6564,12 +6479,12 @@ public:
             }
         }
         // link configs of sources which share the same database
-        BOOST_FOREACH (const ConfigMap::value_type &entry, configs) {
+        for (const auto &entry: configs) {
             LocalTests *sourcetests = entry.second;
             const ClientTest::Config &config = sourcetests->config;
             if (!config.m_linkedSources.empty()) {
                 sourcetests->m_linkedSources.push_back(sourcetests);
-                BOOST_FOREACH (const std::string &source, config.m_linkedSources) {
+                for (const std::string &source: config.m_linkedSources) {
                     sourcetests->m_linkedSources.push_back(configs[source]);
                 }
             }
@@ -6648,7 +6563,7 @@ void ClientTest::registerTests()
 ClientTest::ClientTest(int serverSleepSec, const std::string &serverLog) :
     serverSleepSeconds(serverSleepSec),
     serverLogFileName(serverLog),
-    factory(NULL)
+    factory(nullptr)
 {
 }
 
@@ -6657,7 +6572,7 @@ void ClientTest::freeFactory()
     if(factory) {
         CppUnit::TestFactoryRegistry::getRegistry().unregisterFactory((CppUnit::TestFactory *)factory);
         delete (CppUnit::TestFactory *)factory;
-        factory = NULL;
+        factory = nullptr;
     }
 }
 
@@ -6673,7 +6588,7 @@ void ClientTest::registerCleanup(Cleanup_t cleanup)
 
 void ClientTest::shutdown()
 {
-    BOOST_FOREACH(Cleanup_t cleanup, cleanupSet) {
+    for (Cleanup_t cleanup: cleanupSet) {
         cleanup();
     }
 }
@@ -6691,7 +6606,7 @@ SyncTests *ClientTest::createSyncTests(const std::string &name, std::vector<int>
 int ClientTest::dump(ClientTest &client, TestingSyncSource &source, const std::string &file)
 {
     BackupReport report;
-    boost::shared_ptr<ConfigNode> node(new VolatileConfigNode);
+    auto node = std::make_shared<VolatileConfigNode>();
 
     rm_r(file);
     mkdir_p(file);
@@ -6764,7 +6679,7 @@ std::string ClientTest::import(ClientTest &client, TestingSyncSource &source, co
     if (!doImport) {
         it = luids->begin();
     }
-    BOOST_FOREACH(string &data, items) {
+    for (string &data: items) {
         std::string luid;
         try {
             if (doImport) {
@@ -6817,7 +6732,7 @@ bool ClientTest::compare(ClientTest &client, const std::string &fileA, const std
     if(compareLog && strlen(compareLog))
     {
        std::string cmdstr = std::string("synccompare ") + fileA + " " + fileB;
-       string tmpfile = "____compare.log";
+       string tmpfile = "____compare.txt";
        cmdstr =string("bash -c 'set -o pipefail;") + cmdstr;
        cmdstr += " 2>&1|tee " +tmpfile+"'";
        success = system(cmdstr.c_str()) == 0;
@@ -6831,7 +6746,7 @@ bool ClientTest::compare(ClientTest &client, const std::string &fileA, const std
             break;
         case 0:
             // child
-            execl("synccompare", "synccompare", fileA.c_str(), fileB.c_str(), (char *)NULL);
+            execl("synccompare", "synccompare", fileA.c_str(), fileB.c_str(), nullptr);
             perror("synccompare");
             exit(1);
             break;
@@ -6862,7 +6777,7 @@ void ClientTest::update(std::string &item)
     const static char *props[] = {
         "\nSUMMARY",
         "\nNOTE",
-        NULL
+        nullptr
     };
 
     for (const char **prop = props; *prop; prop++) {
@@ -6894,7 +6809,7 @@ void ClientTest::postSync(int res, const std::string &logname)
         int fd = open(serverLogFileName.c_str(), O_RDWR);
 
         if (fd >= 0) {
-            int out = open((logname + ".server.log").c_str(), O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP);
+            int out = open((logname + ".server.txt").c_str(), O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP);
             if (out >= 0) {
                 char buffer[4096];
                 bool cont = true;
@@ -6904,7 +6819,7 @@ void ClientTest::postSync(int res, const std::string &logname)
                     while (cont && total < len) {
                         ssize_t written = write(out, buffer, len);
                         if (written < 0) {
-                            perror(("writing " + logname + ".server.log").c_str());
+                            perror(("writing " + logname + ".server.txt").c_str());
                             cont = false;
                         } else {
                             total += written;
@@ -6939,12 +6854,13 @@ static string mangleGeneric(const std::string &data, bool update, const std::str
 static string mangleICalendar20(const std::string &data, bool update, const std::string &uniqueUIDSuffix)
 {
     std::string item = data;
-    std::string type;
-    static const pcrecpp::RE re("BEGIN:(VEVENT|VJOURNAL|VTODO)\n");
-    re.PartialMatch(data, &type);
 
     if (update) {
-        if (type == "VJOURNAL") {
+        static const std::regex re("BEGIN:(VEVENT|VJOURNAL|VTODO)\n");
+        std::smatch match;
+        std::regex_search(data, match, re);
+        auto type = match[1];
+        if (type.str() == "VJOURNAL") {
             // Need to modify first line of description and summary
             // consistently for a note because in plain text
             // representation, these lines are expected to be
@@ -6968,7 +6884,7 @@ static string mangleICalendar20(const std::string &data, bool update, const std:
         static time_t start;
         static std::string test;
         if (test != getCurrentTest()) {
-            start = time(NULL);
+            start = time(nullptr);
             test = getCurrentTest();
         }
         std::string unique = StringPrintf("UID:UNIQUE-UID-%llu-", (long long unsigned)start);
@@ -6990,7 +6906,7 @@ static string mangleICalendar20(const std::string &data, bool update, const std:
         // Special semantic for iCalendar 2.0: LAST-MODIFIED should be
         // incremented in updated items. Emulate that by inserting the
         // current time.
-        time_t now = time(NULL);
+        time_t now = time(nullptr);
         struct tm tm;
         gmtime_r(&now, &tm);
         std::string mod = StringPrintf("\nLAST-MODIFIED:%04d%02d%02dT%02d%02d%02dZ",
@@ -7017,81 +6933,6 @@ static string mangleICalendar20(const std::string &data, bool update, const std:
     return item;
 }
 
-static std::string additionalYearly(const std::string &single,
-                                    const std::string &many,
-                                    int start, int skip, int index, int total)
-{
-    int startYear = 2012 + start - 1;
-    std::string event;
-
-    if (start == 0) {
-        // no missing parent, nothing to add
-    } else if (start == index) {
-        // inserting a single detached recurrence
-        event = StringPrintf(single.c_str(), startYear);
-    } else {
-        // many detached recurrences
-        int endYear = startYear + index - start;
-        std::string exdates;
-        for (int year = startYear; year <= endYear; year++) {
-            // a gap?
-            if ((year - startYear) % (skip + 1)) {
-                exdates +=
-                    StringPrintf("EXDATE;TZID=Standard Timezone:%04d0101T120000\n",
-                                 year);
-            }
-        }
-        event = StringPrintf(many.c_str(), startYear, endYear, exdates.c_str());
-    }
-
-
-    SE_LOG_DEBUG(NULL, "additional yearly: start %d, skip %d, index %d/%d:\n%s",
-                 start, skip, index, total,
-                 event.c_str());
-    return event;
-}
-
-static std::string additionalMonthly(const std::string &single,
-                                     const std::string &many,
-                                     int day,
-                                     int start, int skip, int index, int total)
-{
-    int startMonth = 1 + start - 1;
-    std::string event;
-    int endMonth = startMonth + index - start;
-    int time = (endMonth >= 4 && endMonth <= 10) ? 10 : 11;
-
-    if (start == 0) {
-    } else if (start == index) {
-        event = StringPrintf(single.c_str(), startMonth, day, time);
-    } else {
-        // Monthly recurrence uses INTERVAL instead of
-        // EXDATEs, in contrast to yearly recurrence
-        // (where Exchange somehow didn't grok the
-        // INTERVAL). So EXDATEs are only necessary
-        // for the first, second, last case.
-        if (skip == -1 ) {
-            std::string exdates;
-            for (int month = startMonth; month <= endMonth; month++) {
-                int step = month - startMonth;
-                // a gap?
-                if (step > 1 && step < total - start - 1) {
-                    exdates +=
-                        StringPrintf("EXDATE;TZID=Standard Timezone:2012%02d01T120000\n",
-                                     month);
-                }
-            }
-            event = StringPrintf(many.c_str(), startMonth, day, endMonth, time, 1, exdates.c_str());
-        } else {
-            event = StringPrintf(many.c_str(), startMonth, day, endMonth, time, skip + 1, "");
-        }
-    }
-
-    SE_LOG_DEBUG(NULL, "additional monthly: start %d, skip %d, index %d/%d:\n%s",
-                 start, skip, index, total,
-                 event.c_str());
-    return event;
-}
 
 // instead of trying to determine the dates of all Sundays in 2012
 // algorithmically, hard-code them...
@@ -7157,63 +6998,6 @@ static const struct {
     { 12, 30 },
     { 0, 0 }
 };
-
-static std::string additionalWeekly(const std::string &single,
-                                    const std::string &many,
-                                    int start, int skip, int index, int total)
-{
-    int startWeek = start - 1; // numbered from zero in "sundays" array
-    if (startWeek < 0) {
-        startWeek = 0;
-    }
-    std::string event;
-    int endWeek = startWeek + index - start;
-    int time = (endWeek >= SUNDAYS_2012_WINTER_TIME_ENDS &&
-                endWeek < SUNDAYS_2012_WINTER_TIME_STARTS) ? 12 : 13;
-    int startMonth = sundays[startWeek].m_month;
-    int startDay = sundays[startWeek].m_day;
-
-    if (start == 0) {
-    } else if (start == index) {
-        event = StringPrintf(single.c_str(), startMonth, startDay, time);
-    } else {
-        int endMonth = sundays[endWeek].m_month;
-        int endDay = sundays[endWeek].m_day;
-
-        // Weekly recurrence uses INTERVAL instead of
-        // EXDATEs, in contrast to yearly recurrence
-        // (where Exchange somehow didn't grok the
-        // INTERVAL). So EXDATEs are only necessary
-        // for the first, second, last case.
-        std::string exdates;
-        if (skip == -1 ) {
-            for (int week = startWeek; week <= endWeek; week++) {
-                int step = week - startWeek;
-                // a gap?
-                if (step > 1 && step < total - start - 1) {
-                    exdates +=
-                        StringPrintf("EXDATE;TZID=Standard Timezone:2012%02d%02dT140000\n",
-                                                             sundays[week].m_month,
-                                     sundays[week].m_day);
-                }
-            }
-            event = StringPrintf(many.c_str(),
-                                 startMonth, startDay,
-                                 endMonth, endDay,
-                                 time, 1, exdates.c_str());
-        } else {
-            event = StringPrintf(many.c_str(),
-                                 startMonth, startDay,
-                                 endMonth, endDay,
-                                 time, skip + 1, "");
-        }
-    }
-
-    SE_LOG_DEBUG(NULL, "additional weekly: start %d, skip %d, index %d/%d:\n%s",
-                 start, skip, index, total,
-                 event.c_str());
-    return event;
-}
 
 static void addMonthly(size_t &index, ClientTestConfig::MultipleLinkedItems_t &subset,
                        const std::string &pre, const std::string &post,
@@ -7281,9 +7065,44 @@ static void addMonthly(size_t &index, ClientTestConfig::MultipleLinkedItems_t &s
             "END:VEVENT\n" +
             post;
 
-        items->m_testLinkedItemsSubsetAdditional = boost::bind(additionalMonthly,
-                                                               single, many, day,
-                                                               _1, _2, _3, _4);
+        auto additionalMonthly = [single, many, day] (int start, int skip, int index, int total) {
+            int startMonth = 1 + start - 1;
+            std::string event;
+            int endMonth = startMonth + index - start;
+            int time = (endMonth >= 4 && endMonth <= 10) ? 10 : 11;
+
+            if (start == 0) {
+            } else if (start == index) {
+                event = StringPrintf(single.c_str(), startMonth, day, time);
+            } else {
+                // Monthly recurrence uses INTERVAL instead of
+                // EXDATEs, in contrast to yearly recurrence
+                // (where Exchange somehow didn't grok the
+                // INTERVAL). So EXDATEs are only necessary
+                // for the first, second, last case.
+                if (skip == -1 ) {
+                    std::string exdates;
+                    for (int month = startMonth; month <= endMonth; month++) {
+                        int step = month - startMonth;
+                        // a gap?
+                        if (step > 1 && step < total - start - 1) {
+                            exdates +=
+                                StringPrintf("EXDATE;TZID=Standard Timezone:2012%02d01T120000\n",
+                                             month);
+                        }
+                    }
+                    event = StringPrintf(many.c_str(), startMonth, day, endMonth, time, 1, exdates.c_str());
+                } else {
+                    event = StringPrintf(many.c_str(), startMonth, day, endMonth, time, skip + 1, "");
+                }
+            }
+
+            SE_LOG_DEBUG(NULL, "additional monthly: start %d, skip %d, index %d/%d:\n%s",
+                         start, skip, index, total,
+                         event.c_str());
+            return event;
+        };
+        items->m_testLinkedItemsSubsetAdditional = additionalMonthly;
     }
 }
 
@@ -7321,10 +7140,8 @@ void ClientTest::getTestData(const char *type, Config &config)
     // True for most item kinds, exceptions set below.
     config.m_uniqueID = true;
 
-    static std::set<std::string> vCardEssential =
-        boost::assign::list_of("FN")("N")("UID")("VERSION"),
-        iCalEssential =
-        boost::assign::list_of("DTSTART")("DTEND")("DTSTAMP")("SUMMARY")("UID")("RRULE")("RECURRENCE-ID")("VERSION");
+    static std::set<std::string> vCardEssential = { "FN", "N", "UID", "VERSION" },
+        iCalEssential = { "DTSTART", "DTEND", "DTSTAMP", "SUMMARY", "UID", "RRULE", "RECURRENCE-ID", "VERSION" };
     // RRULE is not essential for a valid item, but removing it has implications
     // for other properties (EXDATE) and other items (detached recurrences) and
     // thus cannot be tested in testRemoveProperties (because it doesn't know about
@@ -7733,18 +7550,17 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "END:VCALENDAR\n";
 
             // also affects normal test items
-            std::string *items[] = { &config.m_insertItem,
-                                     &config.m_updateItem,
-                                     &config.m_mergeItem1,
-                                     &config.m_mergeItem2 };
-            BOOST_FOREACH(std::string *item, items) {
-                static const pcrecpp::RE times("^(DTSTART|DTEND)(.*)Z$",
-                                               pcrecpp::RE_Options().set_multiline(true));
-                times.GlobalReplace("\\1\\2", item);
+            for (auto item: {
+                    &config.m_insertItem,
+                    &config.m_updateItem,
+                    &config.m_mergeItem1,
+                    &config.m_mergeItem2 }) {
+                static const std::regex times(R"del(\b(DTSTART|DTEND)(.*)Z\b)del");
+                *item = std::regex_replace(*item, times, "$1$2");
             }
         } else if (server == "exchange") {
             config.m_linkedItems[0].m_name = "StandardTZ";
-            BOOST_FOREACH(std::string &item, config.m_linkedItems[0]) {
+            for (std::string &item: config.m_linkedItems[0]) {
                 // time zone name changes on server to "Standard Timezone",
                 // with some information stripped
                 boost::replace_all(item,
@@ -7919,12 +7735,11 @@ void ClientTest::getTestData(const char *type, Config &config)
                 "TRANSP:TRANSPARENT\n"
                 "END:VEVENT\n" +
                 post;
-            boost::assign::push_back(config.m_linkedItemsSubset[index])
-                (StringPrintf(parent.c_str(), 2012))
-                (StringPrintf(child.c_str(), 2012))
-                (StringPrintf(child.c_str(), 2013))
-                (StringPrintf(child.c_str(), 2014))
-                ;
+            auto &vector = config.m_linkedItemsSubset[index];
+            vector.emplace_back(StringPrintf(parent.c_str(), 2012));
+            vector.emplace_back(StringPrintf(child.c_str(), 2012));
+            vector.emplace_back(StringPrintf(child.c_str(), 2013));
+            vector.emplace_back(StringPrintf(child.c_str(), 2014));
             if (server == "exchange") {
                 /* only year of event varies */
                 std::string single =
@@ -7952,9 +7767,37 @@ void ClientTest::getTestData(const char *type, Config &config)
                     "END:VEVENT\n" +
                     post;
 
-                items->m_testLinkedItemsSubsetAdditional = boost::bind(additionalYearly,
-                                                                       single, many,
-                                                                       _1, _2, _3, _4);
+                auto additionalYearly = [single, many] (int start, int skip, int index, int total) {
+                    int startYear = 2012 + start - 1;
+                    std::string event;
+
+                    if (start == 0) {
+                        // no missing parent, nothing to add
+                    } else if (start == index) {
+                        // inserting a single detached recurrence
+                        event = StringPrintf(single.c_str(), startYear);
+                    } else {
+                        // many detached recurrences
+                        int endYear = startYear + index - start;
+                        std::string exdates;
+                        for (int year = startYear; year <= endYear; year++) {
+                            // a gap?
+                            if ((year - startYear) % (skip + 1)) {
+                                exdates +=
+                                    StringPrintf("EXDATE;TZID=Standard Timezone:%04d0101T120000\n",
+                                                 year);
+                            }
+                        }
+                        event = StringPrintf(many.c_str(), startYear, endYear, exdates.c_str());
+                    }
+
+
+                    SE_LOG_DEBUG(NULL, "additional yearly: start %d, skip %d, index %d/%d:\n%s",
+                                 start, skip, index, total,
+                                 event.c_str());
+                    return event;
+                };
+                items->m_testLinkedItemsSubsetAdditional = additionalYearly;
             }
 
             addMonthly(index, config.m_linkedItemsSubset, pre, post, "First", 1, 12);
@@ -8019,9 +7862,61 @@ void ClientTest::getTestData(const char *type, Config &config)
                     "END:VEVENT\n" +
                     post;
 
-                items ->m_testLinkedItemsSubsetAdditional = boost::bind(additionalWeekly,
-                                                                        single, many,
-                                                                        _1, _2, _3, _4);
+                auto additionalWeekly = [single, many] (int start, int skip, int index, int total) {
+                    int startWeek = start - 1; // numbered from zero in "sundays" array
+                    if (startWeek < 0) {
+                        startWeek = 0;
+                    }
+                    std::string event;
+                    int endWeek = startWeek + index - start;
+                    int time = (endWeek >= SUNDAYS_2012_WINTER_TIME_ENDS &&
+                                endWeek < SUNDAYS_2012_WINTER_TIME_STARTS) ? 12 : 13;
+                    int startMonth = sundays[startWeek].m_month;
+                    int startDay = sundays[startWeek].m_day;
+
+                    if (start == 0) {
+                    } else if (start == index) {
+                        event = StringPrintf(single.c_str(), startMonth, startDay, time);
+                    } else {
+                        int endMonth = sundays[endWeek].m_month;
+                        int endDay = sundays[endWeek].m_day;
+
+                        // Weekly recurrence uses INTERVAL instead of
+                        // EXDATEs, in contrast to yearly recurrence
+                        // (where Exchange somehow didn't grok the
+                        // INTERVAL). So EXDATEs are only necessary
+                        // for the first, second, last case.
+                        std::string exdates;
+                        if (skip == -1 ) {
+                            for (int week = startWeek; week <= endWeek; week++) {
+                                int step = week - startWeek;
+                                // a gap?
+                                if (step > 1 && step < total - start - 1) {
+                                    exdates +=
+                                        StringPrintf("EXDATE;TZID=Standard Timezone:2012%02d%02dT140000\n",
+                                                     sundays[week].m_month,
+                                                     sundays[week].m_day);
+                                }
+                            }
+                            event = StringPrintf(many.c_str(),
+                                                 startMonth, startDay,
+                                                 endMonth, endDay,
+                                                 time, 1, exdates.c_str());
+                        } else {
+                            event = StringPrintf(many.c_str(),
+                                                 startMonth, startDay,
+                                                 endMonth, endDay,
+                                                 time, skip + 1, "");
+                        }
+                    }
+
+                    SE_LOG_DEBUG(NULL, "additional weekly: start %d, skip %d, index %d/%d:\n%s",
+                                 start, skip, index, total,
+                                 event.c_str());
+                    return event;
+                };
+
+                items ->m_testLinkedItemsSubsetAdditional = additionalWeekly;
             }
         }
 
@@ -8284,7 +8179,7 @@ void CheckSyncReport::check(SyncMLStatus status, SyncReport &report) const
         CT_ASSERT_EQUAL(STATUS_OK, status);
     }
 
-    BOOST_FOREACH(SyncReport::value_type &entry, report) {
+    for (auto &entry: report) {
         const std::string &name = entry.first;
         const SyncSourceReport &source = entry.second;
 

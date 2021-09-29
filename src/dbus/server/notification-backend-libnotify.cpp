@@ -31,14 +31,13 @@
 #include <glib.h>
 #include <glib/gi18n.h>
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/foreach.hpp>
 
 SE_BEGIN_CXX
 
 NotificationBackendLibnotify::NotificationBackendLibnotify()
     : m_initialized(false),
       m_acceptsActions(false),
-      m_notification(NULL)
+      m_notification(nullptr)
 {
 }
 
@@ -67,7 +66,7 @@ bool NotificationBackendLibnotify::init()
     m_initialized = notify_init("SyncEvolution");
     if(m_initialized) {
         GStringListFreeCXX list(notify_get_server_caps());
-        BOOST_FOREACH (const char *cap, list) {
+        for (const char *cap: list) {
             if(boost::iequals(cap, "actions")) {
                 m_acceptsActions = true;
             }
@@ -87,15 +86,15 @@ void NotificationBackendLibnotify::publish(
 
     if(m_notification) {
         notify_notification_clear_actions(m_notification);
-        notify_notification_close(m_notification, NULL);
+        notify_notification_close(m_notification, nullptr);
     }
 #ifndef NOTIFY_CHECK_VERSION
 # define NOTIFY_CHECK_VERSION(_x,_y,_z) 0
 #endif
 #if !NOTIFY_CHECK_VERSION(0,7,0)
-    m_notification = notify_notification_new(summary.c_str(), body.c_str(), NULL, NULL);
+    m_notification = notify_notification_new(summary.c_str(), body.c_str(), nullptr, nullptr);
 #else
-    m_notification = notify_notification_new(summary.c_str(), body.c_str(), NULL);
+    m_notification = notify_notification_new(summary.c_str(), body.c_str(), nullptr);
 #endif
     //if actions are not supported, don't add actions
     //An example is Ubuntu Notify OSD. It uses an alert box
@@ -106,16 +105,16 @@ void NotificationBackendLibnotify::publish(
         notify_notification_add_action(m_notification, "view",
                                        _("View"), notifyAction,
                                        (gpointer)viewParams.c_str(),
-                                       NULL);
+                                       nullptr);
         // Use "default" as ID because that is what mutter-moblin
         // recognizes: it then skips the action instead of adding it
         // in addition to its own "Dismiss" button (always added).
         notify_notification_add_action(m_notification, "default",
                                        _("Dismiss"), notifyAction,
                                        (gpointer)viewParams.c_str(),
-                                       NULL);
+                                       nullptr);
     }
-    notify_notification_show(m_notification, NULL);
+    notify_notification_show(m_notification, nullptr);
 }
 
 SE_END_CXX

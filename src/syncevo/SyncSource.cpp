@@ -32,17 +32,16 @@
 #include <synthesis/SDK_util.h>
 #include <synthesis/sync_dbapidef.h>
 
-#include <boost/bind.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/lambda/lambda.hpp>
 
 #include <ctype.h>
 #include <errno.h>
 #include <unistd.h>
 
+#include <functional>
 #include <fstream>
 #include <iostream>
 
@@ -212,12 +211,6 @@ SyncSourceBase::Operations::Operations(SyncSourceName &source) :
 {
 }
 
-static SyncMLStatus BumpCounter(int32_t &counter)
-{
-    counter++;
-    return STATUS_OK;
-}
-
 SyncSource::SyncSource(const SyncSourceParams &params) :
     SyncSourceConfig(params.m_name, params.m_nodes),
     m_operations(*this),
@@ -230,15 +223,19 @@ SyncSource::SyncSource(const SyncSourceParams &params) :
     m_name(params.getDisplayName()),
     m_needChanges(true)
 {
-    m_operations.m_insertItemAsKey.getPreSignal().connect(boost::bind(BumpCounter, boost::ref(m_added)));
-    m_operations.m_updateItemAsKey.getPreSignal().connect(boost::bind(BumpCounter, boost::ref(m_updated)));
-    m_operations.m_deleteItem.getPreSignal().connect(boost::bind(BumpCounter, boost::ref(m_deleted)));
+    auto bump = [] (int32_t & counter) {
+        counter++;
+        return STATUS_OK;
+    };
+    m_operations.m_insertItemAsKey.getPreSignal().connect(std::bind(bump, std::ref(m_added)));
+    m_operations.m_updateItemAsKey.getPreSignal().connect(std::bind(bump, std::ref(m_updated)));
+    m_operations.m_deleteItem.getPreSignal().connect(std::bind(bump, std::ref(m_deleted)));
 }
 
 SDKInterface *SyncSource::getSynthesisAPI() const
 {
     return m_synthesisAPI.empty() ?
-        NULL :
+        nullptr :
         static_cast<SDKInterface *>(m_synthesisAPI[m_synthesisAPI.size() - 1]);
 }
 
@@ -291,7 +288,7 @@ RegisterSyncSource::RegisterSyncSource(const string &shortDescr,
     SourceRegistry &registry(SyncSource::getSourceRegistry());
 
     // insert sorted by description to have deterministic ordering
-    for(SourceRegistry::iterator it = registry.begin();
+    for(auto it = registry.begin();
         it != registry.end();
         ++it) {
         if ((*it)->m_shortDescr > shortDescr) {
@@ -312,9 +309,9 @@ public:
     virtual void open() { throwError(SE_HERE, "inactive"); }
 };
 
-SyncSource *RegisterSyncSource::InactiveSource(const SyncSourceParams &params)
+std::unique_ptr<SyncSource> RegisterSyncSource::InactiveSource(const SyncSourceParams &params)
 {
-    return new InactiveSyncSource(params);
+    return std::make_unique<InactiveSyncSource>(params);
 }
 
 TestRegistry &SyncSource::getTestRegistry()
@@ -334,7 +331,7 @@ static class ScannedModules {
 public:
     void init() {
 #ifdef ENABLE_MODULES
-        list<pair <string, boost::shared_ptr<ReadDir> > > dirs;
+        list<pair <string, std::shared_ptr<ReadDir> > > dirs;
         /* If enviroment variable SYNCEVOLUTION_BACKEND_DIR is set, will search
         backends from this path instead. */
         string backend_dir (SYNCEVO_BACKEND);
@@ -342,7 +339,7 @@ public:
         if (backend_env && strlen(backend_env)){
             backend_dir = backend_env;
         }
-        boost::shared_ptr<ReadDir> dir (new ReadDir (backend_dir, false));
+        auto dir = std::make_shared<ReadDir>(backend_dir, false);
         string dirpath (backend_dir);
         // Base name (= no dir, no .so suffix) mapping to full file
         // name (including .so).
@@ -350,14 +347,14 @@ public:
         // scan directories for matching module names
         do {
             debug<<"Scanning backend libraries in " <<dirpath <<endl;
-            BOOST_FOREACH (const string &entry, *dir) {
+            for (const string &entry: *dir) {
                 if (isDir (dirpath + '/' + entry)) {
                     /* This is a 2-level dir, this corresponds to loading
                      * backends from current building directory. The library
                      * should reside in .libs sub directory.*/
                     string path = dirpath + '/' + entry +"/.libs";
                     if (isDir (path)) {
-                        boost::shared_ptr<ReadDir> subdir (new ReadDir (path, false));
+                        auto subdir = std::make_shared<ReadDir>(path, false);
                         dirs.push_back (make_pair(path, subdir));
                     }
                     continue;
@@ -385,7 +382,7 @@ public:
         // library dependencies) first, then skip syncebook if loading
         // of syncebook-2 succeeded. If loading of syncebook-2 fails
         // due to missing libraries, we proceed to use syncebook.
-        BOOST_REVERSE_FOREACH (const StringPair &entry, candidates) {
+        for (const auto &entry: reverse(candidates)) {
             const std::string &basename = entry.first;
             const std::string &fullpath = entry.second;
             std::string replacement;
@@ -396,7 +393,7 @@ public:
             } else {
                 modname = basename;
             }
-            BOOST_FOREACH (const std::string &l, m_available) {
+            for (const std::string &l: m_available) {
                 if (boost::starts_with(l, modname)) {
                     replacement = l;
                     break;
@@ -451,22 +448,21 @@ void SyncSource::requestAnotherSync()
 }
 
 
-SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error, SyncConfig *config)
+std::unique_ptr<SyncSource> SyncSource::createSource(const SyncSourceParams &params, bool error, SyncConfig *config)
 {
     SourceType sourceType = getSourceType(params.m_nodes);
 
     if (sourceType.m_backend == "virtual") {
-        SyncSource *source = NULL;
-        source = new VirtualSyncSource(params, config);
+        auto source = std::make_unique<VirtualSyncSource>(params, config);
         if (error && !source) {
             Exception::throwError(SE_HERE, params.getDisplayName() + ": virtual datastore cannot be instantiated");
         }
-        return source;
+        return std::move(source);
     }
 
     const SourceRegistry &registry(getSourceRegistry());
-    unique_ptr<SyncSource> source;
-    BOOST_FOREACH(const RegisterSyncSource *sourceInfos, registry) {
+    std::unique_ptr<SyncSource> source;
+    for (const RegisterSyncSource *sourceInfos: registry) {
         unique_ptr<SyncSource> nextSource(sourceInfos->m_create(params));
         if (nextSource.get()) {
             if (source.get()) {
@@ -476,8 +472,8 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
             source = std::move(nextSource);
         }
     }
-    if (source.get()) {
-        return source.release();
+    if (source) {
+        return source;
     }
 
     if (error) {
@@ -498,11 +494,11 @@ SyncSource *SyncSource::createSource(const SyncSourceParams &params, bool error,
         Exception::throwError(SE_HERE, SyncMLStatus(sysync::LOCERR_CFGPARSE), problem);
     }
 
-    return NULL;
+    return {};
 }
 
-SyncSource *SyncSource::createTestingSource(const string &name, const string &type, bool error,
-                                            const char *prefix)
+std::unique_ptr<TestingSyncSource> SyncSource::createTestingSource(const string &name, const string &type, bool error,
+                                                                   const char *prefix)
 {
     std::string config = "target-config@client-test";
     const char *server = getenv("CLIENT_TEST_SERVER");
@@ -510,7 +506,7 @@ SyncSource *SyncSource::createTestingSource(const string &name, const string &ty
         config += "-";
         config += server;
     }
-    boost::shared_ptr<SyncConfig> context(new SyncConfig(config));
+    auto context = std::make_shared<SyncConfig>(config);
     SyncSourceNodes nodes = context->getSyncSourceNodes(name);
     SyncSourceParams params(name, nodes, context);
     PersistentSyncSourceConfig sourceconfig(name, nodes);
@@ -518,7 +514,8 @@ SyncSource *SyncSource::createTestingSource(const string &name, const string &ty
     if (prefix) {
         sourceconfig.setDatabaseID(string(prefix) + name + "_1");
     }
-    return createSource(params, error);
+    auto source = createSource(params, error);
+    return std::unique_ptr<TestingSyncSource>(static_cast<TestingSyncSource *>(source.release()));
 }
 
 VirtualSyncSource::VirtualSyncSource(const SyncSourceParams &params, SyncConfig *config) :
@@ -526,14 +523,14 @@ VirtualSyncSource::VirtualSyncSource(const SyncSourceParams &params, SyncConfig 
 {
     if (config) {
         std::string evoSyncSource = getDatabaseID();
-        BOOST_FOREACH(std::string name, getMappedSources()) {
+        for (std::string name: getMappedSources()) {
             if (name.empty()) {
                 throwError(SE_HERE, StringPrintf("configuration of underlying datastores contains empty datastore name: database = '%s'",
                                                  evoSyncSource.c_str()));
             }
             SyncSourceNodes source = config->getSyncSourceNodes(name);
-            SyncSourceParams params(name, source, boost::shared_ptr<SyncConfig>(config, SyncConfigNOP()));
-            boost::shared_ptr<SyncSource> syncSource(createSource(params, true, config));
+            SyncSourceParams params(name, source, std::shared_ptr<SyncConfig>(config, SyncConfigNOP()));
+            std::shared_ptr<SyncSource> syncSource(createSource(params, true, config));
             m_sources.push_back(syncSource);
         }
         if (m_sources.size() != 2) {
@@ -542,13 +539,13 @@ VirtualSyncSource::VirtualSyncSource(const SyncSourceParams &params, SyncConfig 
         }
     }
 
-    m_operations.m_isEmpty = boost::bind(&VirtualSyncSource::isEmpty, this);
+    m_operations.m_isEmpty = [this] () { return isEmpty(); };
 }
 
 void VirtualSyncSource::open()
 {
     getDataTypeSupport();
-    BOOST_FOREACH(boost::shared_ptr<SyncSource> &source, m_sources) {
+    for (std::shared_ptr<SyncSource> &source: m_sources) {
         source->open();
     }
 }
@@ -558,7 +555,7 @@ bool VirtualSyncSource::isEmpty()
     bool empty = true;
     SuspendFlags &s = SuspendFlags::getSuspendFlags();
 
-    BOOST_FOREACH(boost::shared_ptr<SyncSource> &source, m_sources) {
+    for (std::shared_ptr<SyncSource> &source: m_sources) {
         // Operation might not be implemented, in which case we have to
         // assume "not empty".
         if (!source->getOperations().m_isEmpty ||
@@ -576,7 +573,7 @@ bool VirtualSyncSource::isEmpty()
 
 void VirtualSyncSource::close()
 {
-    BOOST_FOREACH(boost::shared_ptr<SyncSource> &source, m_sources) {
+    for (std::shared_ptr<SyncSource> &source: m_sources) {
         source->close();
     }
 }
@@ -601,7 +598,7 @@ std::string VirtualSyncSource::getDataTypeSupport()
 SyncSource::Databases VirtualSyncSource::getDatabases()
 {
     SyncSource::Databases dbs;
-    BOOST_FOREACH (boost::shared_ptr<SyncSource> &source, m_sources) {
+    for (std::shared_ptr<SyncSource> &source: m_sources) {
         SyncSource::Databases sub = source->getDatabases();
         if (sub.empty()) {
             return dbs;
@@ -614,10 +611,11 @@ SyncSource::Databases VirtualSyncSource::getDatabases()
 
 void SyncSourceSession::init(SyncSource::Operations &ops)
 {
-    ops.m_startDataRead = boost::bind(&SyncSourceSession::startDataRead, this, _1, _2);
-    ops.m_endDataRead = boost::lambda::constant(sysync::LOCERR_OK);
-    ops.m_startDataWrite = boost::lambda::constant(sysync::LOCERR_OK);
-    ops.m_endDataWrite = boost::bind(&SyncSourceSession::endDataWrite, this, _1, _2);
+    ops.m_startDataRead = [this] (const char *lastToken, const char *resumeToken) { return this->startDataRead(lastToken, resumeToken); };
+    auto ok = [] () { return sysync::LOCERR_OK; };
+    ops.m_endDataRead = ok;
+    ops.m_startDataWrite = ok;
+    ops.m_endDataWrite = [this] (bool success, char **newToken) { return this->endDataWrite(success, newToken); };
 }
 
 sysync::TSyError SyncSourceSession::startDataRead(const char *lastToken, const char *resumeToken)
@@ -647,7 +645,7 @@ sysync::TSyError SyncSourceSession::endDataWrite(bool success, char **newToken)
 
 void SyncSourceChanges::init(SyncSource::Operations &ops)
 {
-    ops.m_readNextItem = boost::bind(&SyncSourceChanges::iterate, this, _1, _2, _3);
+    ops.m_readNextItem = [this] (sysync::ItemID aID, sysync::sInt32 *aStatus, bool aFirst) { return iterate(aID, aStatus, aFirst); };
 }
 
 SyncSourceChanges::SyncSourceChanges() :
@@ -678,8 +676,8 @@ sysync::TSyError SyncSourceChanges::iterate(sysync::ItemID aID,
                                             sysync::sInt32 *aStatus,
                                             bool aFirst)
 {
-    aID->item = NULL;
-    aID->parent = NULL;
+    aID->item = nullptr;
+    aID->parent = nullptr;
 
     if (m_first || aFirst) {
         m_it = m_items[ANY].begin();
@@ -706,7 +704,7 @@ sysync::TSyError SyncSourceChanges::iterate(sysync::ItemID aID,
 
 void SyncSourceDelete::init(SyncSource::Operations &ops)
 {
-    ops.m_deleteItem = boost::bind(&SyncSourceDelete::deleteItemSynthesis, this, _1);
+    ops.m_deleteItem = [this] (sysync::cItemID aID) { return deleteItemSynthesis(aID); };
 }
 
 sysync::TSyError SyncSourceDelete::deleteItemSynthesis(sysync::cItemID aID)
@@ -879,10 +877,14 @@ SyncSource::Operations::InsertItemAsKeyResult_t SyncSourceSerialize::insertItemA
         switch (inserted.m_state) {
         case ITEM_OKAY:
             break;
-        case ITEM_AGAIN:
+        case ITEM_AGAIN: {
             // Skip setting the newID.
-            return Operations::InsertItemAsKeyContinue_t(boost::bind(&SyncSourceSerialize::insertContinue, this, _2, inserted.m_continue));
+            auto cont = [this, c = inserted.m_continue] (sysync::KeyH aItemKey, sysync::ItemID newID) {
+                return insertContinue(newID, c);
+            };
+            return Operations::InsertItemAsKeyContinue_t(cont);
             break;
+        }
         case ITEM_REPLACED:
             res = sysync::DB_DataReplaced;
             break;
@@ -909,10 +911,14 @@ SyncSource::Operations::UpdateItemAsKeyResult_t SyncSourceSerialize::updateItemA
         switch (inserted.m_state) {
         case ITEM_OKAY:
             break;
-        case ITEM_AGAIN:
+        case ITEM_AGAIN: {
             // Skip setting the newID.
-            return Operations::UpdateItemAsKeyContinue_t(boost::bind(&SyncSourceSerialize::insertContinue, this, _3, inserted.m_continue));
+            auto cont = [this, c = inserted.m_continue] (sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID updID) {
+                return insertContinue(updID, c);
+            };
+            return SyncSource::Operations::UpdateItemAsKeyContinue_t(cont);
             break;
+        }
         case ITEM_REPLACED:
             res = sysync::DB_DataReplaced;
             break;
@@ -985,12 +991,9 @@ void SyncSourceSerialize::readItemRaw(const std::string &luid, std::string &item
 
 void SyncSourceSerialize::init(SyncSource::Operations &ops)
 {
-    ops.m_readItemAsKey = boost::bind(&SyncSourceSerialize::readItemAsKey,
-                                      this, _1, _2);
-    ops.m_insertItemAsKey = boost::bind(&SyncSourceSerialize::insertItemAsKey,
-                                        this, _1, _2);
-    ops.m_updateItemAsKey = boost::bind(&SyncSourceSerialize::updateItemAsKey,
-                                        this, _1, _2, _3);
+    ops.m_readItemAsKey = [this] (sysync::cItemID aID, sysync::KeyH aItemKey) { return readItemAsKey(aID, aItemKey); };
+    ops.m_insertItemAsKey = [this] (sysync::KeyH aItemKey, sysync::ItemID newID) { return insertItemAsKey(aItemKey, newID); };
+    ops.m_updateItemAsKey = [this] (sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID updID) { return updateItemAsKey(aItemKey, aID, updID); };
 }
 
 
@@ -1032,7 +1035,7 @@ void ItemCache::reset()
 
 string ItemCache::getFilename(Hash_t hash)
 {
-    Map_t::const_iterator it = m_hash2counter.find(hash);
+    auto it = m_hash2counter.find(hash);
     if (it != m_hash2counter.end()) {
         stringstream dirname;
         dirname << m_dirname << "/" << it->second;
@@ -1147,7 +1150,7 @@ void SyncSourceRevisions::backupData(const SyncSource::Operations::ConstBackupIn
     // Ensure that source knows what we are going to read.
     std::vector<std::string> uids;
     uids.reserve(revisions->size());
-    BOOST_FOREACH(const StringPair &mapping, *revisions) {
+    for (const auto &mapping: *revisions) {
         uids.push_back(mapping.first);
     }
 
@@ -1163,7 +1166,7 @@ void SyncSourceRevisions::backupData(const SyncSource::Operations::ConstBackupIn
 
     string item;
     errno = 0;
-    BOOST_FOREACH(const StringPair &mapping, *revisions) {
+    for (const auto &mapping: *revisions) {
         const string &uid = mapping.first;
         const string &rev = mapping.second;
         m_raw->readItemRaw(uid, item);
@@ -1194,7 +1197,7 @@ void SyncSourceRevisions::restoreData(const SyncSource::Operations::ConstBackupI
         key.clear();
         key << counter << "-rev";
         string rev = oldBackup.m_node->readProperty(key.str());
-        RevisionMap_t::iterator it = revisions.find(uid);
+        auto it = revisions.find(uid);
         report.incrementItemStat(report.ITEM_LOCAL,
                                  report.ITEM_ANY,
                                  report.ITEM_TOTAL);
@@ -1252,7 +1255,7 @@ void SyncSourceRevisions::restoreData(const SyncSource::Operations::ConstBackupI
     }
 
     // now remove items that were not in the backup
-    BOOST_FOREACH(const StringPair &mapping, revisions) {
+    for (const auto &mapping: revisions) {
         try {
             report.incrementItemStat(report.ITEM_LOCAL,
                                      report.ITEM_REMOVED,
@@ -1290,7 +1293,7 @@ bool SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mod
         trackingNode.readProperties(props);
 
         RevisionMap_t revisions;
-        BOOST_FOREACH(const StringPair &mapping, props) {
+        for (const auto &mapping: props) {
             const string &uid = mapping.first;
             const string &revision = mapping.second;
             addItem(uid);
@@ -1359,7 +1362,7 @@ bool SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mod
         trackingNode.clear();
     }
 
-    BOOST_FOREACH(const StringPair &mapping, m_revisions) {
+    for (const auto &mapping: m_revisions) {
         const string &uid = mapping.first;
         const string &revision = mapping.second;
 
@@ -1389,7 +1392,7 @@ bool SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mod
         ConfigProps props;
         trackingNode.readProperties(props);
 
-        BOOST_FOREACH(const StringPair &mapping, props) {
+        for (const auto &mapping: props) {
             const string &uid(mapping.first);
             if (getAllItems().find(uid) == getAllItems().end()) {
                 addItem(uid, DELETED);
@@ -1398,7 +1401,7 @@ bool SyncSourceRevisions::detectChanges(ConfigNode &trackingNode, ChangeMode mod
         }
 
         // now update tracking node
-        BOOST_FOREACH(const StringPair &update, revUpdates) {
+        for (const auto &update: revUpdates) {
             trackingNode.setProperty(update.first, update.second);
         }
     }
@@ -1463,15 +1466,22 @@ void SyncSourceRevisions::init(SyncSourceRaw *raw,
     m_revisionsSet = false;
     m_firstCycle = false;
     if (raw) {
-        ops.m_backupData = boost::bind(&SyncSourceRevisions::backupData,
-                                       this, _1, _2, _3);
+        ops.m_backupData = [this] (const SyncSource::Operations::ConstBackupInfo &oldBackup,
+                                   const SyncSource::Operations::BackupInfo &newBackup,
+                                   BackupReport &report) {
+            return backupData(oldBackup, newBackup, report);
+        };
     }
     if (raw && del) {
-        ops.m_restoreData = boost::bind(&SyncSourceRevisions::restoreData,
-                                        this, _1, _2, _3);
+        ops.m_restoreData = [this] (const SyncSource::Operations::ConstBackupInfo &oldBackup,
+                                    bool dryrun,
+                                    SyncSourceReport &report) {
+            restoreData(oldBackup, dryrun, report);
+        };
     }
-    ops.m_endDataWrite.getPostSignal().connect(boost::bind(&SyncSourceRevisions::sleepSinceModification,
-                                                           this));
+    ops.m_endDataWrite.getPostSignal().connect([this](SyncSource &, OperationExecution, sysync::TSyError, bool, char **) {
+            return sleepSinceModification();
+        });
 }
 
 std::string SyncSourceLogging::getDescription(sysync::KeyH aItemKey)
@@ -1479,7 +1489,7 @@ std::string SyncSourceLogging::getDescription(sysync::KeyH aItemKey)
     try {
         std::list<std::string> values;
 
-        BOOST_FOREACH(const std::string &field, m_fields) {
+        for (const std::string &field: m_fields) {
             SharedBuffer value;
             if (!getSynthesisAPI()->getValue(aItemKey, field, value) &&
                 value.size()) {
@@ -1504,36 +1514,6 @@ std::string SyncSourceLogging::getDescription(const string &luid)
     return "";
 }
 
-SyncMLStatus SyncSourceLogging::insertItemAsKey(sysync::KeyH aItemKey, sysync::ItemID newID)
-{
-    std::string description = getDescription(aItemKey);
-    SE_LOG_INFO(getDisplayName(),
-                description.empty() ? "%s <%s>" : "%s \"%s\"",
-                "adding",
-                !description.empty() ? description.c_str() : "???");
-    return STATUS_OK;
-}
-
-SyncMLStatus SyncSourceLogging::updateItemAsKey(sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID newID)
-{
-    std::string description = getDescription(aItemKey);
-    SE_LOG_INFO(getDisplayName(),
-                description.empty() ? "%s <%s>" : "%s \"%s\"",
-                "updating",
-                !description.empty() ? description.c_str() : aID ? aID->item : "???");
-    return STATUS_OK;
-}
-
-SyncMLStatus SyncSourceLogging::deleteItem(sysync::cItemID aID)
-{
-    std::string description = getDescription(aID->item);
-    SE_LOG_INFO(getDisplayName(),
-                description.empty() ? "%s <%s>" : "%s \"%s\"",
-                "deleting",
-                !description.empty() ? description.c_str() : aID->item);
-    return STATUS_OK;
-}
-
 void SyncSourceLogging::init(const std::list<std::string> &fields,
                              const std::string &sep,
                              SyncSource::Operations &ops)
@@ -1541,12 +1521,33 @@ void SyncSourceLogging::init(const std::list<std::string> &fields,
     m_fields = fields;
     m_sep = sep;
 
-    ops.m_insertItemAsKey.getPreSignal().connect(boost::bind(&SyncSourceLogging::insertItemAsKey,
-                                                             this, _2, _3));
-    ops.m_updateItemAsKey.getPreSignal().connect(boost::bind(&SyncSourceLogging::updateItemAsKey,
-                                                             this, _2, _3, _4));
-    ops.m_deleteItem.getPreSignal().connect(boost::bind(&SyncSourceLogging::deleteItem,
-                                                        this, _2));
+    auto insert = [this] (SyncSource &source, sysync::KeyH aItemKey, sysync::ItemID newID) {
+        std::string description = getDescription(aItemKey);
+        SE_LOG_INFO(getDisplayName(),
+                    description.empty() ? "%s <%s>" : "%s \"%s\"",
+                    "adding",
+                    !description.empty() ? description.c_str() : "???");
+        return STATUS_OK;
+    };
+    auto update = [this] (SyncSource &source, sysync::KeyH aItemKey, sysync::cItemID aID, sysync::ItemID newID) {
+        std::string description = getDescription(aItemKey);
+        SE_LOG_INFO(getDisplayName(),
+                    description.empty() ? "%s <%s>" : "%s \"%s\"",
+                    "updating",
+                    !description.empty() ? description.c_str() : aID ? aID->item : "???");
+        return STATUS_OK;
+    };
+    auto del = [this] (SyncSource &source, sysync::cItemID aID) {
+        std::string description = getDescription(aID->item);
+        SE_LOG_INFO(getDisplayName(),
+                    description.empty() ? "%s <%s>" : "%s \"%s\"",
+                    "deleting",
+                    !description.empty() ? description.c_str() : aID->item);
+        return STATUS_OK;
+    };
+    ops.m_insertItemAsKey.getPreSignal().connect(insert);
+    ops.m_updateItemAsKey.getPreSignal().connect(update);
+    ops.m_deleteItem.getPreSignal().connect(del);
 }
 
 sysync::TSyError SyncSourceAdmin::loadAdminData(const char *aLocDB,
@@ -1592,7 +1593,7 @@ sysync::TSyError SyncSourceAdmin::insertMapItem(sysync::cMapID mID)
     mapid2entry(mID, key, value);
 
 #if 0
-    StringMap::iterator it = m_mapping.find(key);
+    auto it = m_mapping.find(key);
     if (it != m_mapping.end()) {
         // error, exists already
         return sysync::DB_Forbidden;
@@ -1611,7 +1612,7 @@ sysync::TSyError SyncSourceAdmin::updateMapItem(sysync::cMapID mID)
     string key, value;
     mapid2entry(mID, key, value);
 
-    ConfigProps::iterator it = m_mapping.find(key);
+    auto it = m_mapping.find(key);
     if (it == m_mapping.end()) {
         // error, does not exist
         return sysync::DB_Forbidden;
@@ -1626,7 +1627,7 @@ sysync::TSyError SyncSourceAdmin::deleteMapItem(sysync::cMapID mID)
     string key, value;
     mapid2entry(mID, key, value);
 
-    ConfigProps::iterator it = m_mapping.find(key);
+    auto it = m_mapping.find(key);
     if (it == m_mapping.end()) {
         // error, does not exist
         return sysync::DB_Forbidden;
@@ -1675,7 +1676,7 @@ void SyncSourceAdmin::entry2mapid(const string &key, const string &value, sysync
     size_t found = key.rfind('-');
     mID->localID = StrAlloc(StringEscape::unescape(key.substr(0,found), '!').c_str());
     if (found != key.npos) {
-        mID->ident =  strtol(key.substr(found+1).c_str(), NULL, 16);
+        mID->ident =  strtol(key.substr(found+1).c_str(), nullptr, 16);
     } else {
         mID->ident = 0;
     }
@@ -1684,47 +1685,50 @@ void SyncSourceAdmin::entry2mapid(const string &key, const string &value, sysync
     if (tokens.size() >= 2) {
         // if branch from mapid2entry above
         mID->remoteID = StrAlloc(StringEscape::unescape(tokens[0], '!').c_str());
-        mID->flags = strtol(tokens[1].c_str(), NULL, 16);
+        mID->flags = strtol(tokens[1].c_str(), nullptr, 16);
     } else {
         // else branch from above
-        mID->remoteID = NULL;
-        mID->flags = strtol(tokens[0].c_str(), NULL, 16);
+        mID->remoteID = nullptr;
+        mID->flags = strtol(tokens[0].c_str(), nullptr, 16);
     }
 }
 
 void SyncSourceAdmin::init(SyncSource::Operations &ops,
-                           const boost::shared_ptr<ConfigNode> &config,
+                           const std::shared_ptr<ConfigNode> &config,
                            const std::string &adminPropertyName,
-                           const boost::shared_ptr<ConfigNode> &mapping)
+                           const std::shared_ptr<ConfigNode> &mapping)
 {
     m_configNode = config;
     m_adminPropertyName = adminPropertyName;
     m_mappingNode = mapping;
     m_mappingLoaded = false;
 
-    ops.m_loadAdminData = boost::bind(&SyncSourceAdmin::loadAdminData,
-                                      this, _1, _2, _3);
-    ops.m_saveAdminData = boost::bind(&SyncSourceAdmin::saveAdminData,
-                                      this, _1);
+    ops.m_loadAdminData = [this] (const char *aLocDB,
+                                  const char *aRemDB,
+                                  char **adminData) {
+        return loadAdminData(aLocDB, aRemDB, adminData);
+    };
+    ops.m_saveAdminData = [this] (const char *adminData) {
+        return saveAdminData(adminData);
+    };
     if (mapping->isVolatile()) {
         // Don't provide map item operations. SynthesisDBPlugin will
         // tell the Synthesis engine not to call these (normally needed
         // for suspend/resume, which we don't support in volatile mode
         // because we don't store any meta data persistently).
-        //
-        // ops.m_readNextMapItem = boost::lambda::constant(false);
-        // ops.m_insertMapItem = boost::lambda::constant(sysync::LOCERR_OK);
-        // ops.m_updateMapItem = boost::lambda::constant(sysync::LOCERR_OK);
-        // ops.m_deleteMapItem = boost::lambda::constant(sysync::LOCERR_OK);
     } else {
-        ops.m_readNextMapItem = boost::bind(&SyncSourceAdmin::readNextMapItem,
-                                            this, _1, _2);
-        ops.m_insertMapItem = boost::bind(&SyncSourceAdmin::insertMapItem,
-                                          this, _1);
-        ops.m_updateMapItem = boost::bind(&SyncSourceAdmin::updateMapItem,
-                                          this, _1);
-        ops.m_deleteMapItem = boost::bind(&SyncSourceAdmin::deleteMapItem,
-                                          this, _1);
+        ops.m_readNextMapItem = [this] (sysync::MapID mID, bool aFirst) {
+            return readNextMapItem(mID, aFirst);
+        };
+        ops.m_insertMapItem = [this] (sysync::cMapID mID) {
+            return insertMapItem(mID);
+        };
+        ops.m_updateMapItem = [this] (sysync::cMapID mID) {
+            return updateMapItem(mID);
+        };
+        ops.m_deleteMapItem = [this] (sysync::cMapID mID) {
+            return deleteMapItem(mID);
+        };
     }
 }
 
@@ -1743,12 +1747,21 @@ void SyncSourceBlob::init(SyncSource::Operations &ops,
     m_blob.Init(getSynthesisAPI(),
                 getName().c_str(),
                 dir, "", "", "");
-    ops.m_readBlob = boost::bind(&SyncSourceBlob::readBlob, this,
-                                 _1, _2, _3, _4, _5, _6, _7);
-    ops.m_writeBlob = boost::bind(&SyncSourceBlob::writeBlob, this,
-                                  _1, _2, _3, _4, _5, _6, _7);
-    ops.m_deleteBlob = boost::bind(&SyncSourceBlob::deleteBlob, this,
-                                   _1, _2);
+    ops.m_readBlob = [this] (sysync::cItemID aID, const char *aBlobID,
+                             void **aBlkPtr, size_t *aBlkSize,
+                             size_t *aTotSize,
+                             bool aFirst, bool *aLast) {
+        return readBlob(aID, aBlobID, aBlkPtr, aBlkSize, aTotSize, aFirst, aLast);
+    };
+    ops.m_writeBlob = [this] (sysync::cItemID aID, const char *aBlobID,
+                              void *aBlkPtr, size_t aBlkSize,
+                              size_t aTotSize,
+                              bool aFirst, bool aLast) {
+        return writeBlob(aID, aBlobID, aBlkPtr, aBlkSize, aTotSize, aFirst, aLast);
+    };
+    ops.m_deleteBlob = [this] (sysync::cItemID aID, const char *aBlobID) {
+        return deleteBlob(aID, aBlobID);
+    };
 }
 
 void TestingSyncSource::removeAllItems()
@@ -1758,10 +1771,8 @@ void TestingSyncSource::removeAllItems()
     // remove children from a merged event first,
     // which is better supported by certain servers
     Items_t items = getAllItems();
-    for (Items_t::reverse_iterator it = items.rbegin();
-         it != items.rend();
-         ++it) {
-        deleteItem(*it);
+    for (const auto &item: reverse(items)) {
+        deleteItem(item);
     }
 }
 

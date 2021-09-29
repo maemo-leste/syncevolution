@@ -25,7 +25,7 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-static SyncSource *createSource(const SyncSourceParams &params)
+static std::unique_ptr<SyncSource> createSource(const SyncSourceParams &params)
 {
     SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
     // The string returned by getSourceType() is always the one
@@ -35,16 +35,16 @@ static SyncSource *createSource(const SyncSourceParams &params)
 #ifndef ENABLE_PBAP
     // tell SyncEvolution if the user wanted to use a disabled sync source,
     // otherwise let it continue searching
-    return isMe ? RegisterSyncSource::InactiveSource(params) : NULL;
+    return isMe ? RegisterSyncSource::InactiveSource(params) : nullptr;
 #else
     // Also recognize one of the standard types?
     // Not in the PbapSyncSource!
     bool maybeMe = false /* sourceType.m_backend == "addressbook" */;
 
     if (isMe || maybeMe) {
-        return new PbapSyncSource(params);
+        return std::make_unique<PbapSyncSource>(params);
     }
-    return NULL;
+    return nullptr;
 #endif
 }
 

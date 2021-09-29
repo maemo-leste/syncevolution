@@ -40,6 +40,7 @@
 #include <syncevo/ObexTransportAgent.h>
 #include <syncevo/LocalTransportAgent.h>
 
+#include <functional>
 #include <list>
 #include <memory>
 #include <vector>
@@ -50,16 +51,11 @@
 #include <stdexcept>
 #include <algorithm>
 #include <ctime>
-using namespace std;
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/join.hpp>
-#include <boost/foreach.hpp>
 #include <boost/algorithm/string/split.hpp>
-#include <boost/bind.hpp>
 #include <boost/utility.hpp>
-#include <boost/lambda/bind.hpp>
-#include <boost/typeof/typeof.hpp>
 
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -91,7 +87,7 @@ static const char *LogfileBasename = "syncevolution-log";
 static std::string RealPath(const std::string &path)
 {
     std::string buffer;
-    char *newPath = realpath(path.c_str(), NULL);
+    char *newPath = realpath(path.c_str(), nullptr);
     if (newPath) {
         buffer = newPath;
         free(newPath);
@@ -119,10 +115,10 @@ SyncContext::SyncContext(const string &server,
 SyncContext::SyncContext(const string &client,
                          const string &server,
                          const string &rootPath,
-                         const boost::shared_ptr<TransportAgent> &agent,
+                         const std::shared_ptr<TransportAgent> &agent,
                          bool doLogging) :
     SyncConfig(client,
-               boost::shared_ptr<ConfigTree>(),
+               std::shared_ptr<ConfigTree>(),
                rootPath),
     m_server(client),
     m_localClientRootPath(rootPath),
@@ -146,6 +142,7 @@ void SyncContext::init()
     m_doLogging = false;
     m_quiet = false;
     m_dryrun = false;
+    m_keepPhotoData = false;
     m_localSync = false;
     m_serverMode = false;
     m_serverAlerted = false;
@@ -153,7 +150,7 @@ void SyncContext::init()
     m_firstSourceAccess = true;
     m_quitSync = false;
     m_remoteInitiated = false;
-    m_sourceListPtr = NULL;
+    m_sourceListPtr = nullptr;
     m_syncFreeze = SYNC_FREEZE_NONE;
 }
 
@@ -300,13 +297,13 @@ class LogDir;
 class LogDirLogger : public Logger
 {
     Logger::Handle m_parentLogger;     /**< the logger which was active before we started to intercept messages */
-    boost::weak_ptr<LogDir> m_logdir;  /**< grants access to report and Synthesis engine */
+    std::weak_ptr<LogDir> m_logdir;  /**< grants access to report and Synthesis engine */
 #ifdef USE_DLT
     bool m_useDLT;                     /**< SyncEvolution and libsynthesis are logging to DLT */
 #endif
 
 public:
-    LogDirLogger(const boost::weak_ptr<LogDir> &logdir);
+    LogDirLogger(const std::weak_ptr<LogDir> &logdir);
     virtual void remove() throw ();
     virtual void messagev(const MessageOptions &options,
                           const char *format,
@@ -316,7 +313,7 @@ public:
 // This class owns the logging directory. It is responsible
 // for redirecting output at the start and end of sync (even
 // in case of exceptions thrown!).
-class LogDir : private boost::noncopyable, private LogDirNames {
+class LogDir : private boost::noncopyable, private LogDirNames, public enable_weak_from_this<LogDir> {
     SyncContext &m_client;
     string m_logdir;         /**< configured backup root dir */
     int m_maxlogdirs;        /**< number of backup dirs to preserve, 0 if unlimited */
@@ -339,10 +336,9 @@ class LogDir : private boost::noncopyable, private LogDirNames {
     bool m_readonly;         /**< m_info is not to be written to */
     SyncReport *m_report;    /**< record start/end times here */
 
-    boost::weak_ptr<LogDir> m_self;
     PushLogger<LogDirLogger> m_logger; /**< active logger */
 
-    LogDir(SyncContext &client) : m_client(client), m_info(NULL), m_readonly(false), m_report(NULL)
+    LogDir(SyncContext &client) : m_client(client), m_info(nullptr), m_readonly(false), m_report(nullptr)
     {
         // Set default log directory. This will be overwritten with a user-specified
         // location later on, if one was selected by the user. SyncEvolution >= 0.9 alpha
@@ -365,12 +361,8 @@ class LogDir : private boost::noncopyable, private LogDirNames {
     }
 
 public:
-    static boost::shared_ptr<LogDir> create(SyncContext &client)
-    {
-        boost::shared_ptr<LogDir> logdir(new LogDir(client));
-        logdir->m_self = logdir;
-        return logdir;
-    }
+    // Construct via make_weak_shared.
+    friend make_weak_shared;
 
     /**
      * Finds previous log directories for context. Reports errors via exceptions.
@@ -385,7 +377,7 @@ public:
     /**
      * Finds previous log directory. Returns empty string if anything went wrong.
      *
-     * @param path        path to configured backup directy, NULL if defaulting to /tmp, "none" if not creating log file
+     * @param path        path to configured backup directy, nullptr if defaulting to /tmp, "none" if not creating log file
      * @return full path of previous log directory, empty string if not found
      */
     string previousLogdir() throw() {
@@ -417,7 +409,7 @@ public:
         }
 
         // Resolve symbolic links in path now, in case that they change later
-        // while the session runs. Relies on being allowed to pass NULL. If that's
+        // while the session runs. Relies on being allowed to pass nullptr. If that's
         // not allowed, we ignore the error and continue to use the known path.
         errno = 0;
         m_logdir = RealPath(m_logdir);
@@ -445,8 +437,8 @@ public:
      * access existing log directory to extract status information
      */
     void openLogdir(const string &dir) {
-        boost::shared_ptr<ConfigNode> filenode(new IniFileConfigNode(dir, "status.ini", true));
-        m_info.reset(new SafeConfigNode(filenode));
+        auto filenode = std::make_shared<IniFileConfigNode>(dir, "status.ini", true);
+        m_info.reset(new SafeConfigNode(std::static_pointer_cast<ConfigNode>(filenode)));
         m_info->setMode(false);
         m_readonly = true;
     }
@@ -502,7 +494,7 @@ public:
     // @param mode        determines how path is interpreted and which session is accessed
     // @param maxlogdirs  number of backup dirs to preserve in path, 0 if unlimited
     // @param logLevel    0 = default, 1 = ERROR, 2 = INFO, 3 = DEBUG
-    // @param report      record information about session here (may be NULL)
+    // @param report      record information about session here (may be nullptr)
     void startSession(const string &path, SessionMode mode, int maxlogdirs, int logLevel, SyncReport *report) {
         m_maxlogdirs = maxlogdirs;
         m_report = report;
@@ -514,7 +506,7 @@ public:
             SE_LOG_DEBUG(NULL, "checking log dir %s", m_logdir.c_str());
             if (mode == SESSION_CREATE) {
                 // create unique directory name in the given directory
-                time_t ts = time(NULL);
+                time_t ts = time(nullptr);
                 struct tm tmbuffer;
                 struct tm *tm = localtime_r(&ts, &tmbuffer);
                 if (!tm) {
@@ -538,7 +530,7 @@ public:
                 SeqMap_t dateTimes2Seq;
                 if (isDir(m_logdir)) {
                     ReadDir dir(m_logdir);
-                    BOOST_FOREACH(const string &entry, dir) {
+                    for (const string &entry: dir) {
                         string dirPrefix, peerName, dateTime;
                         if (parseDirName(entry, dirPrefix, peerName, dateTime)) {
                             // dateTime = -2010-01-31-12-00[-rev]
@@ -562,7 +554,7 @@ public:
                 }
                 stringstream path;
                 path << base.str();
-                SeqMap_t::iterator it = dateTimes2Seq.find(path.str());
+                auto it = dateTimes2Seq.find(path.str());
                 if (it != dateTimes2Seq.end()) {
                     path << "-" << (char)('a' + it->second + 1);
                 }
@@ -610,18 +602,18 @@ public:
         if (mode != SESSION_USE_PATH) {
             Logger::instance().setLevel(level);
         }
-        boost::shared_ptr<Logger> logger(new LogDirLogger(m_self));
+        auto logger = std::make_shared<LogDirLogger>(weak_from_this());
         logger->setLevel(level);
         m_logger.reset(logger);
 
-        time_t start = time(NULL);
+        time_t start = time(nullptr);
         if (m_report) {
             m_report->setStart(start);
         }
         m_readonly = mode == SESSION_READ_ONLY;
         if (!m_path.empty()) {
-            boost::shared_ptr<ConfigNode> filenode(new IniFileConfigNode(m_path, "status.ini", m_readonly));
-            m_info.reset(new SafeConfigNode(filenode));
+            auto filenode = std::make_shared<IniFileConfigNode>(m_path, "status.ini", m_readonly);
+            m_info.reset(new SafeConfigNode(std::static_pointer_cast<ConfigNode>(filenode)));
             m_info->setMode(false);
             if (mode != SESSION_READ_ONLY) {
                 // Create a status.ini which contains an error.
@@ -694,7 +686,7 @@ public:
                 if (status != STATUS_OK && status != STATUS_HTTP_OK) {
                     errors = true;
                 }
-                BOOST_FOREACH(SyncReport::SourceReport_t source, report) {
+                for (SyncReport::SourceReport_t source: report) {
                     string &sourcename = source.first;
                     SyncSourceReport &sourcereport = source.second;
                     list<DumpInfo> &dumplist = dumps[sourcename];
@@ -754,7 +746,7 @@ public:
                 if (index != dirs.size() - 1) {
                     bool mustkeep = false;
                     // also check whether it holds the only backup of a source
-                    BOOST_FOREACH(Dumps_t::value_type dump, dumps) {
+                    for (auto dump: dumps) {
                         if (dump.second.size() == 1 &&
                             dump.second.front().m_dirIndex == index) {
                             mustkeep = true;
@@ -774,7 +766,7 @@ public:
     // finalize session
     void endSession()
     {
-        time_t end = time(NULL);
+        time_t end = time(nullptr);
         if (m_report) {
             m_report->setEnd(end);
         }
@@ -848,7 +840,7 @@ public:
         ReadDir firstContent(first);
         ReadDir secondContent(second);
         set<ino_t> firstInodes;
-        BOOST_FOREACH(const string &name, firstContent) {
+        for (const string &name: firstContent) {
             struct stat buf;
             string fullpath = first + "/" + name;
             if (stat(fullpath.c_str(), &buf)) {
@@ -856,13 +848,13 @@ public:
             }
             firstInodes.insert(buf.st_ino);
         }
-        BOOST_FOREACH(const string &name, secondContent) {
+        for (const string &name: secondContent) {
             struct stat buf;
             string fullpath = second + "/" + name;
             if (stat(fullpath.c_str(), &buf)) {
                 Exception::throwError(SE_HERE, fullpath, errno);
             }
-            set<ino_t>::iterator it = firstInodes.find(buf.st_ino);
+            auto it = firstInodes.find(buf.st_ino);
             if (it == firstInodes.end()) {
                 // second dir has different file
                 return true;
@@ -915,7 +907,7 @@ private:
         SyncConfig::splitConfigString(peer, peerName, context);
 
         ReadDir dir(m_logdir);
-        BOOST_FOREACH(const string &entry, dir) {
+        for (const string &entry: dir) {
             string tmpDirPrefix, tmpPeer, tmpDateTime;
             // if directory name could not be parsed, ignore it
             if(parseDirName(entry, tmpDirPrefix, tmpPeer, tmpDateTime)) {
@@ -963,11 +955,11 @@ private:
     }
 };
 
-LogDirLogger::LogDirLogger(const boost::weak_ptr<LogDir> &logdir) :
+LogDirLogger::LogDirLogger(const std::weak_ptr<LogDir> &logdir) :
     m_parentLogger(Logger::instance()),
     m_logdir(logdir)
 #ifdef USE_DLT
-    , m_useDLT(getenv("SYNCEVOLUTION_USE_DLT") != NULL)
+    , m_useDLT(getenv("SYNCEVOLUTION_USE_DLT") != nullptr)
 #endif
 {
 }
@@ -1005,7 +997,7 @@ void LogDirLogger::messagev(const MessageOptions &options,
     // we record the child's error message in our sync report. If we
     // don't then it shows up later marked as an "error on the target
     // side", which is probably not what we want.
-    boost::shared_ptr<LogDir> logdir;
+    std::shared_ptr<LogDir> logdir;
     if ((bool)(logdir = m_logdir.lock())) {
         if (logdir->m_report &&
             options.m_level <= ERROR &&
@@ -1042,7 +1034,7 @@ void LogDirLogger::messagev(const MessageOptions &options,
                 prefix += *options.m_prefix;
             }
             logdir->m_client.getEngine().doDebug(options.m_level,
-                                                 prefix.empty() ? NULL : prefix.c_str(),
+                                                 prefix.empty() ? nullptr : prefix.c_str(),
                                                  options.m_file,
                                                  options.m_line,
                                                  options.m_function,
@@ -1103,11 +1095,11 @@ public:
         LOGGING_FULL      /**< everything */
     };
 
-    typedef std::vector< boost::shared_ptr<VirtualSyncSource> > VirtualSyncSources_t;
+    typedef std::vector< std::shared_ptr<VirtualSyncSource> > VirtualSyncSources_t;
 
     /** reading our set of virtual sources is okay, modifying it is not */
     const VirtualSyncSources_t &getVirtualSources() { return m_virtualSources; }
-    void addSource(const boost::shared_ptr<VirtualSyncSource> &source) { checkSource(source.get()); m_virtualSources.push_back(source); }
+    void addSource(const std::shared_ptr<VirtualSyncSource> &source) { checkSource(source.get()); m_virtualSources.push_back(source); }
 
     using inherited::iterator;
     using inherited::const_iterator;
@@ -1118,12 +1110,12 @@ public:
     using inherited::rend;
     using inherited::size;
 
-    /** transfers ownership (historic reasons for storing plain pointer...) */
-    void addSource(cxxptr<SyncSource> &source) { checkSource(source); push_back(source.release()); }
+    /** transfers ownership */
+    void addSource(std::unique_ptr<SyncSource> source) { checkSource(source.get()); push_back(source.release()); }
 
 private:
     VirtualSyncSources_t m_virtualSources; /**< all configured virtual data sources (aka Synthesis <superdatastore>) */
-    boost::shared_ptr<LogDir> m_logdir;     /**< our logging directory */
+    std::shared_ptr<LogDir> m_logdir;     /**< our logging directory */
     SyncContext &m_client; /**< the context in which we were instantiated */
     set<string> m_prepared;   /**< remember for which source we dumped databases successfully */
     string m_intro;      /**< remembers the dumpLocalChanges() intro and only prints it again
@@ -1160,8 +1152,8 @@ private:
             }
             // check for collisions
             bool collision = false;
-            BOOST_FOREACH(const string &other, m_client.getSyncSources()) {
-                boost::shared_ptr<PersistentSyncSourceConfig> sc(m_client.getSyncSourceConfig(other));
+            for (const string &other: m_client.getSyncSources()) {
+                std::shared_ptr<PersistentSyncSourceConfig> sc(m_client.getSyncSourceConfig(other));
                 int other_id = sc->getSynthesisID();
                 if (other_id == id) {
                     ++id;
@@ -1198,18 +1190,18 @@ public:
         // to search for previous backups of each source, if
         // necessary.
         SyncContext context(m_client.getContextName());
-        boost::shared_ptr<LogDir> logdir(LogDir::create(context));
+        auto logdir = make_weak_shared::make<LogDir>(context);
         vector<string> dirs;
         logdir->previousLogdirs(dirs);
 
-        BOOST_FOREACH(SyncSource *source, *this) {
+        for (SyncSource *source: *this) {
             if ((!excludeSource.empty() && excludeSource != source->getName()) ||
                 (suffix == "after" && m_prepared.find(source->getName()) == m_prepared.end())) {
                 continue;
             }
 
             string dir = databaseName(*source, suffix);
-            boost::shared_ptr<ConfigNode> node = ConfigNode::createFileNode(dir + ".ini");
+            std::shared_ptr<ConfigNode> node = ConfigNode::createFileNode(dir + ".ini");
             SE_LOG_DEBUG(NULL, "creating %s", dir.c_str());
             rm_r(dir);
             BackupReport dummy;
@@ -1217,10 +1209,7 @@ public:
                 SyncSource::Operations::ConstBackupInfo oldBackup;
                 // Now look for a backup of the current source,
                 // starting with the most recent one.
-                for (vector<string>::const_reverse_iterator it = dirs.rbegin();
-                     it != dirs.rend();
-                     ++it) {
-                    const string &sessiondir = *it;
+                for (const string &sessiondir: reverse(dirs)) {
                     string oldBackupDir;
                     SyncSource::Operations::BackupInfo::Mode mode =
                         SyncSource::Operations::BackupInfo::BACKUP_AFTER;
@@ -1261,7 +1250,7 @@ public:
     void restoreDatabase(SyncSource &source, const string &suffix, bool dryrun, SyncSourceReport &report)
     {
         string dir = databaseName(source, suffix);
-        boost::shared_ptr<ConfigNode> node = ConfigNode::createFileNode(dir + ".ini");
+        std::shared_ptr<ConfigNode> node = ConfigNode::createFileNode(dir + ".ini");
         if (!node->exists()) {
             Exception::throwError(SE_HERE, dir + ": no such database backup found");
         }
@@ -1272,7 +1261,7 @@ public:
     }
 
     SourceList(SyncContext &client, bool doLogging) :
-        m_logdir(LogDir::create(client)),
+        m_logdir(make_weak_shared::make<LogDir>(client)),
         m_client(client),
         m_doLogging(doLogging),
         m_reportTodo(true),
@@ -1299,7 +1288,7 @@ public:
     void accessSession(const string &logDirPath) {
         m_logdir->setLogdir(logDirPath);
         m_previousLogdir = m_logdir->previousLogdir();
-        m_logdir->startSession(logDirPath, LogDir::SESSION_READ_ONLY, 0, 0, NULL);
+        m_logdir->startSession(logDirPath, LogDir::SESSION_READ_ONLY, 0, 0, nullptr);
     }
 
 
@@ -1339,7 +1328,7 @@ public:
             m_logdir->previousLogdirs(dirs);
         }
 
-        BOOST_FOREACH(SyncSource *source, *this) {
+        for (SyncSource *source: *this) {
             if ((!excludeSource.empty() && excludeSource != source->getName()) ||
                 (newSuffix == "after" && m_prepared.find(source->getName()) == m_prepared.end())) {
                 continue;
@@ -1355,11 +1344,8 @@ public:
             if (oldSession.empty()) {
                 // Now look for the latest session involving the current source,
                 // starting with the most recent one.
-                for (vector<string>::const_reverse_iterator it = dirs.rbegin();
-                     it != dirs.rend();
-                     ++it) {
-                    const string &sessiondir = *it;
-                    boost::shared_ptr<LogDir> oldsession(LogDir::create(m_client));
+                for (const string &sessiondir: reverse(dirs)) {
+                    auto oldsession = make_weak_shared::make<LogDir>(m_client);
                     oldsession->openLogdir(sessiondir);
                     SyncReport report;
                     oldsession->readReport(report);
@@ -1521,7 +1507,7 @@ public:
 
     /** copies information about sources into sync report */
     void updateSyncReport(SyncReport &report) {
-        BOOST_FOREACH(SyncSource *source, *this) {
+        for (SyncSource *source: *this) {
             report.addSyncSourceReport(source->getName(), *source);
         }
     }
@@ -1530,7 +1516,7 @@ public:
     set<string> getSources() {
         set<string> res;
 
-        BOOST_FOREACH(SyncSource *source, *this) {
+        for (SyncSource *source: *this) {
             res.insert(source->getName());
         }
         return res;
@@ -1538,39 +1524,39 @@ public:
    
     ~SourceList() {
         // free sync sources
-        BOOST_FOREACH(SyncSource *source, *this) {
+        for (SyncSource *source: *this) {
             delete source;
         }
     }
 
     /** find sync source by name (both normal and virtual sources) */
     SyncSource *operator [] (const string &name) {
-        BOOST_FOREACH(SyncSource *source, *this) {
+        for (SyncSource *source: *this) {
             if (name == source->getName()) {
                 return source;
             }
         }
-        BOOST_FOREACH(boost::shared_ptr<VirtualSyncSource> &source, m_virtualSources) {
+        for (std::shared_ptr<VirtualSyncSource> &source: m_virtualSources) {
             if (name == source->getName()) {
                 return source.get();
             }
         }
-        return NULL;
+        return nullptr;
     }
 
     /** find by XML <dbtypeid> (the ID used by Synthesis to identify sources in progress events) */
     SyncSource *lookupBySynthesisID(int synthesisid) {
-        BOOST_FOREACH(SyncSource *source, *this) {
+        for (SyncSource *source: *this) {
             if (source->getSynthesisID() == synthesisid) {
                 return source;
             }
         }
-        BOOST_FOREACH(boost::shared_ptr<VirtualSyncSource> &source, m_virtualSources) {
+        for (std::shared_ptr<VirtualSyncSource> &source: m_virtualSources) {
             if (source->getSynthesisID() == synthesisid) {
                 return source.get();
             }
         }
-        return NULL;
+        return nullptr;
     }
 
     std::list<std::string> getSourceNames() const;
@@ -1579,7 +1565,7 @@ public:
 std::list<std::string> SourceList::getSourceNames() const
 {
     std::list<std::string> sourceNames;
-    BOOST_FOREACH (SyncSource *source, *this) {
+    for (SyncSource *source: *this) {
         sourceNames.push_back(source->getName());
     }
     return sourceNames;
@@ -1618,12 +1604,12 @@ const std::vector<SyncSource *> *SyncContext::getSources() const
 {
     return m_sourceListPtr ?
         m_sourceListPtr->getSourceSet() :
-        NULL;
+        nullptr;
 }
 
 string SyncContext::getUsedSyncURL() {
     vector<string> urls = getSyncURL();
-    BOOST_FOREACH (string url, urls) {
+    for (string url: urls) {
         if (boost::starts_with(url, "http://") ||
                 boost::starts_with(url, "https://")) {
 #ifdef ENABLE_LIBSOUP
@@ -1654,7 +1640,7 @@ static void CancelTransport(TransportAgent *agent, SuspendFlags &flags)
  * common initialization for all kinds of transports, to be called
  * before using them
  */
-static void InitializeTransport(const boost::shared_ptr<TransportAgent> &agent,
+static void InitializeTransport(const std::shared_ptr<TransportAgent> &agent,
                                 int timeout)
 {
     agent->setTimeout(timeout);
@@ -1663,10 +1649,10 @@ static void InitializeTransport(const boost::shared_ptr<TransportAgent> &agent,
     // is detected. Relies of automatic connection management
     // to disconnect when agent is deconstructed.
     SuspendFlags &flags(SuspendFlags::getSuspendFlags());
-    flags.m_stateChanged.connect(SuspendFlags::StateChanged_t::slot_type(CancelTransport, agent.get(), _1).track(agent));
+    flags.m_stateChanged.connect(SuspendFlags::StateChanged_t::slot_type(CancelTransport, agent.get(), boost::placeholders::_1).track_foreign(agent));
 }
 
-boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainloop)
+std::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainloop)
 {
     string url = getUsedSyncURL();
     m_retryInterval = getRetryInterval();
@@ -1675,19 +1661,19 @@ boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainl
 
     if (m_localSync) {
         string peer = url.substr(strlen("local://"));
-        boost::shared_ptr<LocalTransportAgent> agent(LocalTransportAgent::create(this, peer, gmainloop));
+        auto agent = make_weak_shared::make<LocalTransportAgent>(this, peer, gmainloop);
         InitializeTransport(agent, timeout);
         agent->start();
         return agent;
     } else if (boost::starts_with(url, "http://") ||
         boost::starts_with(url, "https://")) {
 #ifdef ENABLE_LIBSOUP
-        boost::shared_ptr<SoupTransportAgent> agent(SoupTransportAgent::create(static_cast<GMainLoop *>(gmainloop)));
+        auto agent = make_weak_shared::make<SoupTransportAgent>(static_cast<GMainLoop *>(gmainloop));
         agent->setConfig(*this);
         InitializeTransport(agent, timeout);
         return agent;
 #elif defined(ENABLE_LIBCURL)
-        boost::shared_ptr<CurlTransportAgent> agent(new CurlTransportAgent());
+        auto agent = std::make_shared<CurlTransportAgent>();
         agent->setConfig(*this);
         InitializeTransport(agent, timeout);
         return agent;
@@ -1695,8 +1681,8 @@ boost::shared_ptr<TransportAgent> SyncContext::createTransportAgent(void *gmainl
     } else if (boost::starts_with(url, "obex-bt://")) {
 #ifdef ENABLE_BLUETOOTH
         std::string btUrl = url.substr (strlen ("obex-bt://"), std::string::npos);
-        boost::shared_ptr<ObexTransportAgent> agent(new ObexTransportAgent(ObexTransportAgent::OBEX_BLUETOOTH,
-                                                                           static_cast<GMainLoop *>(gmainloop)));
+        auto agent = std::make_shared<ObexTransportAgent>(ObexTransportAgent::OBEX_BLUETOOTH,
+                                                          static_cast<GMainLoop *>(gmainloop));
         agent->setURL (btUrl);
         InitializeTransport(agent, timeout);
         // this will block already
@@ -2152,14 +2138,14 @@ static void *mainLoopThread(void *)
     sigset_t blocked;
     sigemptyset(&blocked);
     sigaddset(&blocked, SIGALRM);
-    pthread_sigmask(SIG_BLOCK, &blocked, NULL);
+    pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
 
-    GMainLoop *mainloop = g_main_loop_new(NULL, TRUE);
+    GMainLoop *mainloop = g_main_loop_new(nullptr, TRUE);
     if (mainloop) {
         g_main_loop_run(mainloop);
         g_main_loop_unref(mainloop);
     }
-    return NULL;
+    return nullptr;
 }
 #endif
 
@@ -2171,7 +2157,7 @@ void SyncContext::startLoopThread()
     static pthread_t loopthread;
     static bool loopthreadrunning;
     if (!loopthreadrunning) {
-        loopthreadrunning = !pthread_create(&loopthread, NULL, mainLoopThread, NULL);
+        loopthreadrunning = !pthread_create(&loopthread, nullptr, mainLoopThread, nullptr);
     }
 #endif
 }
@@ -2179,7 +2165,7 @@ void SyncContext::startLoopThread()
 SyncSource *SyncContext::findSource(const std::string &name)
 {
     if (!m_activeContext || !m_activeContext->m_sourceListPtr) {
-        return NULL;
+        return nullptr;
     }
     const char *realname = strrchr(name.c_str(), m_findSourceSeparator);
     if (realname) {
@@ -2208,8 +2194,8 @@ void SyncContext::initSources(SourceList &sourceList)
     }
 
     // Phase 1, check all virtual sync soruces
-    BOOST_FOREACH(const string &name, configuredSources) {
-        boost::shared_ptr<PersistentSyncSourceConfig> sc(getSyncSourceConfig(name));
+    for (const string &name: configuredSources) {
+        std::shared_ptr<PersistentSyncSourceConfig> sc(getSyncSourceConfig(name));
         SyncSourceNodes source = getSyncSourceNodes (name);
         std::string sync = sc->getSync();
         SyncMode mode = StringToSyncMode(sync);
@@ -2218,12 +2204,12 @@ void SyncContext::initSources(SourceList &sourceList)
             if (sourceType.m_backend == "virtual") {
                 //This is a virtual sync source, check and enable the referenced
                 //sub syncsources here
-                SyncSourceParams params(name, source, boost::shared_ptr<SyncConfig>(this, SyncConfigNOP()), contextName);
-                boost::shared_ptr<VirtualSyncSource> vSource = boost::shared_ptr<VirtualSyncSource> (new VirtualSyncSource (params));
+                SyncSourceParams params(name, source, std::shared_ptr<SyncConfig>(this, SyncConfigNOP()), contextName);
+                std::shared_ptr<VirtualSyncSource> vSource = std::shared_ptr<VirtualSyncSource>(new VirtualSyncSource (params));
                 std::vector<std::string> mappedSources = vSource->getMappedSources();
-                BOOST_FOREACH (std::string source, mappedSources) {
+                for (std::string source: mappedSources) {
                     //check whether the mapped source is really available
-                    boost::shared_ptr<PersistentSyncSourceConfig> source_config 
+                    std::shared_ptr<PersistentSyncSourceConfig> source_config 
                         = getSyncSourceConfig(source);
                     if (!source_config || !source_config->exists()) {
                         Exception::throwError(SE_HERE,
@@ -2245,7 +2231,7 @@ void SyncContext::initSources(SourceList &sourceList)
                     // URI
                     vFilter["uri"] = string("<") + vSource->getName() + ">" + vSource->getURINonEmpty();
                 }
-                BOOST_FOREACH (std::string source, mappedSources) {
+                for (std::string source: mappedSources) {
                     setConfigFilter (false, source, vFilter);
                 }
                 sourceList.addSource(vSource);
@@ -2253,8 +2239,8 @@ void SyncContext::initSources(SourceList &sourceList)
         }
     }
 
-    BOOST_FOREACH(const string &name, configuredSources) {
-        boost::shared_ptr<PersistentSyncSourceConfig> sc(getSyncSourceConfig(name));
+    for (const string &name: configuredSources) {
+        std::shared_ptr<PersistentSyncSourceConfig> sc(getSyncSourceConfig(name));
 
         SyncSourceNodes source = getSyncSourceNodes (name);
         if (!sc->isDisabled()) {
@@ -2262,16 +2248,16 @@ void SyncContext::initSources(SourceList &sourceList)
             if (sourceType.m_backend != "virtual") {
                 SyncSourceParams params(name,
                                         source,
-                                        boost::shared_ptr<SyncConfig>(this, SyncConfigNOP()),
+                                        std::shared_ptr<SyncConfig>(this, SyncConfigNOP()),
                                         contextName);
-                cxxptr<SyncSource> syncSource(SyncSource::createSource(params));
+                auto syncSource = SyncSource::createSource(params);
                 if (!syncSource) {
                     Exception::throwError(SE_HERE, name + ": type unknown" );
                 }
                 if (subSources.find(name) != subSources.end()) {
                     syncSource->recordVirtualSource(subSources[name]);
                 }
-                sourceList.addSource(syncSource);
+                sourceList.addSource(std::move(syncSource));
             }
         } else {
             // the Synthesis engine is never going to see this source,
@@ -2296,30 +2282,6 @@ void SyncContext::initSources(SourceList &sourceList)
                                   true);
         }
     }
-}
-
-SyncMLStatus SyncContext::startSourceAccess(SyncSource *source)
-{
-    if(m_firstSourceAccess) {
-        syncSuccessStart();
-        m_firstSourceAccess = false;
-    }
-    if (m_serverMode) {
-        // When using the source as cache, change tracking
-        // is not required. Disabling it can make item
-        // changes faster.
-        SyncMode mode = StringToSyncMode(source->getSync());
-        if (mode == SYNC_LOCAL_CACHE_SLOW ||
-            mode == SYNC_LOCAL_CACHE_INCREMENTAL) {
-            source->setNeedChanges(false);
-        }
-        // source is active in sync, now open it
-        source->open();
-    }
-    // database dumping is delayed in both client and server
-    m_sourceListPtr->syncPrepare(source->getName());
-
-    return STATUS_OK;
 }
 
 // XML configuration converted to C string constants
@@ -2414,7 +2376,7 @@ void XMLFiles::addFragments(const string &dir, Category category)
         return;
     }
     ReadDir content(dir);
-    BOOST_FOREACH(const string &file, content) {
+    for (const string &file: content) {
         if (boost::ends_with(file, ".xml")) {
             m_files[category][file] = dir + "/" + file;
         }
@@ -2425,7 +2387,7 @@ string XMLFiles::get(Category category)
 {
     string res;
 
-    BOOST_FOREACH(const StringPair &entry, m_files[category]) {
+    for (const auto &entry: m_files[category]) {
         string content;
         ReadFile(entry.second, content);
         res += content;
@@ -2436,7 +2398,7 @@ string XMLFiles::get(Category category)
 string XMLFiles::get(const string &file)
 {
     string res;
-    StringMap::const_iterator entry = m_files[MAIN].find(file);
+    auto entry = m_files[MAIN].find(file);
     if (entry != m_files[MAIN].end()) {
         ReadFile(entry->second, res);
     }
@@ -2672,7 +2634,7 @@ void SyncContext::getConfigXML(bool isSync, string &xml, string &configname)
 #ifdef USE_DLT
         const char *useDLT = getenv("SYNCEVOLUTION_USE_DLT");
 #else
-        static const char *useDLT = NULL;
+        static const char *useDLT = nullptr;
 #endif
 
         debug <<
@@ -2694,28 +2656,6 @@ void SyncContext::getConfigXML(bool isSync, string &xml, string &configname)
             "    <singlegloballog>yes</singlegloballog>\n";
 #ifdef USE_DLT
         if (useDLT) {
-            const char *contexts[] = {
-                "PROT",
-                "SESS",
-                "ADMN",
-                "DATA",
-                "REMI",
-                "PARS",
-                "GEN",
-                "TRNS",
-                "SMLT",
-                "SYS"
-            };
-            BOOST_FOREACH (const char *context, contexts) {
-                // Help libsynthesis debuglogger.cpp set default log levels,
-                // based on our own one.
-                SE_LOG_DEBUG(NULL, "default libsynthesis DLT logging of %s = %s",
-                             context, useDLT);
-                setenv((std::string("LIBSYNTHESIS_") + context).c_str(),
-                       useDLT,
-                       false);
-            }
-
             debug <<
                 // We have to enable all logging inside libsynthesis.
                 // The actual filtering then takes place inside DLT.
@@ -2773,7 +2713,7 @@ void SyncContext::getConfigXML(bool isSync, string &xml, string &configname)
     if (index != xml.npos) {
         stringstream datastores;
 
-        BOOST_FOREACH(SyncSource *source, *m_sourceListPtr) {
+        for (SyncSource *source: *m_sourceListPtr) {
             string fragment;
             source->getDatastoreXML(fragment, fragments);
             string name;
@@ -2850,14 +2790,14 @@ void SyncContext::getConfigXML(bool isSync, string &xml, string &configname)
         /*If there is super datastore, add it here*/
         //TODO generate specific superdatastore contents (MB #8753)
         //Now only works for synthesis built-in events+tasks
-        BOOST_FOREACH (boost::shared_ptr<VirtualSyncSource> vSource, m_sourceListPtr->getVirtualSources()) {
+        for (std::shared_ptr<VirtualSyncSource> vSource: m_sourceListPtr->getVirtualSources()) {
             std::string superType = vSource->getSourceType().m_format;
             std::string evoSyncSource = vSource->getDatabaseID();
             std::vector<std::string> mappedSources = unescapeJoinedString (evoSyncSource, ',');
 
             // always check for a consistent config
             SourceType sourceType = vSource->getSourceType();
-            BOOST_FOREACH (std::string source, mappedSources) {
+            for (std::string source: mappedSources) {
                 //check the data type
                 SyncSource *subSource = (*m_sourceListPtr)[source];
                 SourceType subType = subSource->getSourceType();
@@ -3149,44 +3089,6 @@ static gboolean timeout(gpointer data)
     return true;
 }
 
-static bool CondTimedWaitContinue(pthread_mutex_t *mutex,
-                                  bool &terminated,
-                                  long milliSecondsToWait,
-                                  Timespec &deadline,
-                                  SuspendFlags &flags,
-                                  int &result)
-{
-    // Thread has terminated?
-    pthread_mutex_lock(mutex);
-    if (terminated) {
-        pthread_mutex_unlock(mutex);
-        SE_LOG_DEBUG(NULL, "background thread completed");
-        return false;
-    }
-    pthread_mutex_unlock(mutex);
-
-    // Abort? Ignore when waiting for final thread shutdown, because
-    // in that case we just get called again.
-    if (milliSecondsToWait > 0 && flags.isAborted()) {
-        SE_LOG_DEBUG(NULL, "give up waiting for background thread, aborted");
-        // Signal error. libsynthesis then assumes that the thread still
-        // runs and enters its parallel message sending, which eventually
-        // returns control to us.
-        result = 1;
-        return false;
-    }
-
-    // Timeout?
-    if (!milliSecondsToWait ||
-        (milliSecondsToWait > 0 && deadline <= Timespec::system())) {
-        SE_LOG_DEBUG(NULL, "give up waiting for background thread, timeout");
-        result = 1;
-        return false;
-    }
-
-    return true;
-}
-
 static int CondTimedWaitGLib(pthread_cond_t * /* cond */, pthread_mutex_t *mutex,
                              bool &terminated, long milliSecondsToWait)
 {
@@ -3206,15 +3108,40 @@ static int CondTimedWaitGLib(pthread_cond_t * /* cond */, pthread_mutex_t *mutex
         // We don't need to react to thread shutdown immediately (only
         // called once per sync), so a relatively long check interval of
         // one second is okay.
-        GLibEvent id(g_timeout_add_seconds(1, timeout, NULL), "timeout");
+        GLibEvent id(g_timeout_add_seconds(1, timeout, nullptr), "timeout");
 
-        GRunWhile(boost::bind(CondTimedWaitContinue,
-                              mutex,
-                              boost::ref(terminated),
-                              milliSecondsToWait,
-                              boost::ref(deadline),
-                              boost::ref(flags),
-                              boost::ref(result)));
+        auto condTimedWaitContinue = [mutex, &terminated, milliSecondsToWait, &deadline, &flags, &result] () {
+            // Thread has terminated?
+            pthread_mutex_lock(mutex);
+            if (terminated) {
+                pthread_mutex_unlock(mutex);
+                SE_LOG_DEBUG(NULL, "background thread completed");
+                return false;
+            }
+            pthread_mutex_unlock(mutex);
+
+            // Abort? Ignore when waiting for final thread shutdown, because
+            // in that case we just get called again.
+            if (milliSecondsToWait > 0 && flags.isAborted()) {
+                SE_LOG_DEBUG(NULL, "give up waiting for background thread, aborted");
+                // Signal error. libsynthesis then assumes that the thread still
+                // runs and enters its parallel message sending, which eventually
+                // returns control to us.
+                result = 1;
+                return false;
+            }
+
+            // Timeout?
+            if (!milliSecondsToWait ||
+                (milliSecondsToWait > 0 && deadline <= Timespec::system())) {
+                SE_LOG_DEBUG(NULL, "give up waiting for background thread, timeout");
+                result = 1;
+                return false;
+            }
+
+            return true;
+        };
+        GRunWhile(condTimedWaitContinue);
     } catch (...) {
         Exception::handle(HANDLE_EXCEPTION_FATAL);
     }
@@ -3233,7 +3160,7 @@ void SyncContext::initMain(const char *appname)
     g_type_init();
 #endif
 #if !GLIB_CHECK_VERSION(2,32,0)
-    g_thread_init(NULL);
+    g_thread_init(nullptr);
 #endif
     g_set_prgname(appname);
 
@@ -3241,14 +3168,14 @@ void SyncContext::initMain(const char *appname)
     SuspendFlags::getSuspendFlags();
 
     // redirect glib logging into our own logging
-    g_log_set_default_handler(Logger::glogFunc, NULL);
+    g_log_set_default_handler(Logger::glogFunc, nullptr);
 
     // Only the main thread may use the default GMainContext.
     // Anything else is unsafe, see https://mail.gnome.org/archives/gtk-list/2013-April/msg00040.html
     // util.cpp:Sleep() checks this and uses the default context
     // when called by the main thread, otherwise falls back to
     // select(). GRunWhile() is always safe to use.
-    g_main_context_acquire(NULL);
+    g_main_context_acquire(nullptr);
 
     SySync_CondTimedWait = CondTimedWaitGLib;
 #endif
@@ -3265,10 +3192,11 @@ void SyncContext::initMain(const char *appname)
     // in KDE backend
     GetInitMainSignal()(appname);
 
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = SIG_IGN;
-    sigaction(SIGPIPE, &sa, NULL);
+    sigaction(SIGPIPE, &sa, nullptr);
 
     // Initializing a potential use of EDS early is necessary for
     // libsynthesis when compiled with
@@ -3285,8 +3213,8 @@ void SyncContext::initMain(const char *appname)
         typedef void (*LogFunc_t)(int level, const char *str);
         void (*set_log_function)(LogFunc_t func);
         
-        set_log_level = (BOOST_TYPEOF(set_log_level))dlsym(RTLD_DEFAULT, "gnutls_global_set_log_level");
-        set_log_function = (BOOST_TYPEOF(set_log_function))dlsym(RTLD_DEFAULT, "gnutls_global_set_log_function");
+        set_log_level = (decltype(set_log_level))dlsym(RTLD_DEFAULT, "gnutls_global_set_log_level");
+        set_log_function = (decltype(set_log_function))dlsym(RTLD_DEFAULT, "gnutls_global_set_log_function");
 
         if (set_log_level && set_log_function) {
             set_log_level(atoi(gnutlsdbg));
@@ -3431,7 +3359,29 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
             // open each source - failing now is still safe
             // in clients; in servers we wait until the source
             // is really needed
-            BOOST_FOREACH(SyncSource *source, sourceList) {
+            auto startSourceAccess = [this] (SyncEvo::SyncSource &source, const char *, const char *) {
+                if(m_firstSourceAccess) {
+                    syncSuccessStart();
+                    m_firstSourceAccess = false;
+                }
+                if (m_serverMode) {
+                    // When using the source as cache, change tracking
+                    // is not required. Disabling it can make item
+                    // changes faster.
+                    SyncMode mode = StringToSyncMode(source.getSync());
+                    if (mode == SYNC_LOCAL_CACHE_SLOW ||
+                        mode == SYNC_LOCAL_CACHE_INCREMENTAL) {
+                        source.setNeedChanges(false);
+                    }
+                    // source is active in sync, now open it
+                    source.open();
+                }
+                // database dumping is delayed in both client and server
+                m_sourceListPtr->syncPrepare(source.getName());
+
+                return STATUS_OK;
+            };
+            for (SyncSource *source: sourceList) {
                 if (m_serverMode) {
                     source->enableServerMode();
                 } else {
@@ -3439,7 +3389,7 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
                 }
 
                 // request callback when starting to use source
-                source->getOperations().m_startDataRead.getPreSignal().connect(boost::bind(&SyncContext::startSourceAccess, this, source));
+                source->getOperations().m_startDataRead.getPreSignal().connect(startSourceAccess);
             }
 
             // ready to go
@@ -3466,7 +3416,7 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
         // When a source or the overall sync was successful,
         // but some items failed, we report a "partial failure"
         // status.
-        BOOST_FOREACH(SyncSource *source, sourceList) {
+        for (SyncSource *source: sourceList) {
             m_sourceSyncedSignal(source->getName(), *source);
             if (source->getStatus() == STATUS_OK &&
                 (source->getItemStat(SyncSource::ITEM_LOCAL,
@@ -3490,10 +3440,10 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
         // in LocalTransportAgent::checkChildReport(). What we can do here
         // is updating the individual's sources status.
         if (m_localSync && m_agent && getPeerIsClient()) {
-            boost::shared_ptr<LocalTransportAgent> agent = boost::static_pointer_cast<LocalTransportAgent>(m_agent);
+            std::shared_ptr<LocalTransportAgent> agent = std::static_pointer_cast<LocalTransportAgent>(m_agent);
             SyncReport childReport;
             agent->getClientSyncReport(childReport);
-            BOOST_FOREACH(SyncSource *source, sourceList) {
+            for (SyncSource *source: sourceList) {
                 const SyncSourceReport *childSourceReport = childReport.findSyncSourceReport(source->getURINonEmpty());
                 if (childSourceReport) {
                     SyncMLStatus parentSourceStatus = source->getStatus();
@@ -3517,7 +3467,7 @@ SyncMLStatus SyncContext::sync(SyncReport *report)
     }
 
     m_agent.reset();
-    m_sourceListPtr = NULL;
+    m_sourceListPtr = nullptr;
     return status;
 }
 
@@ -3556,12 +3506,12 @@ bool SyncContext::sendSAN(uint16_t version)
 
     /* For each virtual datasoruce, generate the SAN accoring to it and ignoring
      * sub datasource in the later phase*/
-    BOOST_FOREACH (boost::shared_ptr<VirtualSyncSource> vSource, m_sourceListPtr->getVirtualSources()) {
+    for (std::shared_ptr<VirtualSyncSource> vSource: m_sourceListPtr->getVirtualSources()) {
             std::string evoSyncSource = vSource->getDatabaseID();
             std::string sync = vSource->getSync();
             SANSyncMode mode = AlertSyncMode(StringToSyncMode(sync, true), getPeerIsClient());
             std::vector<std::string> mappedSources = unescapeJoinedString (evoSyncSource, ',');
-            BOOST_FOREACH (std::string source, mappedSources) {
+            for (std::string source: mappedSources) {
                 dataSources.erase (source);
                 if (mode == SA_SLOW) {
                     // We force a source which the client is not expected to use into slow mode.
@@ -3576,8 +3526,8 @@ bool SyncContext::sendSAN(uint16_t version)
     vector<pair <string, string> > alertedSources;
 
     /* For each source to be notified do the following: */
-    BOOST_FOREACH (string name, dataSources) {
-        boost::shared_ptr<PersistentSyncSourceConfig> sc(getSyncSourceConfig(name));
+    for (string name: dataSources) {
+        std::shared_ptr<PersistentSyncSourceConfig> sc(getSyncSourceConfig(name));
         string sync = sc->getSync();
         SANSyncMode mode = AlertSyncMode(StringToSyncMode(sync, true), getPeerIsClient());
         if (mode == SA_SLOW) {
@@ -3738,7 +3688,7 @@ bool SyncContext::setFreeze(bool freeze)
             m_agent->setFreeze(freeze);
         }
         if (m_sourceListPtr) {
-            BOOST_FOREACH (SyncSource *source, *m_sourceListPtr) {
+            for (SyncSource *source: *m_sourceListPtr) {
                 SE_LOG_DEBUG(NULL, "SyncContext::setFreeze(): datastore %s", source->getDisplayName().c_str());
                 source->setFreeze(freeze);
             }
@@ -3748,27 +3698,13 @@ bool SyncContext::setFreeze(bool freeze)
     }
 }
 
-SyncMLStatus SyncContext::preSaveAdminData(SyncSource &source)
-{
-    if (!source.getTotalNumItemsReceived() &&
-        !source.getTotalNumItemsSent() &&
-        source.getFinalSyncMode() == SYNC_TWO_WAY &&
-        !source.isFirstSync()) {
-        SE_LOG_DEBUG(NULL, "requesting end of two-way sync with one source early because nothing changed");
-        m_quitSync = true;
-        return STATUS_SYNC_END_SHORTCUT;
-    } else {
-        return STATUS_OK;
-    }
-}
-
 SharedSession *keepSession;
 
 SyncMLStatus SyncContext::doSync()
 {
-    boost::shared_ptr<SuspendFlags::Guard> signalGuard;
+    std::shared_ptr<SuspendFlags::Guard> signalGuard;
     // install signal handlers unless this was explicitly disabled
-    bool catchSignals = getenv("SYNCEVOLUTION_NO_SYNC_SIGNALS") == NULL;
+    bool catchSignals = getenv("SYNCEVOLUTION_NO_SYNC_SIGNALS") == nullptr;
     if (catchSignals) {
         SE_LOG_DEBUG(NULL, "sync is starting, catch signals");
         signalGuard = SuspendFlags::getSuspendFlags().activate();
@@ -3810,7 +3746,7 @@ SyncMLStatus SyncContext::doSync()
         bool status = true;
         try {
             status = sendSAN (version);
-        } catch (TransportException e) {
+        } catch (const TransportException &e) {
             if (!sanFormat.empty()){
                 throw;
             }
@@ -3875,7 +3811,7 @@ SyncMLStatus SyncContext::doSync()
             m_engine.SetStrValue(profile, "serverURI", getUsedSyncURL());
             UserIdentity syncUser = getSyncUser();
             InitStateString syncPassword = getSyncPassword();
-            boost::shared_ptr<AuthProvider> provider = AuthProvider::create(syncUser, syncPassword);
+            std::shared_ptr<AuthProvider> provider = AuthProvider::create(syncUser, syncPassword);
             Credentials cred = provider->getCredentials();
             const std::string &user = cred.m_username;
             const std::string &password = cred.m_password;
@@ -4000,7 +3936,21 @@ SyncMLStatus SyncContext::doSync()
         m_localSync &&
         m_sourceListPtr->size() == 1) {
         SyncSource *source = *(*m_sourceListPtr).begin();
-        source->getOperations().m_saveAdminData.getPreSignal().connect(boost::bind(&SyncContext::preSaveAdminData, this, _1));
+
+        auto preSaveAdminData = [this] (SyncSource &source, const char *adminData) {
+            if (!source.getTotalNumItemsReceived() &&
+                !source.getTotalNumItemsSent() &&
+                source.getFinalSyncMode() == SYNC_TWO_WAY &&
+                !source.isFirstSync()) {
+                SE_LOG_DEBUG(NULL, "requesting end of two-way sync with one source early because nothing changed");
+                m_quitSync = true;
+                return STATUS_SYNC_END_SHORTCUT;
+            } else {
+                return STATUS_OK;
+            }
+        };
+
+        source->getOperations().m_saveAdminData.getPreSignal().connect(preSaveAdminData);
     }
 
     // Sync main loop: runs until SessionStep() signals end or error.
@@ -4086,8 +4036,7 @@ SyncMLStatus SyncContext::doSync()
             // eventually because we stop exchanging SyncML messages.
             if (!aborting && !suspending && m_syncFreeze == SYNC_FREEZE_FROZEN) {
                 SE_LOG_DEBUG(NULL, "freezing sync");
-                GRunWhile(boost::lambda::var(m_syncFreeze) == SYNC_FREEZE_FROZEN &&
-                          boost::lambda::bind(&SuspendFlags::isNormal, &flags));
+                GRunWhile([this, &flags] () { return this->m_syncFreeze == SYNC_FREEZE_FROZEN && flags.isNormal(); });
             }
 
             if (stepCmd == sysync::STEPCMD_NEEDDATA) {
@@ -4113,7 +4062,7 @@ SyncMLStatus SyncContext::doSync()
                 // Catch outgoing message and abort if requested by script.
                 // Report which sources are affected, based on their status code.
                 set<string> sources;
-                BOOST_FOREACH(SyncSource *source, *m_sourceListPtr) {
+                for (SyncSource *source: *m_sourceListPtr) {
                     if (source->getStatus() == STATUS_UNEXPECTED_SLOW_SYNC) {
                         string name = source->getVirtualSource();
                         if (name.empty()) {
@@ -4233,7 +4182,7 @@ SyncMLStatus SyncContext::doSync()
                         }
                     }
 
-                    BOOST_FOREACH (SyncSource *source, *m_sourceListPtr) {
+                    for (SyncSource *source: *m_sourceListPtr) {
                         source->flushItemChanges();
                         if (needResults) {
                             source->finishItemChanges();
@@ -4270,7 +4219,7 @@ SyncMLStatus SyncContext::doSync()
                     // last reply message and instead tell the client
                     // to quit.
                     m_agent->setContentType("quitsync");
-                    m_agent->send(NULL, 0);
+                    m_agent->send(nullptr, 0);
                 } else {
                     m_agent->send(sendBuffer.get(), sendBuffer.size());
                 }
@@ -4347,7 +4296,7 @@ SyncMLStatus SyncContext::doSync()
                     } else if (contentType == "quitsync") {
                         SE_LOG_DEBUG(NULL, "server is asking us to quit the sync session");
                         // Fake "done" events for each active source.
-                        BOOST_FOREACH(SyncSource *source, *m_sourceListPtr) {
+                        for (SyncSource *source: *m_sourceListPtr) {
                             if (source->getFinalSyncMode() != SYNC_NONE) {
                                 displaySourceProgress(*source,
                                                       SyncSourceEvent(sysync::PEV_SYNCEND, 0, 0, 0),
@@ -4534,7 +4483,7 @@ void SyncContext::status()
                                            // Don't need sync passwords.
                                            PasswordConfigProperty::CHECK_PASSWORD_ALL & ~PasswordConfigProperty::CHECK_PASSWORD_SYNC,
                                            sourceList.getSourceNames());
-    BOOST_FOREACH(SyncSource *source, sourceList) {
+    for (SyncSource *source: sourceList) {
         source->open();
     }
 
@@ -4559,7 +4508,7 @@ void SyncContext::status()
         if (!m_quiet && getPrintChanges()) {
             try {
                 sourceList.setPath(prevLogdir);
-                sourceList.dumpDatabases("current", NULL);
+                sourceList.dumpDatabases("current", nullptr);
                 sourceList.dumpLocalChanges("", "after", "current", "");
             } catch(...) {
                 Exception::handle();
@@ -4583,7 +4532,7 @@ void SyncContext::checkStatus(SyncReport &report)
                                            // Don't need sync passwords.
                                            PasswordConfigProperty::CHECK_PASSWORD_ALL & ~PasswordConfigProperty::CHECK_PASSWORD_SYNC,
                                            sourceList.getSourceNames());
-    BOOST_FOREACH(SyncSource *source, sourceList) {
+    for (SyncSource *source: sourceList) {
         source->open();
     }
 
@@ -4605,8 +4554,8 @@ static void logRestoreReport(const SyncReport &report, bool dryrun)
 
 void SyncContext::checkSourceChanges(SourceList &sourceList, SyncReport &changes)
 {
-    changes.setStart(time(NULL));
-    BOOST_FOREACH(SyncSource *source, sourceList) {
+    changes.setStart(time(nullptr));
+    for (SyncSource *source: sourceList) {
         SyncSourceReport local;
         if (source->getOperations().m_checkStatus) {
             source->getOperations().m_checkStatus(local);
@@ -4631,7 +4580,7 @@ void SyncContext::checkSourceChanges(SourceList &sourceList, SyncReport &changes
         }
         changes.addSyncSourceReport(source->getName(), local);
     }
-    changes.setEnd(time(NULL));
+    changes.setEnd(time(nullptr));
 }
 
 bool SyncContext::checkForScriptAbort(SharedSession session)
@@ -4641,11 +4590,11 @@ bool SyncContext::checkForScriptAbort(SharedSession session)
         SharedKey contextKey = m_engine.OpenKeyByPath(sessionKey, "/sessionvars");
         bool abort = m_engine.GetInt32Value(contextKey, "delayedabort");
         return abort;
-    } catch (NoSuchKey) {
+    } catch (const NoSuchKey &) {
         // this is necessary because the session might already have
         // been closed, which removes the variable
         return false;
-    } catch (BadSynthesisResult) {
+    } catch (const BadSynthesisResult &) {
         return false;
     }
 }
@@ -4664,14 +4613,14 @@ void SyncContext::restore(const string &dirname, RestoreDatabase database)
                                            sourceList.getSourceNames());
     string datadump = database == DATABASE_BEFORE_SYNC ? "before" : "after";
 
-    BOOST_FOREACH(SyncSource *source, sourceList) {
+    for (SyncSource *source: sourceList) {
         // fake a source alert event
         displaySourceProgress(*source, SyncSourceEvent(sysync::PEV_ALERTED, -1, 0, 0), true);
         source->open();
     }
 
     if (!m_quiet && getPrintChanges()) {
-        sourceList.dumpDatabases("current", NULL);
+        sourceList.dumpDatabases("current", nullptr);
         sourceList.dumpLocalChanges(dirname, "current", datadump, "",
                                     "Data changes to be applied locally during restore:\n",
                                     "CLIENT_TEST_LEFT_NAME='current data' "
@@ -4682,7 +4631,7 @@ void SyncContext::restore(const string &dirname, RestoreDatabase database)
 
     SyncReport report;
     try {
-        BOOST_FOREACH(SyncSource *source, sourceList) {
+        for (SyncSource *source: sourceList) {
             SyncSourceReport sourcereport;
             try {
                 displaySourceProgress(*source, SyncSourceEvent(sysync::PEV_SYNCSTART, 0, 0, 0), true);
@@ -4707,12 +4656,12 @@ void SyncContext::restore(const string &dirname, RestoreDatabase database)
 
 void SyncContext::getSessions(vector<string> &dirs)
 {
-    LogDir::create(*this)->previousLogdirs(dirs);
+    make_weak_shared::make<LogDir>(*this)->previousLogdirs(dirs);
 }
 
 string SyncContext::readSessionInfo(const string &dir, SyncReport &report)
 {
-    boost::shared_ptr<LogDir> logging(LogDir::create(*this));
+    auto logging = make_weak_shared::make<LogDir>(*this);
     logging->openLogdir(dir);
     logging->readReport(report);
     return logging->getPeerNameFromLogdir(dir);
@@ -4751,7 +4700,7 @@ class LogDirTest : public CppUnit::TestFixture
         }
     };
 
-    boost::shared_ptr<LogContext> m_logContext;
+    std::shared_ptr<LogContext> m_logContext;
 
 public:
     LogDirTest() :
@@ -4884,8 +4833,8 @@ private:
      * @param changeServer   pretend that peer got changed
      * @param status         result of session
      * @param varargs        sourcename ("file_event"),
-     *                       statebefore (NULL for no dump, or suffix like "_one"),
-     *                       stateafter (NULL for same as before), ..., NULL
+     *                       statebefore (nullptr for no dump, or suffix like "_one"),
+     *                       stateafter (nullptr for same as before), ..., nullptr
      * @return logdir created for the session
      */
     string session(bool changeServer, SyncMLStatus status, ...) {
@@ -4901,7 +4850,7 @@ private:
             if (!sourcename) {
                 break;
             }
-            const char *type = NULL;
+            const char *type = nullptr;
             if (!strcmp(sourcename, "file_event")) {
                 type = "file:text/calendar:2.0";
             } else if (!strcmp(sourcename, "file_contact")) {
@@ -4909,8 +4858,8 @@ private:
             }
             CPPUNIT_ASSERT(type);
             string datadir = getLogData() + "/";
-            cxxptr<SyncSource> source(SyncSource::createTestingSource(sourcename, type, true,
-                                                                      (string("file://") + datadir).c_str()));
+            auto source = SyncSource::createTestingSource(sourcename, type, true,
+                                                          (string("file://") + datadir).c_str());
             datadir += sourcename;
             datadir += "_1";
             source->open();
@@ -4921,7 +4870,7 @@ private:
                                     SyncSourceReport::ITEM_TOTAL,
                                     1);
             }
-            list.addSource(source);
+            list.addSource(std::move(source));
             const char *before = va_arg(ap, const char *);
             const char *after = va_arg(ap, const char *);
             if (before) {
@@ -4938,6 +4887,7 @@ private:
             }
         }
         list.syncDone(status, &report);
+        va_end(ap);
 
         Logger::instance().setLevel(level);
         return list.getLogdir();
@@ -4949,7 +4899,7 @@ private:
         Sessions_t sessions;
         string logdir = getLogDir();
         ReadDir dirs(logdir);
-        BOOST_FOREACH(const string &dir, dirs) {
+        for (const string &dir: dirs) {
             sessions.push_back(RealPath(logdir + "/" + dir));
         }
         sort(sessions.begin(), sessions.end());

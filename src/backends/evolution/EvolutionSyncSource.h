@@ -71,7 +71,7 @@ class EvolutionSyncSource : public TrackingSyncSource
                                   ESource *(*getDef)(ESourceRegistry *));
     EClientCXX openESource(const char *extension,
                            ESource *(*refBuiltin)(ESourceRegistry *),
-                           const boost::function<EClient *(ESource *, GError **gerror)> &newClient);
+                           const std::function<EClient *(ESource *, GError **gerror)> &newClient);
 
     // Implementation of SyncSource calls which only works when using EDS Client API
     // and EDS > 3.4. Older EDS has no way of creating sources easily (or at all).
@@ -90,7 +90,7 @@ class EvolutionSyncSource : public TrackingSyncSource
      *
      * @param list      a list previously obtained from Gnome
      * @param id        a string identifying the data source: either its name or uri
-     * @return   pointer to source (caller owns reference) or NULL if not found
+     * @return   pointer to source (caller owns reference) or nullptr if not found
      */
     ESource *findSource(const ESourceListCXX &list,
                         const string &id);
@@ -124,7 +124,7 @@ class EvolutionAsync {
     public:
     EvolutionAsync()
     {
-        m_loop = GMainLoopStealCXX(g_main_loop_new(NULL, TRUE));
+        m_loop = GMainLoopStealCXX(g_main_loop_new(nullptr, TRUE));
     }
      
     /** start processing events */

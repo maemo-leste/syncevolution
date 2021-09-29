@@ -23,13 +23,12 @@
 #include <syncevo/ConfigFilter.h>
 #include <syncevo/SyncConfig.h>
 
-using namespace std;
 
 SE_BEGIN_CXX
 
 void ConfigProps::add(const ConfigProps &other)
 {
-    BOOST_FOREACH(const ConfigProps::value_type &entry, other) {
+    for (const auto &entry: other) {
         std::pair<iterator, bool> res = insert(entry);
         if (!res.second) {
             res.first->second = entry.second;
@@ -37,7 +36,7 @@ void ConfigProps::add(const ConfigProps &other)
     }
 }
 
-InitStateString ConfigProps::get(const string &key, const string &def) const
+InitStateString ConfigProps::get(const std::string &key, const std::string &def) const
 {
     const_iterator it = find(key);
     if (it == end()) {
@@ -47,10 +46,10 @@ InitStateString ConfigProps::get(const string &key, const string &def) const
     }
 }
 
-ConfigProps::operator string () const
+ConfigProps::operator std::string () const
 {
-    vector<string> res;
-    BOOST_FOREACH(const StringPair &filter, *this) {
+    std::vector<std::string> res;
+    for (const auto &filter: *this) {
         res.push_back(filter.first + " = " + filter.second);
     }
     sort(res.begin(), res.end());
@@ -134,14 +133,14 @@ ConfigProps FullProps::createSourceFilter(const std::string &config,
 
 bool FullProps::hasProperties(PropCheckMode mode) const
 {
-    BOOST_FOREACH(const value_type &context, *this) {
+    for (const value_type &context: *this) {
         if (mode == CHECK_ALL &&
             !context.second.m_syncProps.empty()) {
             return true;
         }
         if (mode == IGNORE_GLOBAL_PROPS) {
             const ConfigPropertyRegistry &registry = SyncConfig::getRegistry();
-            BOOST_FOREACH(const StringPair &entry, context.second.m_syncProps) {
+            for (const auto &entry: context.second.m_syncProps) {
                 const ConfigProperty *prop = registry.find(entry.first);
                 if (!prop ||
                     prop->getSharing() != ConfigProperty::GLOBAL_SHARING) {
@@ -149,7 +148,7 @@ bool FullProps::hasProperties(PropCheckMode mode) const
                 }
             }
         }
-        BOOST_FOREACH(const SourceProps::value_type &source, context.second.m_sourceProps) {
+        for (const auto &source: context.second.m_sourceProps) {
             if (!source.second.empty()) {
                 return true;
             }
@@ -159,13 +158,13 @@ bool FullProps::hasProperties(PropCheckMode mode) const
     return false;
 }
 
-void FullProps::createFilters(const string &context,
-                              const string &config,
-                              const set<string> *sources,
+void FullProps::createFilters(const std::string &context,
+                              const std::string &config,
+                              const std::set<std::string> *sources,
                               ConfigProps &syncFilter,
                               SourceProps &sourceFilters)
 {
-    boost::shared_ptr<SyncConfig> shared;
+    std::shared_ptr<SyncConfig> shared;
 
     if (!context.empty()) {
         // Read from context. If it does not exist, we simply set no properties
@@ -187,7 +186,7 @@ void FullProps::createFilters(const string &context,
     }
 
     // build full set of all sources
-    set<string> allSources;
+    std::set<std::string> allSources;
     if (sources) {
         allSources = *sources;
     }
@@ -201,7 +200,7 @@ void FullProps::createFilters(const string &context,
     }
 
     // explicit filter for all known sources
-    BOOST_FOREACH(std::string source, allSources) {
+    for (std::string source: allSources) {
         ConfigProps &props = sourceFilters[source];
         if (shared) {
             // combine existing properties from context and command line

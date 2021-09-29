@@ -24,7 +24,7 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-static SyncSource *createSource(const SyncSourceParams &params)
+static std::unique_ptr<SyncSource> createSource(const SyncSourceParams &params)
 {
     SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
     bool isMe = sourceType.m_backend == "Maemo Calendar";
@@ -35,11 +35,11 @@ static SyncSource *createSource(const SyncSourceParams &params)
 
     if (isMe || maybeMe) {
         if (sourceType.m_format == "" || sourceType.m_format == "text/calendar") {
-            return new MaemoCalendarSource(EVENT, ICAL_TYPE, params);
+            return std::make_unique<MaemoCalendarSource>(EVENT, ICAL_TYPE, params);
         } else if (sourceType.m_format == "text/x-vcalendar") {
-            return new MaemoCalendarSource(EVENT, VCAL_TYPE, params);
+            return std::make_unique<MaemoCalendarSource>(EVENT, VCAL_TYPE, params);
         } else {
-            return NULL;
+            return nullptr;
         }
     }
 #endif
@@ -52,11 +52,11 @@ static SyncSource *createSource(const SyncSourceParams &params)
 
     if (isMe || maybeMe) {
         if (sourceType.m_format == "" || sourceType.m_format == "text/calendar") {
-            return new MaemoCalendarSource(TODO, ICAL_TYPE, params);
+            return std::make_unique<MaemoCalendarSource>(TODO, ICAL_TYPE, params);
         } else if (sourceType.m_format == "text/x-vcalendar") {
-            return new MaemoCalendarSource(TODO, VCAL_TYPE, params);
+            return std::make_unique<MaemoCalendarSource>(TODO, VCAL_TYPE, params);
         } else {
-            return NULL;
+            return nullptr;
         }
     }
 #endif
@@ -69,18 +69,18 @@ static SyncSource *createSource(const SyncSourceParams &params)
 
     if (isMe || maybeMe) {
         if (sourceType.m_format == "" || sourceType.m_format == "text/calendar") {
-            return new MaemoCalendarSource(JOURNAL, ICAL_TYPE, params);
+            return std::make_unique<MaemoCalendarSource>(JOURNAL, ICAL_TYPE, params);
         } else if (sourceType.m_format == "text/x-vcalendar") {
-            return new MaemoCalendarSource(JOURNAL, VCAL_TYPE, params);
+            return std::make_unique<MaemoCalendarSource>(JOURNAL, VCAL_TYPE, params);
         } else if (sourceType.m_format == "text/plain") {
-            return new MaemoCalendarSource(JOURNAL, -1, params);
+            return std::make_unique<MaemoCalendarSource>(JOURNAL, -1, params);
         } else {
-            return NULL;
+            return nullptr;
         }
     }
 #endif
 
-    return NULL;
+    return nullptr;
 }
 
 static RegisterSyncSource registerMe("Maemo Calendar/Tasks/Notes",
@@ -115,10 +115,10 @@ class MaemoCalendarSourceUnitTest : public CppUnit::TestFixture {
 
 protected:
     void testInstantiate() {
-        boost::shared_ptr<SyncSource> source;
-        source.reset(SyncSource::createTestingSource("calendar", "calendar", true));
-        source.reset(SyncSource::createTestingSource("calendar", "maemo-events", true));
-        source.reset(SyncSource::createTestingSource("calendar", "Maemo Calendar:text/calendar", true));
+        std::unique_ptr<SyncSource> source;
+        source = SyncSource::createTestingSource("calendar", "calendar", true);
+        source = SyncSource::createTestingSource("calendar", "maemo-events", true);
+        source = SyncSource::createTestingSource("calendar", "Maemo Calendar:text/calendar", true);
     }
 };
 

@@ -32,9 +32,6 @@
 
 #include <syncevo/GLibSupport.h>
 #include <syncevo/GVariantSupport.h>
-#include <pcrecpp.h>
-
-#include <boost/lambda/core.hpp>
 
 SE_GOBJECT_TYPE(SignonAuthService)
 SE_GOBJECT_TYPE(SignonAuthSession)
@@ -94,8 +91,8 @@ public:
 
 #define signon_auth_session_process_async_finish signon_auth_session_process_finish
         SYNCEVO_GLIB_CALL_SYNC(resultDataVar, gerror, signon_auth_session_process_async,
-                               m_authSession, sessionDataVar, m_mechanism.c_str(), NULL);
-        buffer.reset(resultDataVar ? g_variant_print(resultDataVar, true) : NULL);
+                               m_authSession, sessionDataVar, m_mechanism.c_str(), nullptr);
+        buffer.reset(resultDataVar ? g_variant_print(resultDataVar, true) : nullptr);
         SE_LOG_DEBUG(NULL, "OAuth2 token result: %s, %s",
                      buffer.get() ? buffer.get() : "<<null>>",
                      gerror ? gerror->message : "???");
@@ -109,7 +106,7 @@ public:
         if (!tokenVar) {
             SE_THROW("no AccessToken in OAuth2 response");
         }
-        std::string newToken = g_variant_get_string(tokenVar, NULL);
+        std::string newToken = g_variant_get_string(tokenVar, nullptr);
         if (newToken.empty()) {
             SE_THROW("AccessToken did not contain a string value");
         } else if (m_invalidateCache && newToken == m_accessToken) {
@@ -124,15 +121,15 @@ public:
     virtual std::string getUsername() const { return ""; }
 };
 
-boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &username,
+std::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &username,
                                                          const InitStateString &password)
 {
     // Expected content of parameter GVariant.
-    boost::shared_ptr<GVariantType> hashtype(g_variant_type_new("a{sv}"), g_variant_type_free);
+    std::shared_ptr<GVariantType> hashtype(g_variant_type_new("a{sv}"), g_variant_type_free);
 
     // 'username' is the part after signon: which we can parse directly.
     GErrorCXX gerror;
-    GVariantCXX parametersVar(g_variant_parse(hashtype.get(), username.c_str(), NULL, NULL, gerror),
+    GVariantCXX parametersVar(g_variant_parse(hashtype.get(), username.c_str(), nullptr, nullptr, gerror),
                               TRANSFER_REF);
     if (!parametersVar) {
         gerror.throwError(SE_HERE, "parsing 'signon:' username");
@@ -157,14 +154,14 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
         !g_variant_type_equal(G_VARIANT_TYPE_STRING, g_variant_get_type(value))) {
         SE_THROW("need 'method: <string>' in 'signon:' parameters");
     }
-    method = g_variant_get_string(value, NULL);
+    method = g_variant_get_string(value, nullptr);
 
     value = (GVariant *)g_hash_table_lookup(parameters, "mechanism");
     if (!value ||
         !g_variant_type_equal(G_VARIANT_TYPE_STRING, g_variant_get_type(value))) {
         SE_THROW("need 'mechanism: <string>' in 'signon:' parameters");
     }
-    mechanism = g_variant_get_string(value, NULL);
+    mechanism = g_variant_get_string(value, nullptr);
 
     value = (GVariant *)g_hash_table_lookup(parameters, "session");
     if (!value ||
@@ -179,7 +176,7 @@ boost::shared_ptr<AuthProvider> createSignonAuthProvider(const InitStateString &
     SE_LOG_DEBUG(NULL, "using signond identity %d", signonID);
     SignonAuthSessionCXX authSession(signon_identity_create_session(identity, method, gerror), TRANSFER_REF);
 
-    boost::shared_ptr<AuthProvider> provider(new SignonAuthProvider(authSession, sessionData, mechanism));
+    auto provider = std::make_shared<SignonAuthProvider>(authSession, sessionData, mechanism);
     return provider;
 }
 

@@ -20,19 +20,18 @@
 #include <syncevo/SafeConfigNode.h>
 #include <syncevo/Exception.h>
 
-#include <boost/foreach.hpp>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-SafeConfigNode::SafeConfigNode(const boost::shared_ptr<ConfigNode> &node) :
+SafeConfigNode::SafeConfigNode(const std::shared_ptr<ConfigNode> &node) :
     m_node(node),
     m_readOnlyNode(node),
     m_strictMode(true)
 {
 }
 
-SafeConfigNode::SafeConfigNode(const boost::shared_ptr<const ConfigNode> &node) :
+SafeConfigNode::SafeConfigNode(const std::shared_ptr<const ConfigNode> &node) :
     m_readOnlyNode(node),
     m_strictMode(true)
 {
@@ -58,7 +57,7 @@ void SafeConfigNode::readProperties(ConfigProps &props) const
     ConfigProps original;
     m_readOnlyNode->readProperties(original);
 
-    BOOST_FOREACH(const StringPair &prop, original) {
+    for (const auto &prop: original) {
         std::string key = unescape(prop.first);
         std::string value = unescape(prop.second);
 

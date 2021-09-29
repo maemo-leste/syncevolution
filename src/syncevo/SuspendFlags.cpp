@@ -91,7 +91,7 @@ public:
     {
         // glib watch which calls printSignals()
         m_channel = g_io_channel_unix_new(fd);
-        m_channelReady = g_io_add_watch(m_channel, G_IO_IN, SignalChannelReadyCB, NULL);
+        m_channelReady = g_io_add_watch(m_channel, G_IO_IN, SignalChannelReadyCB, nullptr);
     }
 
     ~GLibGuard()
@@ -102,7 +102,7 @@ public:
         }
         if (m_channel) {
             g_io_channel_unref(m_channel);
-            m_channel = NULL;
+            m_channel = nullptr;
         }
     }
 };
@@ -167,13 +167,13 @@ void SuspendFlags::checkForNormal()
     }
 }
 
-boost::shared_ptr<SuspendFlags::StateBlocker> SuspendFlags::suspend() { return block(m_suspendBlocker); }
-boost::shared_ptr<SuspendFlags::StateBlocker> SuspendFlags::abort() { return block(m_abortBlocker); }
-boost::shared_ptr<SuspendFlags::StateBlocker> SuspendFlags::block(boost::weak_ptr<StateBlocker> &blocker)
+std::shared_ptr<SuspendFlags::StateBlocker> SuspendFlags::suspend() { return block(m_suspendBlocker); }
+std::shared_ptr<SuspendFlags::StateBlocker> SuspendFlags::abort() { return block(m_abortBlocker); }
+std::shared_ptr<SuspendFlags::StateBlocker> SuspendFlags::block(std::weak_ptr<StateBlocker> &blocker)
 {
     RecMutex::Guard guard = suspendRecMutex.lock();
     State oldState = getState();
-    boost::shared_ptr<StateBlocker> res = blocker.lock();
+    std::shared_ptr<StateBlocker> res = blocker.lock();
     if (!res) {
         res.reset(new StateBlocker);
         blocker = res;
@@ -197,7 +197,7 @@ boost::shared_ptr<SuspendFlags::StateBlocker> SuspendFlags::block(boost::weak_pt
     return res;
 }
 
-boost::shared_ptr<SuspendFlags::Guard> SuspendFlags::activate(uint32_t sigmask)
+std::shared_ptr<SuspendFlags::Guard> SuspendFlags::activate(uint32_t sigmask)
 {
     SE_LOG_DEBUG(NULL, "SuspendFlags: (re)activating, currently %s",
                  m_senderFD > 0 ? "active" : "inactive");
@@ -218,7 +218,7 @@ boost::shared_ptr<SuspendFlags::Guard> SuspendFlags::activate(uint32_t sigmask)
                  m_senderFD, m_receiverFD);
     for (int sig = 0; sig < 32; sig++) {
         if (sigmask & (1<<sig)) {
-            sigaction(sig, NULL, m_oldSignalHandlers + sig);
+            sigaction(sig, nullptr, m_oldSignalHandlers + sig);
         }
     }
 
@@ -240,13 +240,13 @@ boost::shared_ptr<SuspendFlags::Guard> SuspendFlags::activate(uint32_t sigmask)
     for (int sig = 0; sig < 32; sig++) {
         if (sigmask & (1<<sig)) {
             if (m_oldSignalHandlers[sig].sa_handler == SIG_DFL) {
-                sigaction(sig, &new_action, NULL);
+                sigaction(sig, &new_action, nullptr);
                 SE_LOG_DEBUG(NULL, "SuspendFlags: catch signal %d", sig);
             }
         }
     }
     m_activeSignals = sigmask;
-    boost::shared_ptr<Guard> guard(new GLibGuard(m_receiverFD));
+    auto guard = std::make_shared<GLibGuard>(m_receiverFD);
     m_guard = guard;
 
     return guard;
@@ -259,7 +259,7 @@ void SuspendFlags::deactivate()
     if (m_receiverFD >= 0) {
         for (int sig = 0; sig < 32; sig++) {
             if (m_activeSignals & (1<<sig)) {
-                sigaction(sig, m_oldSignalHandlers + sig, NULL);
+                sigaction(sig, m_oldSignalHandlers + sig, nullptr);
             }
         }
         m_activeSignals = 0;
@@ -321,6 +321,7 @@ void SuspendFlags::handleSignal(int sig)
             msg[1] = ABORT_MAX;
             break;
         }
+        break;
     default:
         msg[1] = ABORT_MAX;
         break;
@@ -351,7 +352,7 @@ void SuspendFlags::printSignals()
         while (read(m_receiverFD, &msg, 1) == 1) {
             SE_LOG_DEBUG(NULL, "SuspendFlags: read %d from fd %d",
                          msg, m_receiverFD);
-            const char *str = NULL;
+            const char *str = nullptr;
             switch (msg) {
             case SUSPEND:
                 str = "Asking to suspend...\nPress CTRL-C again quickly (within 2s) to stop immediately (can cause problems in the future!)";
@@ -372,7 +373,7 @@ void SuspendFlags::printSignals()
             }
             }
             if (str) {
-                SE_LOG(NULL, m_level, "%s", str);
+                SE_LOG(nullptr, m_level, "%s", str);
             }
             m_stateChanged(*this);
         }

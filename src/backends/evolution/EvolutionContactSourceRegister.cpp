@@ -24,12 +24,14 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-static SyncSource *createSource(const SyncSourceParams &params)
+static std::unique_ptr<SyncSource> createSource(const SyncSourceParams &params)
 {
     SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
     bool isMe = sourceType.m_backend == "Evolution Address Book";
     bool maybeMe = sourceType.m_backend == "addressbook";
+#ifdef ENABLE_EBOOK
     const bool enabled = true;
+#endif
 
     EDSAbiWrapperInit();
 
@@ -37,18 +39,18 @@ static SyncSource *createSource(const SyncSourceParams &params)
         if (sourceType.m_format == "text/x-vcard") {
             return
 #ifdef ENABLE_EBOOK
-                enabled ? new EvolutionContactSource(params, EVC_FORMAT_VCARD_21) :
+                enabled ? std::make_unique<EvolutionContactSource>(params, EVC_FORMAT_VCARD_21) :
 #endif
-                isMe ? RegisterSyncSource::InactiveSource(params) : NULL;
+                isMe ? RegisterSyncSource::InactiveSource(params) : nullptr;
         } else if (sourceType.m_format == "" || sourceType.m_format == "text/vcard") {
             return
 #ifdef ENABLE_EBOOK
-                enabled ? new EvolutionContactSource(params, EVC_FORMAT_VCARD_30) :
+                enabled ? std::make_unique<EvolutionContactSource>(params, EVC_FORMAT_VCARD_30) :
 #endif
-                isMe ? RegisterSyncSource::InactiveSource(params) : NULL;
+                isMe ? RegisterSyncSource::InactiveSource(params) : nullptr;
         }
     }
-    return NULL;
+    return nullptr;
 }
 
 static RegisterSyncSource registerMe("Evolution Address Book",
@@ -77,13 +79,13 @@ class EvolutionContactTest : public CppUnit::TestFixture {
 
 protected:
     void testInstantiate() {
-        boost::shared_ptr<SyncSource> source;
-        source.reset(SyncSource::createTestingSource("addressbook", "addressbook", true));
-        source.reset(SyncSource::createTestingSource("addressbook", "contacts", true));
-        source.reset(SyncSource::createTestingSource("addressbook", "evolution-contacts", true));
-        source.reset(SyncSource::createTestingSource("addressbook", "Evolution Contacts", true));
-        source.reset(SyncSource::createTestingSource("addressbook", "Evolution Address Book:text/x-vcard", true));
-        source.reset(SyncSource::createTestingSource("addressbook", "Evolution Address Book:text/vcard", true));
+        std::unique_ptr<SyncSource> source;
+        source = SyncSource::createTestingSource("addressbook", "addressbook", true);
+        source = SyncSource::createTestingSource("addressbook", "contacts", true);
+        source = SyncSource::createTestingSource("addressbook", "evolution-contacts", true);
+        source = SyncSource::createTestingSource("addressbook", "Evolution Contacts", true);
+        source = SyncSource::createTestingSource("addressbook", "Evolution Address Book:text/x-vcard", true);
+        source = SyncSource::createTestingSource("addressbook", "Evolution Address Book:text/vcard", true);
     }
 
     /**
@@ -93,47 +95,8 @@ protected:
      */
     void testImport() {
         // this only tests that we can instantiate something under the type "addressbook";
-        // it might not be an EvolutionContactSource
-        boost::shared_ptr<EvolutionContactSource> source21(dynamic_cast<EvolutionContactSource *>(SyncSource::createTestingSource("evolutioncontactsource21", "evolution-contacts:text/x-vcard", true)));
-        boost::shared_ptr<EvolutionContactSource> source30(dynamic_cast<EvolutionContactSource *>(SyncSource::createTestingSource("evolutioncontactsource30", "Evolution Address Book:text/vcard", true)));
-        string parsed;
-
-#if 0
-        // TODO: enable testing of incoming items again. Right now preparse() doesn't
-        // do anything and needs to be replaced with Synthesis mechanisms.
-
-        // SF bug 1796086: sync with EGW: lost or messed up telephones
-        parsed = "BEGIN:VCARD\r\nVERSION:3.0\r\nTEL;CELL:cell\r\nEND:VCARD\r\n";
-        CPPUNIT_ASSERT_EQUAL(parsed,
-                             preparse(*source21,
-                                      "BEGIN:VCARD\nVERSION:2.1\nTEL;CELL:cell\nEND:VCARD\n",
-                                      "text/x-vcard"));
-
-        parsed = "BEGIN:VCARD\r\nVERSION:3.0\r\nTEL;TYPE=CAR:car\r\nEND:VCARD\r\n";
-        CPPUNIT_ASSERT_EQUAL(parsed,
-                             preparse(*source21,
-                                      "BEGIN:VCARD\nVERSION:2.1\nTEL;TYPE=CAR:car\nEND:VCARD\n",
-                                      "text/x-vcard"));
-
-        parsed = "BEGIN:VCARD\r\nVERSION:3.0\r\nTEL;TYPE=HOME:home\r\nEND:VCARD\r\n";
-        CPPUNIT_ASSERT_EQUAL(parsed,
-                             preparse(*source21,
-                                      "BEGIN:VCARD\nVERSION:2.1\nTEL:home\nEND:VCARD\n",
-                                      "text/x-vcard"));
-
-        // TYPE=PARCEL not supported by Evolution, used to represent Evolutions TYPE=OTHER
-        parsed = "BEGIN:VCARD\r\nVERSION:3.0\r\nTEL;TYPE=OTHER:other\r\nEND:VCARD\r\n";
-        CPPUNIT_ASSERT_EQUAL(parsed,
-                             preparse(*source21,
-                                      "BEGIN:VCARD\nVERSION:2.1\nTEL;TYPE=PARCEL:other\nEND:VCARD\n",
-                                      "text/x-vcard"));
-
-        parsed = "BEGIN:VCARD\r\nVERSION:3.0\r\nTEL;TYPE=HOME;TYPE=VOICE:cell\r\nEND:VCARD\r\n";
-        CPPUNIT_ASSERT_EQUAL(parsed,
-                             preparse(*source21,
-                                      "BEGIN:VCARD\nVERSION:2.1\nTEL;TYPE=HOME,VOICE:cell\nEND:VCARD\n",
-                                      "text/x-vcard"));
-#endif
+        auto source21 = SyncSource::createTestingSource("evolutioncontactsource21", "evolution-contacts:text/x-vcard", true);
+        auto source30 = SyncSource::createTestingSource("evolutioncontactsource30", "Evolution Address Book:text/vcard", true);
     }
 };
 

@@ -128,7 +128,7 @@ class LogRedirect : public LoggerStdout
     void restore() throw();
     /** @return true if data was available */
     bool process(FDs &fds) throw();
-    static void abortHandler(int sig) throw();
+    static void abortHandler(int sig) noexcept;
 
     void init();
 
@@ -154,7 +154,7 @@ class LogRedirect : public LoggerStdout
      * Does not add or remove the logger from the logger stack.
      * That must be done by the caller.
      */
-    LogRedirect(Mode mode, const char *filename = NULL);
+    LogRedirect(Mode mode, const char *filename = nullptr);
     ~LogRedirect() throw();
 
     virtual void remove() throw();
@@ -162,7 +162,7 @@ class LogRedirect : public LoggerStdout
     /**
      * Remove redirection (if any) after a fork and before an exec.
      */
-    static void removeRedirect() throw();
+    static void removeRedirect() noexcept;
 
     /**
      * Meant to be used for redirecting output of a specific command

@@ -29,8 +29,7 @@
 #include <syncevo/eds_abi_wrapper.h>
 #include <syncevo/SmartPtr.h>
 
-#include <boost/utility.hpp>
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
@@ -100,7 +99,7 @@ class ActiveSyncCalendarSource : public ActiveSyncCalFormatSource
         /**
          * parsed VCALENDAR component representing the current
          * state of the item as it exists on the WebDAV server,
-         * must be kept up-to-date as we make changes, may be NULL
+         * must be kept up-to-date as we make changes, may be nullptr
          */
         eptr<icalcomponent> m_calendar;
 
@@ -119,7 +118,7 @@ class ActiveSyncCalendarSource : public ActiveSyncCalFormatSource
      * A cache of information about each merged item. Maps from
      * easid to Event.
      */
-    class EventCache : public std::map<std::string, boost::shared_ptr<Event> >
+    class EventCache : public std::map<std::string, std::shared_ptr<Event> >
     {
       public:
         EventCache() : m_initialized(false) {}
@@ -141,7 +140,7 @@ class ActiveSyncCalendarSource : public ActiveSyncCalFormatSource
      * On-disk representation of m_cache (without the item data).
      * Format same as in MapSyncSource (code copied, refactor!).
      */
-    boost::shared_ptr<ConfigNode> m_trackingNode;
+    std::shared_ptr<ConfigNode> m_trackingNode;
 };
 
 SE_END_CXX

@@ -24,7 +24,7 @@
 #include <syncevo/declarations.h>
 SE_BEGIN_CXX
 
-static SyncSource *createSource(const SyncSourceParams &params)
+static std::unique_ptr<SyncSource> createSource(const SyncSourceParams &params)
 {
     SourceType sourceType = SyncSource::getSourceType(params.m_nodes);
     bool isMe = sourceType.m_backend == "mkcal-events";
@@ -39,7 +39,7 @@ static SyncSource *createSource(const SyncSourceParams &params)
 #ifdef ENABLE_KCALEXTENDED
                 true ? new KCalExtendedSource(params, KCalExtendedSource::Event) :
 #endif
-                isMe ? RegisterSyncSource::InactiveSource(params) : NULL;
+                isMe ? RegisterSyncSource::InactiveSource(params) : nullptr;
         }
     }
 
@@ -55,7 +55,7 @@ static SyncSource *createSource(const SyncSourceParams &params)
 #ifdef ENABLE_KCALEXTENDED
                 true ? new KCalExtendedSource(params, KCalExtendedSource::Todo) :
 #endif
-                isMe ? RegisterSyncSource::InactiveSource(params) : NULL;
+                isMe ? RegisterSyncSource::InactiveSource(params) : nullptr;
         }
     }
 
@@ -71,11 +71,11 @@ static SyncSource *createSource(const SyncSourceParams &params)
 #ifdef ENABLE_KCALEXTENDED
                 true ? new KCalExtendedSource(params, KCalExtendedSource::Journal) :
 #endif
-                isMe ? RegisterSyncSource::InactiveSource(params) : NULL;
+                isMe ? RegisterSyncSource::InactiveSource(params) : nullptr;
         }
     }
 
-    return NULL;
+    return nullptr;
 }
 
 static RegisterSyncSource registerMe("KCalExtended",
@@ -126,8 +126,8 @@ class KCalExtendedSourceUnitTest : public CppUnit::TestFixture {
 
 protected:
     void testInstantiate() {
-        boost::shared_ptr<SyncSource> source;
-        source.reset(SyncSource::createTestingSource("KCalExtended", "KCalExtended:text/calendar:2.0", true));
+        std::unique_ptr<SyncSource> source;
+        source = SyncSource::createTestingSource("KCalExtended", "KCalExtended:text/calendar:2.0", true);
     }
 };
 

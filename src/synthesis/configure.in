@@ -1,0 +1,215 @@
+dnl Invoke autogen.sh to produce a configure script.
+
+# four digit upstream version, one additional digit for
+# Linux/SyncEvolution specific extensions:
+AC_INIT([synthesis], [3.4.0.47.5])
+AM_INIT_AUTOMAKE(subdir-objects)
+AC_CONFIG_MACRO_DIR([m4])
+AM_CONFIG_HEADER(config.h)
+AC_LIBTOOL_DLOPEN
+
+dnl check for programs.
+AC_PROG_CXX
+AC_PROG_LIBTOOL
+AC_PROG_MAKE_SET
+AM_PROG_CC_C_O
+
+dnl Use the most recent C++ standard that is supported by the code.
+dnl We can fall back to older versions.
+AX_CXX_COMPILE_STDCXX_14(noext, optional)
+if test "$HAVE_CXX14" -ne 1; then
+    AX_CXX_COMPILE_STDCXX_11(noext, optional)
+fi
+
+# --enable-warning=min/max/fatal/none
+DK_ARG_ENABLE_WARNINGS([SYNTHESIS_WFLAGS],
+                       [-Wall -Wno-unknown-pragmas -Wno-unused-but-set-variable -Wno-misleading-indentation -Wno-stringop-truncation -Wno-stringop-overflow],
+                       [-Wall -Wno-unknown-pragmas -Wno-unused-but-set-variable -Wno-misleading-indentation -Wno-stringop-truncation -Wno-stringop-overflow],
+                       [])
+
+dnl Extract PIC flags from libtool configure for libsynthesissdk.a
+dnl (makes assumptions about libtool var naming!). Some versions
+dnl of libtool use PIC mode automatically for static libraries,
+dnl others don't (?!). See "[os-libsynthesis] libsynthesissdk.a built without -fPIC".
+PIC_CXXFLAGS="$lt_prog_compiler_pic_CXX"
+AC_SUBST(PIC_CXXFLAGS)
+
+AC_ARG_ENABLE(debug-logs,
+              AS_HELP_STRING([--enable-debug-logs],
+                             [For developers: add links to call location to HTML log files. Depends on Doxygen (for HTML version of source) and g++ (for __PRETTY_FUNCTION__).]),
+              enable_debug_logs="$enableval", enable_debug_logs="no")
+if test "$enable_debug_logs" = "yes"; then
+   AC_DEFINE_UNQUOTED(SYDEBUG_LOCATION, "`pwd`/src/html", [absolute path to Doxygen HTML output])
+fi
+AM_CONDITIONAL([COND_DOXYGEN], [test "$enable_debug_logs" = "yes"])
+
+dnl All of these libraries have to be compiled and installed
+dnl separately. TODO: build bundled sources?
+dnl
+dnl WARNING: the initial PKG_CHECK_MODULES() must be executed
+dnl in all cases (i.e., not depend on an if clause) because
+dnl it initializes pkg-config checking.
+PKG_CHECK_MODULES(FOOBAR, foobar, [true], [true])
+
+AC_ARG_ENABLE(sqlite,
+              AS_HELP_STRING([--enable-sqlite],
+                             [enable the sqlite-based ODBC backend, depends on libsqlite3, enabled by default]),
+              [enable_sqlite=$enableval],
+              [enable_sqlite="yes"])
+if test "$enable_sqlite" == "yes"; then
+    PKG_CHECK_MODULES(SQLITE3, sqlite3)
+    HAVE_SQLITE=1
+else
+    HAVE_SQLITE=0
+fi
+AC_DEFINE_UNQUOTED(ONOFF_SQLITE_SUPPORT, $HAVE_SQLITE, [controls whether ODBC backend with libsqlite is enabled])
+
+AC_ARG_ENABLE(regex,
+              AS_HELP_STRING([--enable-regex],
+                             [enable regular expression support in scripts, depends on libpcre, enabled by default]),
+              [enable_regex=$enableval],
+              [enable_regex="yes"])
+if test "$enable_regex" == "yes"; then
+    PKG_CHECK_MODULES(PCRE, libpcre,
+                      [HAVE_PCRE=1],
+                      [AC_ERROR([libpcre not found, required for --enable-regex])])
+    HAVE_PCRE=1
+else
+    HAVE_PCRE=0
+fi
+AC_DEFINE_UNQUOTED(ONOFF_REGEX_SUPPORT, $HAVE_PCRE, "regular expressions in scripts")
+
+AC_ARG_ENABLE(dlt,
+              AS_HELP_STRING([--enable-dlt],
+                             [enable logging mode "dlt" = GENIVI Diagnostic Log and Trace]),
+              [enable_dlt=$enableval
+               test $enable_dlt = "yes" || test $enable_dlt = "no" || AC_ERROR([invalid value of --enable-dlt: $enableval])],
+              [enable_dlt="no"])
+if test "$enable_dlt" = "yes"; then
+    PKG_CHECK_MODULES(DLT, automotive-dlt,
+                      [USE_DLT=1],
+                      [AC_ERROR([dlt not found, required for --enable-dlt])])
+    AC_DEFINE(USE_DLT, 1, "optionally use GENIVI Diagnostic Log and Trace for logging")
+fi
+
+AC_CHECK_HEADER(zlib.h, , [AC_ERROR(zlib.h not found.)])
+AC_CHECK_HEADER(xmltok/xmlparse.h, have_system_xmltok="yes")
+AC_CHECK_HEADER(expat.h, have_system_expat="yes")
+
+dnl libical might be installed stand-alone (upstream)
+dnl or bundled with libecal. Upstream is preferred and
+dnl thus checked first. libical is optional, so don't
+dnl complain if not found.
+AC_ARG_ENABLE(libical,
+              AS_HELP_STRING([--enable-libical],
+                             [use libical (if necessary, the one in libecal) to improve time zone support, enabled by default if necessary libs are found]),
+              [enable_libical=$enableval],
+              [enable_libical="yes"])
+if test "$enable_libical" == "yes"; then
+   PKG_CHECK_MODULES(LIBICAL, libical,
+                     [AC_DEFINE(HAVE_LIBICAL, 1, "libical available")
+                      PKG_CHECK_MODULES(LIBICAL3, libical >= 3,
+                                        [have_libical3="yes"],
+                                        [have_libical3="no"])
+                      if test "$have_libical3" == "no"; then
+                          PKG_CHECK_MODULES(LIBICAL2, libical >= 2,
+                                            [AC_DEFINE(USE_ICALTZUTIL_SET_EXACT_VTIMEZONES_SUPPORT, 1, "Use icaltzutil_set_exact_vtimezones_support() to enable interoperable timezone definitions.")],
+                                            [true])
+                      fi],
+                     [AC_ERROR([libical not found, required for --enable-libical])])
+fi
+
+AC_ARG_ENABLE(ical-compatibility,
+              AS_HELP_STRING([--enable-ical-compatibility],
+                             [build executables which only call libical via dlopen/dlsym: this avoids a hard dependency on a specific libical.so version]),
+              enable_ical_compatibility="$enableval", enable_ical_compatibility="no")
+if test "$enable_ical_compatibility" == "yes"; then
+   AC_DEFINE(ICAL_COMPATIBILITY, 1, [avoid hard dependency on libical shared object])
+   LIBICAL_LIBS=
+fi
+
+AC_ARG_WITH(xmltok,
+        AS_HELP_STRING([--with-xmltok=<builtin|system|path>],
+                       [Chooses which xmltok/xmlparse gets used.
+                        "builtin" = compile code into libsynthesis.
+                        "system" = use header files and libxmlparse from standard search paths.
+                        "path" = use header files in "path/include" and libxmlparse in "path/lib".
+                        Default is system if header files are found, otherwise builtin.]),
+        [ if test "$withval" = "builtin"; then with_xmltok="builtin"
+          elif test "$withval" = "system" || test "$withval" = "yes"; then with_xmltok="system"
+          else with_xmltok="$withval"
+          fi ],
+        [ with_xmltok="no" ])
+
+AC_ARG_WITH(expat,
+        AS_HELP_STRING([--with-expat=<system|path>],
+                       [Choose expat as the XML parser library. Replaces --with-xmltok.
+                        "system" = use header files and libexpat from standard search paths.
+                        "path" = use header files in "path/include", and libexpat in "path/lib".]),
+        [ if test "$withval" = "system" || test "$withval" = "yes"; then with_expat="system"
+          else with_expath="$withval"
+          fi ],
+        [ with_expat="no" ])
+
+if test "$with_xmltok" = "no" && test "$with_expat" = "no"; then
+   if test "$have_system_expat" = "yes"; then
+      with_expat="yes"
+      XMLPARSE_LIBS="-lexpat"
+   elif test "$have_system_xmltok" = "yes"; then
+      with_xmltok="yes"
+      XMLPARSE_LIBS="-lxmlparse"
+   else
+      with_xmltok="builtin"
+   fi
+elif test "$with_expat" != "no"; then
+   if test "$with_expat" = "system"; then
+      if test "$have_system_expat" = "yes"; then XMLPARSE_LIBS="-lexpat"
+      else AC_ERROR(expat.h not found.)
+      fi
+   else # user path
+      XMLPARSE_LIBS="-L$with_expat/lib -lexpat"
+      XMLPARSE_CFLAGS="-I$with_expat/include"
+   fi
+   with_expat="yes"
+else # with_xmltok
+   if test "$with_xmltok" = "system"; then
+      if test "$have_system_xmltok" = "yes"; then XMLPARSE_LIBS="-lxmlparse"
+      else AC_ERROR(xmltok/xmplarse.h not found.)
+      fi
+   elif test "$with_xmltok" != "builtin"; then
+      XMLPARSE_LIBS="-L$with_xmltok/lib -lxmlparse"
+      XMLPARSE_CFLAGS="-I$with_xmltok/include"
+   fi
+fi
+
+if test "$with_expat" = "yes"; then
+   AC_DEFINE(HAVE_EXPAT, 1, [Define to 1 to use expat as XML parser])
+elif test "$with_xmltok" != "builtin"; then
+   AC_DEFINE(HAVE_SYS_XMLTOK, 1, [Define to 1 use system xmltok as XML parser])
+else
+   AC_DEFINE(HAVE_BUILTIN_XMLTOK, 1, [Define to 1 use builtin xmltok as XML Parser])
+fi
+
+AC_SUBST(XMLPARSE_LIBS)
+AC_SUBST(XMLPARSE_CFLAGS)
+AM_CONDITIONAL([COND_XMLPARSE], [test "$with_xmltok" = "builtin"])
+
+AC_CHECK_HEADER(stdint.h)
+
+# the autotools SDK always assumes that it is linked against the engine
+AC_DEFINE(UIAPI_LINKED, 1, [libsynthesis.a linked statically])
+AC_DEFINE(DBAPI_LINKED, 1, [client engine linked statically])
+AC_DEFINE(DBAPI_SRV_LINKED, 1, [server engine linked statically])
+
+# determines which object files are needed in the SDK:
+# if linking statically, some object files are shared with
+# libsynthesis.a
+AM_CONDITIONAL([COND_STATIC], [test "$enable_shared" = "no"])
+
+# Disable unconditionally at the moment. Would add dependency of SDK
+# on SyncML Toolkit.
+#AC_DEFINE(WITHOUT_SAN_1_1, 1,
+#          [support for Server Alerted Notifications according to SyncML 1.1])
+
+AC_CONFIG_FILES(Makefile src/Makefile synthesis.pc synthesis-sdk.pc)
+AC_OUTPUT

@@ -11,7 +11,6 @@
 
 #include "CalDAVSource.h"
 
-#include <boost/bind.hpp>
 #include <boost/algorithm/string/replace.hpp>
 
 #include <syncevo/declarations.h>
@@ -42,7 +41,7 @@ static void removeSyncEvolutionExdateDetached(icalcomponent *parent)
 }
 
 CalDAVSource::CalDAVSource(const SyncSourceParams &params,
-                           const boost::shared_ptr<Neon::Settings> &settings) :
+                           const std::shared_ptr<Neon::Settings> &settings) :
     WebDAVSource(params, settings)
 {
     SyncSourceLogging::init(InitList<std::string>("SUMMARY") + "LOCATION",
@@ -50,10 +49,16 @@ CalDAVSource::CalDAVSource(const SyncSourceParams &params,
                             m_operations);
     // override default backup/restore from base class with our own
     // version
-    m_operations.m_backupData = boost::bind(&CalDAVSource::backupData,
-                                            this, _1, _2, _3);
-    m_operations.m_restoreData = boost::bind(&CalDAVSource::restoreData,
-                                             this, _1, _2, _3);
+    m_operations.m_backupData = [this] (const SyncSource::Operations::ConstBackupInfo &oldBackup,
+                                        const SyncSource::Operations::BackupInfo &newBackup,
+                                        BackupReport &backupReport) {
+        backupData(oldBackup, newBackup, backupReport);
+    };
+    m_operations.m_restoreData = [this] (const SyncSource::Operations::ConstBackupInfo &oldBackup,
+                                         bool dryrun,
+                                         SyncSourceReport &report) {
+        restoreData(oldBackup, dryrun, report);
+    };
 }
 
 void CalDAVSource::listAllSubItems(SubRevisionMap_t &revisions)
@@ -106,13 +111,14 @@ void CalDAVSource::listAllSubItems(SubRevisionMap_t &revisions)
     while (true) {
         string data;
         Neon::XMLParser parser;
-        parser.initReportParser(boost::bind(&CalDAVSource::appendItem, this,
-                                            boost::ref(revisions),
-                                            _1, _2, boost::ref(data)));
+        auto process = [this, &revisions, &data] (const std::string &href, const std::string &etag, const std::string &status) {
+            return appendItem(revisions, href, etag, data);
+        };
+        parser.initReportParser(process);
         m_cache.clear();
         m_cache.m_initialized = false;
-        parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
-                           boost::bind(Neon::XMLParser::append, boost::ref(data), _2, _3));
+        parser.pushHandler(Neon::XMLParser::accept("urn:ietf:params:xml:ns:caldav", "calendar-data"),
+                           Neon::XMLParser::append(data));
         Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
         report.addHeader("Depth", "1");
         report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
@@ -122,14 +128,6 @@ void CalDAVSource::listAllSubItems(SubRevisionMap_t &revisions)
     }
 
     m_cache.m_initialized = true;
-}
-
-void CalDAVSource::addResource(StringMap &items,
-                               const std::string &href,
-                               const std::string &etag)
-{
-    std::string davLUID = path2luid(Neon::URI::parse(href).m_path);
-    items[davLUID] = ETag2Rev(etag);
 }
 
 void CalDAVSource::updateAllSubItems(SubRevisionMap_t &revisions)
@@ -157,8 +155,11 @@ void CalDAVSource::updateAllSubItems(SubRevisionMap_t &revisions)
         string data;
         Neon::XMLParser parser;
         items.clear();
-        parser.initReportParser(boost::bind(&CalDAVSource::addResource,
-                                            this, boost::ref(items), _1, _2));
+        auto process = [this, &items] (const std::string &href, const std::string &etag, const std::string &status) {
+            std::string davLUID = path2luid(Neon::URI::parse(href).m_path);
+            items[davLUID] = ETag2Rev(etag);
+        };
+        parser.initReportParser(process);
         Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
         report.addHeader("Depth", "1");
         report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
@@ -168,9 +169,9 @@ void CalDAVSource::updateAllSubItems(SubRevisionMap_t &revisions)
     }
 
     // remove obsolete entries
-    SubRevisionMap_t::iterator it = revisions.begin();
+    auto it = revisions.begin();
     while (it != revisions.end()) {
-        SubRevisionMap_t::iterator next = it;
+        auto next = it;
         ++next;
         if (items.find(it->first) == items.end()) {
             revisions.erase(it);
@@ -183,8 +184,8 @@ void CalDAVSource::updateAllSubItems(SubRevisionMap_t &revisions)
     m_cache.clear();
     m_cache.m_initialized = false;
     std::list<std::string> mustRead;
-    BOOST_FOREACH(const StringPair &item, items) {
-        SubRevisionMap_t::iterator it = revisions.find(item.first);
+    for (const auto &item: items) {
+        auto it = revisions.find(item.first);
         if (it == revisions.end() ||
             it->second.m_revision != item.second) {
             // read current information below
@@ -240,7 +241,7 @@ void CalDAVSource::updateAllSubItems(SubRevisionMap_t &revisions)
             "   <D:getetag/>\n"
             "   <C:calendar-data/>\n"
             "</D:prop>\n";
-        BOOST_FOREACH(const std::string &luid, mustRead) {
+        for (const std::string &luid: mustRead) {
             buffer << "<D:href>" << luid2path(luid) << "</D:href>\n";
         }
         buffer << "</C:calendar-multiget>";
@@ -250,12 +251,15 @@ void CalDAVSource::updateAllSubItems(SubRevisionMap_t &revisions)
         while (true) {
             string data;
             Neon::XMLParser parser;
-            parser.initReportParser(boost::bind(&CalDAVSource::appendMultigetResult, this,
-                                                boost::ref(revisions),
-                                                boost::ref(results),
-                                                _1, _2, boost::ref(data)));
-            parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
-                               boost::bind(Neon::XMLParser::append, boost::ref(data), _2, _3));
+            auto process = [this, &revisions, &results, &data] (const std::string &href, const std::string &etag, const std::string &status) {
+                // record which items were seen in the response...
+                results.insert(path2luid(href));
+                // and store information about them
+                return appendItem(revisions, href, etag, data);
+            };
+            parser.initReportParser(process);
+            parser.pushHandler(Neon::XMLParser::accept("urn:ietf:params:xml:ns:caldav", "calendar-data"),
+                               Neon::XMLParser::append(data));
             Neon::Request report(*getSession(), "REPORT", getCalendar().m_path,
                                  query, parser);
             report.addHeader("Depth", "1");
@@ -266,7 +270,7 @@ void CalDAVSource::updateAllSubItems(SubRevisionMap_t &revisions)
         }
         // Workaround for Radicale 0.6.4: it simply returns nothing (no error, no data).
         // Fall back to GET of items with no response.
-        BOOST_FOREACH(const std::string &luid, mustRead) {
+        for (const std::string &luid: mustRead) {
             if (results.find(luid) == results.end()) {
                 getSession()->startOperation(StringPrintf("GET item %s not returned by 'multiget new/updated items'", luid.c_str()),
                                              deadline);
@@ -287,18 +291,6 @@ void CalDAVSource::updateAllSubItems(SubRevisionMap_t &revisions)
             }
         }
     }
-}
-
-int CalDAVSource::appendMultigetResult(SubRevisionMap_t &revisions,
-                                       std::set<std::string> &luids,
-                                       const std::string &href,
-                                       const std::string &etag,
-                                       std::string &data)
-{
-    // record which items were seen in the response...
-    luids.insert(path2luid(href));
-    // and store information about them
-    return appendItem(revisions, href, etag, data);
 }
 
 int CalDAVSource::appendItem(SubRevisionMap_t &revisions,
@@ -351,7 +343,7 @@ int CalDAVSource::appendItem(SubRevisionMap_t &revisions,
     }
 
     if (!m_cache.m_initialized) {
-        boost::shared_ptr<Event> event(new Event);
+        auto event = std::make_shared<Event>();
         event->m_DAVluid = davLUID;
         event->m_UID = uid;
         event->m_etag = entry.m_revision;
@@ -376,7 +368,7 @@ int CalDAVSource::appendItem(SubRevisionMap_t &revisions,
 void CalDAVSource::addSubItem(const std::string &luid,
                               const SubRevisionEntry &entry)
 {
-    boost::shared_ptr<Event> &event = m_cache[luid];
+    std::shared_ptr<Event> &event = m_cache[luid];
     event.reset(new Event);
     event->m_DAVluid = luid;
     event->m_etag = entry.m_revision;
@@ -392,8 +384,7 @@ void CalDAVSource::setAllSubItems(const SubRevisionMap_t &revisions)
     if (!m_cache.m_initialized) {
         // populate our cache (without data) from the information cached
         // for us
-        BOOST_FOREACH(const SubRevisionMap_t::value_type &subentry,
-                      revisions) {
+        for (const auto &subentry: revisions) {
             addSubItem(subentry.first,
                        subentry.second);
         }
@@ -407,7 +398,7 @@ SubSyncSource::SubItemResult CalDAVSource::insertSubItem(const std::string &luid
     SubItemResult subres;
 
     // parse new event
-    boost::shared_ptr<Event> newEvent(new Event);
+    auto newEvent = std::make_shared<Event>();
     newEvent->m_calendar.set(icalcomponent_new_from_string((char *)item.c_str()), // hack for old libical
                              "parsing iCalendar 2.0");
 
@@ -417,7 +408,7 @@ SubSyncSource::SubItemResult CalDAVSource::insertSubItem(const std::string &luid
     // does.
     icalcomponent *event;
     if (settings().googleAlarmHack() &&
-        (event = icalcomponent_get_first_component(newEvent->m_calendar, ICAL_VEVENT_COMPONENT)) != NULL &&
+        (event = icalcomponent_get_first_component(newEvent->m_calendar, ICAL_VEVENT_COMPONENT)) != nullptr &&
         !icalcomponent_get_first_component(event, ICAL_VALARM_COMPONENT)) {
         static eptr<icalcomponent> alarm(icalcomponent_new_from_string("BEGIN:VALARM\r\n"
                                                                        "ACTION:NONE\r\n"
@@ -429,7 +420,7 @@ SubSyncSource::SubItemResult CalDAVSource::insertSubItem(const std::string &luid
     }
 
     struct icaltimetype lastmodtime = icaltime_null_time();
-    icalcomponent *firstcomp = NULL;
+    icalcomponent *firstcomp = nullptr;
     for (icalcomponent *comp = firstcomp = icalcomponent_get_first_component(newEvent->m_calendar, ICAL_VEVENT_COMPONENT);
          comp;
          comp = icalcomponent_get_next_component(newEvent->m_calendar, ICAL_VEVENT_COMPONENT)) {
@@ -488,7 +479,7 @@ SubSyncSource::SubItemResult CalDAVSource::insertSubItem(const std::string &luid
     std::string davLUID = luid;
     std::string knownSubID = callerSubID;
     if (davLUID.empty()) {
-        EventCache::iterator it = m_cache.findByUID(newEvent->m_UID);
+        auto it = m_cache.findByUID(newEvent->m_UID);
         if (it != m_cache.end()) {
             davLUID = it->first;
             knownSubID = subid;
@@ -528,7 +519,7 @@ SubSyncSource::SubItemResult CalDAVSource::insertSubItem(const std::string &luid
         subres.m_subid = subid;
         subres.m_revision = res.m_revision;
 
-        EventCache::iterator it = m_cache.find(res.m_luid);
+        auto it = m_cache.find(res.m_luid);
         if (it != m_cache.end()) {
             // merge into existing Event
             Event &event = loadItem(*it->second);
@@ -570,7 +561,7 @@ SubSyncSource::SubItemResult CalDAVSource::insertSubItem(const std::string &luid
             // the parent event or (if not found) the current event
             eptr<icalproperty> rid(icalproperty_new_recurrenceid(icaltime_from_string(knownSubID.c_str())),
                                    "new rid");
-            icalproperty *dtstart = NULL;
+            icalproperty *dtstart = nullptr;
             icalcomponent *comp;
             // look for parent first
             for (comp = icalcomponent_get_first_component(event.m_calendar, ICAL_VEVENT_COMPONENT);
@@ -622,7 +613,7 @@ SubSyncSource::SubItemResult CalDAVSource::insertSubItem(const std::string &luid
 
         // update cache: find old VEVENT and remove it before adding new one,
         // update last modified time of all other components
-        icalcomponent *removeme = NULL;
+        icalcomponent *removeme = nullptr;
         for (icalcomponent *comp = icalcomponent_get_first_component(event.m_calendar, ICAL_VEVENT_COMPONENT);
              comp;
              comp = icalcomponent_get_next_component(event.m_calendar, ICAL_VEVENT_COMPONENT)) {
@@ -780,7 +771,7 @@ void CalDAVSource::readSubItem(const std::string &davLUID, const std::string &su
             icalcomponent_add_component(calendar, clone.release());
         }
         bool found = false;
-        icalcomponent *parent = NULL;
+        icalcomponent *parent = nullptr;
         for (icalcomponent *comp = icalcomponent_get_first_component(event.m_calendar, ICAL_VEVENT_COMPONENT);
              comp;
              comp = icalcomponent_get_next_component(event.m_calendar, ICAL_VEVENT_COMPONENT)) {
@@ -846,7 +837,7 @@ void CalDAVSource::Event::unescapeRecurrenceID(std::string &data)
 
 std::string CalDAVSource::removeSubItem(const string &davLUID, const std::string &subid)
 {
-    EventCache::iterator it = m_cache.find(davLUID);
+    auto it = m_cache.find(davLUID);
     if (it == m_cache.end()) {
         // gone already
         throwError(SE_HERE, STATUS_NOT_FOUND, "deleting item: " + davLUID);
@@ -878,12 +869,12 @@ std::string CalDAVSource::removeSubItem(const string &davLUID, const std::string
                     icalcomponent *comp = icalcomponent_get_first_component(event.m_calendar, ICAL_VEVENT_COMPONENT);
                     if (comp) {
                         icalproperty *prop;
-                        while ((prop = icalcomponent_get_first_property(comp, ICAL_RRULE_PROPERTY)) != NULL) {
+                        while ((prop = icalcomponent_get_first_property(comp, ICAL_RRULE_PROPERTY)) != nullptr) {
                             icalcomponent_remove_property(comp, prop);
                             icalproperty_free(prop);
                             updated = true;
                         }
-                        while ((prop = icalcomponent_get_first_property(comp, ICAL_EXDATE_PROPERTY)) != NULL) {
+                        while ((prop = icalcomponent_get_first_property(comp, ICAL_EXDATE_PROPERTY)) != nullptr) {
                             icalcomponent_remove_property(comp, prop);
                             icalproperty_free(prop);
                             updated = true;
@@ -956,7 +947,7 @@ std::string CalDAVSource::removeSubItem(const string &davLUID, const std::string
 
 void CalDAVSource::removeMergedItem(const std::string &davLUID)
 {
-    EventCache::iterator it = m_cache.find(davLUID);
+    auto it = m_cache.find(davLUID);
     if (it == m_cache.end()) {
         // gone already, no need to do anything
         SE_LOG_DEBUG(getDisplayName(), "%s: ignoring request to delete non-existent item",
@@ -977,10 +968,8 @@ void CalDAVSource::removeMergedItem(const std::string &davLUID)
             //
             // Workaround: use the workarounds from removeSubItem()
             std::set<std::string> subids = event.m_subids;
-            for (std::set<std::string>::reverse_iterator it = subids.rbegin();
-                 it != subids.rend();
-                 ++it) {
-                removeSubItem(davLUID, *it);
+            for (const auto &luid: reverse(subids)) {
+                removeSubItem(davLUID, luid);
             }
         } else {
             throw;
@@ -993,15 +982,15 @@ void CalDAVSource::removeMergedItem(const std::string &davLUID)
 void CalDAVSource::flushItem(const string &davLUID)
 {
     // TODO: currently we always flush immediately, so no need to send data here
-    EventCache::iterator it = m_cache.find(davLUID);
+    auto it = m_cache.find(davLUID);
     if (it != m_cache.end()) {
-        it->second->m_calendar.set(NULL);
+        it->second->m_calendar.set(nullptr);
     }
 }
 
 std::string CalDAVSource::getSubDescription(const string &davLUID, const string &subid)
 {
-    EventCache::iterator it = m_cache.find(davLUID);
+    auto it = m_cache.find(davLUID);
     if (it == m_cache.end()) {
         // unknown item, return empty string for fallback
         return "";
@@ -1052,7 +1041,7 @@ std::string CalDAVSource::getDescription(const string &luid)
 
 CalDAVSource::Event &CalDAVSource::findItem(const std::string &davLUID)
 {
-    EventCache::iterator it = m_cache.find(davLUID);
+    auto it = m_cache.find(davLUID);
     if (it == m_cache.end()) {
         throwError(SE_HERE, STATUS_NOT_FOUND, "finding item: " + davLUID);
     }
@@ -1063,20 +1052,6 @@ CalDAVSource::Event &CalDAVSource::loadItem(const std::string &davLUID)
 {
     Event &event = findItem(davLUID);
     return loadItem(event);
-}
-
-int CalDAVSource::storeItem(const std::string &wantedLuid,
-                            std::string &item,
-                            std::string &data,
-                            const std::string &href)
-{
-    std::string luid = path2luid(Neon::URI::parse(href).m_path);
-    if (luid == wantedLuid) {
-        SE_LOG_DEBUG(NULL, "got item %s via REPORT fallback", luid.c_str());
-        item = data;
-    }
-    data.clear();
-    return 0;
 }
 
 CalDAVSource::Event &CalDAVSource::loadItem(Event &event)
@@ -1114,8 +1089,8 @@ CalDAVSource::Event &CalDAVSource::loadItem(Event &event)
                 std::string href, etag;
                 item = "";
                 parser.initReportParser(href, etag);
-                parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
-                                   boost::bind(Neon::XMLParser::append, boost::ref(item), _2, _3));
+                parser.pushHandler(Neon::XMLParser::accept("urn:ietf:params:xml:ns:caldav", "calendar-data"),
+                                   Neon::XMLParser::append(item));
                 Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
                 report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
                 report.run();
@@ -1145,14 +1120,19 @@ CalDAVSource::Event &CalDAVSource::loadItem(Event &event)
                 while (true) {
                     Neon::XMLParser parser;
                     std::string data;
-                    parser.initReportParser(boost::bind(&CalDAVSource::storeItem,
-                                                        this,
-                                                        boost::ref(event.m_DAVluid),
-                                                        boost::ref(item),
-                                                        boost::ref(data),
-                                                        _1));
-                    parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
-                                       boost::bind(Neon::XMLParser::append, boost::ref(data), _2, _3));
+
+                    auto store = [this, &event, &item, &data] (const std::string &href, const std::string &etag, const std::string &status) {
+                        std::string luid = path2luid(Neon::URI::parse(href).m_path);
+                        if (luid == event.m_DAVluid) {
+                            SE_LOG_DEBUG(NULL, "got item %s via REPORT fallback", luid.c_str());
+                            item = data;
+                        }
+                        data.clear();
+                        return 0;
+                    };
+                    parser.initReportParser(store);
+                    parser.pushHandler(Neon::XMLParser::accept("urn:ietf:params:xml:ns:caldav", "calendar-data"),
+                                       Neon::XMLParser::append(data));
                     Neon::Request report(*getSession(), "REPORT", getCalendar().m_path, query, parser);
                     report.addHeader("Depth", "1");
                     report.addHeader("Content-Type", "application/xml; charset=\"utf-8\"");
@@ -1209,7 +1189,7 @@ void CalDAVSource::Event::fixIncomingCalendar(icalcomponent *calendar)
     // in the first loop iteration. Then below transform the RECURRENCE-ID
     // time.
     bool ridInUTC = false;
-    const icaltimezone *zone = NULL;
+    const icaltimezone *zone = nullptr;
 
     for (icalcomponent *comp = icalcomponent_get_first_component(calendar, ICAL_VEVENT_COMPONENT);
          comp;
@@ -1368,11 +1348,26 @@ void CalDAVSource::backupData(const SyncSource::Operations::ConstBackupInfo &old
         "</C:calendar-query>\n";
     string data;
     Neon::XMLParser parser;
-    parser.initReportParser(boost::bind(&CalDAVSource::backupItem, this,
-                                        boost::ref(cache),
-                                        _1, _2, boost::ref(data)));
-    parser.pushHandler(boost::bind(Neon::XMLParser::accept, "urn:ietf:params:xml:ns:caldav", "calendar-data", _2, _3),
-                       boost::bind(Neon::XMLParser::append, boost::ref(data), _2, _3));
+    auto process = [this, &cache, &data] (const std::string &href, const std::string &etag, const std::string &status) {
+        // detect and ignore empty items, like we do in appendItem()
+        eptr<icalcomponent> calendar(icalcomponent_new_from_string((char *)data.c_str()), // cast is a hack for broken definition in old libical
+                                     "iCalendar 2.0");
+        if (icalcomponent_get_first_component(calendar, ICAL_VEVENT_COMPONENT)) {
+            Event::unescapeRecurrenceID(data);
+            std::string luid = path2luid(Neon::URI::parse(href).m_path);
+            std::string rev = ETag2Rev(etag);
+            cache.backupItem(data, luid, rev);
+        } else {
+            SE_LOG_DEBUG(NULL, "ignoring broken item %s during backup (is empty)", href.c_str());
+        }
+
+        // reset data for next item
+        data.clear();
+        return 0;
+    };
+    parser.initReportParser(process);
+    parser.pushHandler(Neon::XMLParser::accept("urn:ietf:params:xml:ns:caldav", "calendar-data"),
+                       Neon::XMLParser::append(data));
     Timespec deadline = createDeadline();
     getSession()->startOperation("REPORT 'full calendar'", deadline);
     while (true) {
@@ -1387,27 +1382,6 @@ void CalDAVSource::backupData(const SyncSource::Operations::ConstBackupInfo &old
     cache.finalize(backupReport);
 }
 
-int CalDAVSource::backupItem(ItemCache &cache,
-                             const std::string &href,
-                             const std::string &etag,
-                             std::string &data)
-{
-    // detect and ignore empty items, like we do in appendItem()
-    eptr<icalcomponent> calendar(icalcomponent_new_from_string((char *)data.c_str()), // cast is a hack for broken definition in old libical
-                                 "iCalendar 2.0");
-    if (icalcomponent_get_first_component(calendar, ICAL_VEVENT_COMPONENT)) {
-        Event::unescapeRecurrenceID(data);
-        std::string luid = path2luid(Neon::URI::parse(href).m_path);
-        std::string rev = ETag2Rev(etag);
-        cache.backupItem(data, luid, rev);
-    } else {
-        SE_LOG_DEBUG(NULL, "ignoring broken item %s during backup (is empty)", href.c_str());
-    }
-
-    // reset data for next item
-    data.clear();
-    return 0;
-}
 
 void CalDAVSource::restoreData(const SyncSource::Operations::ConstBackupInfo &oldBackup,
                                bool dryrun,
@@ -1419,7 +1393,7 @@ void CalDAVSource::restoreData(const SyncSource::Operations::ConstBackupInfo &ol
 
 bool CalDAVSource::typeMatches(const StringMap &props) const
 {
-    StringMap::const_iterator it = props.find("urn:ietf:params:xml:ns:caldav:supported-calendar-component-set");
+    auto it = props.find("urn:ietf:params:xml:ns:caldav:supported-calendar-component-set");
     if (it != props.end() &&
         it->second.find("<urn:ietf:params:xml:ns:caldavcomp name='VEVENT'></urn:ietf:params:xml:ns:caldavcomp>") != std::string::npos) {
         return true;

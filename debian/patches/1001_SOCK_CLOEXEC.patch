@@ -1,19 +1,13 @@
-From aabb99048290c0662629fe88588a80a0544fd8c5 Mon Sep 17 00:00:00 2001
-From: Tino Mettler <tino+debian@tikei.de>
-Date: Sun, 26 Oct 2014 12:54:31 +0100
-Subject: [PATCH] Fix FTBFS on kfreebsd due to missing SOCK_CLOEXEC
-
-Work around missing SOCK_CLOEXEC on kfreebsd by setting FD_CLOEXEC
-afterwards.
+Description: Fix FTBFS on kfreebsd due to missing SOCK_CLOEXEC
+ Work around missing SOCK_CLOEXEC on kfreebsd
+ by setting FD_CLOEXEC afterwards.
+Author: Tino Mettler <tino+debian@tikei.de>
+Last-Update: 2021-09-29
 ---
- src/gdbusxx/gdbus-cxx-bridge.cpp | 19 +++++++++++++++++++
- 1 file changed, 19 insertions(+)
-
-diff --git a/src/gdbusxx/gdbus-cxx-bridge.cpp b/src/gdbusxx/gdbus-cxx-bridge.cpp
-index 238b52f0..4f259576 100644
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
 --- a/src/gdbusxx/gdbus-cxx-bridge.cpp
 +++ b/src/gdbusxx/gdbus-cxx-bridge.cpp
-@@ -276,6 +276,10 @@ void DBusConnectionPtr::setDisconnect(const Disconnect_t &func)
+@@ -276,6 +276,10 @@
                               true);
  }
  
@@ -24,7 +18,7 @@ index 238b52f0..4f259576 100644
  boost::shared_ptr<DBusServerCXX> DBusServerCXX::listen(const NewConnection_t &newConnection, DBusErrorCXX *)
  {
      // Create two fds connected via a two-way stream. The parent
-@@ -286,6 +290,21 @@ boost::shared_ptr<DBusServerCXX> DBusServerCXX::listen(const NewConnection_t &ne
+@@ -286,6 +290,21 @@
      if (retval) {
          SE_THROW(StringPrintf("socketpair: %s", strerror(errno)));
      }

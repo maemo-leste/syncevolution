@@ -108,10 +108,6 @@ Depends:
  ${shlibs:Depends},
 Recommends:
  evolution-data-server,
-Replaces:
- syncevolution-libs (<< 1.3.99.7),
-Breaks:
- syncevolution-libs (<< 1.3.99.7),
 Description: Sync personal information data via SyncML/CalDAV/CardDAV (GNOME backend)
  SyncEvolution synchronizes contact, calendar and task items via SyncML and
  CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server
@@ -127,10 +123,6 @@ Architecture: any
 Depends:
  ${misc:Depends},
  ${shlibs:Depends},
-Replaces:
- syncevolution-libs (<< 1.3.99.7),
-Breaks:
- syncevolution-libs (<< 1.3.99.7),
 Description: Sync personal information data via SyncML/CalDAV/CardDAV (KDE backend)
  SyncEvolution synchronizes contact, calendar and task items via SyncML and
  CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server
@@ -222,10 +214,6 @@ Depends:
  syncevolution-common (= ${source:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
-Replaces:
- syncevolution-libs (<< 1.2.99.1),
-Breaks:
- syncevolution-libs (<< 1.2.99.1),
 Description: Sync personal information data via SyncML/CalDAV/CardDAV (shared gdbus library)
  SyncEvolution synchronizes contact, calendar and task items via SyncML and
  CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server

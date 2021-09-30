@@ -1,8 +1,6 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
 
-DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
-
 export CONFIG_SHELL=/bin/bash
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
@@ -21,7 +19,6 @@ override_dh_auto_configure:
 	sh autogen.sh
 	dh_auto_configure -- --with-synthesis-src=none --prefix=/usr \
 			--sysconfdir=/etc \
-			--libexecdir=/usr/lib/$(DEB_HOST_MULTIARCH)/syncevolution \
 			--enable-gui \
 			--enable-kwallet --enable-akonadi \
 			--with-rst2man --with-rst2html --enable-dav \

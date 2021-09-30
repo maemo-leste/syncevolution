@@ -15,7 +15,7 @@ override_dh_autoreconf:
 
 execute_after_dh_auto_install:
 	install --mode=0755 --owner=root test/syncevo-http-server.py \
-		$(CURDIR)/debian/tmp/usr/bin/syncevo-http-server
+		debian/tmp/usr/bin/syncevo-http-server
 
 override_dh_auto_configure:
 	dh_auto_configure -- --with-synthesis-src=none --prefix=/usr \

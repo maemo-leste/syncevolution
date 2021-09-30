@@ -28,11 +28,6 @@ override_dh_auto_configure:
 override_dh_install:
 	dh_install -X"*.pl"
 
-override_dh_auto_clean:
-	rm -f INSTALL compile po/LINGUAS src/backends/backends.am \
-	      src/synthesis-includes/Makefile.in test-driver
-	dh_auto_clean
-
 override_dh_missing:
 	dh_missing --list-missing
 

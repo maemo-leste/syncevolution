@@ -20,7 +20,6 @@ Build-Depends:
  libneon27-gnutls-dev,
  libnotify-dev,
  libopenobex2-dev [linux-any],
- libpcre3-dev,
  libsecret-1-dev,
  libsynthesis-dev (>=3.4.0.47.5),
  python3-docutils,

@@ -1,5 +1,4 @@
 usr/lib/*/syncevolution/backends/provideroauth2.so
-usr/lib/*/syncevolution/backends/syncactivesync.so
 usr/lib/*/syncevolution/backends/syncdav.so
 usr/lib/*/syncevolution/backends/syncfile.so
 usr/lib/*/syncevolution/backends/synckcalextended.so

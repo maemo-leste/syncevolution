@@ -1,2 +1,3 @@
+# relates to unused options --enable-kwallet --enable-akonadi
 usr/lib/*/syncevolution/backends/platformkde.so
 usr/lib/*/syncevolution/backends/syncakonadi.so

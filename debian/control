@@ -5,8 +5,6 @@ Maintainer: Tino Mettler <tino+debian@tikei.de>
 Build-Depends:
  debhelper-compat (= 13),
  intltool,
- kdelibs5-dev,
- kdepimlibs5-dev,
  libboost-dev,
  libcppunit-dev,
  libcurl4-gnutls-dev,
@@ -88,7 +86,7 @@ Description: Sync personal information data via SyncML/CalDAV/CardDAV (common fi
 Package: syncevolution-libs
 Architecture: any
 Depends:
- syncevolution-libs-gnome (= ${binary:Version}) | syncevolution-libs-kde (= ${binary:Version}),
+ syncevolution-libs-gnome (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
 Description: Sync personal information data via SyncML/CalDAV/CardDAV (backend libraries)
@@ -117,21 +115,6 @@ Description: Sync personal information data via SyncML/CalDAV/CardDAV (GNOME bac
  a SyncML/DAV client and SyncML server.
  .
  This package provides private libraries and plugins for GNOME.
-
-Package: syncevolution-libs-kde
-Architecture: any
-Depends:
- ${misc:Depends},
- ${shlibs:Depends},
-Description: Sync personal information data via SyncML/CalDAV/CardDAV (KDE backend)
- SyncEvolution synchronizes contact, calendar and task items via SyncML and
- CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server
- to sync PIM data in Evolution, but a plain file storage is also supported.
- Data exchange can happen via HTTP(S) and Bluetooth. Full, one-way and
- incremental synchronization of items are supported. SyncEvolution can act as
- a SyncML/DAV client and SyncML server.
- .
- This package provides private libraries and plugins for KDE.
 
 Package: syncevolution-dbus
 Architecture: any

@@ -21,7 +21,6 @@ override_dh_auto_configure:
 	dh_auto_configure -- --with-synthesis-src=none --prefix=/usr \
 			--sysconfdir=/etc \
 			--enable-gui \
-			--enable-kwallet --enable-akonadi \
 			--with-rst2man --with-rst2html --enable-dav \
 			--enable-oauth2
 

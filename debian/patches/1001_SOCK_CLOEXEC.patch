@@ -7,7 +7,7 @@ Last-Update: 2021-09-29
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
 --- a/src/gdbusxx/gdbus-cxx-bridge.cpp
 +++ b/src/gdbusxx/gdbus-cxx-bridge.cpp
-@@ -276,6 +276,10 @@
+@@ -285,6 +285,10 @@
                               true);
  }
  
@@ -15,10 +15,10 @@ This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
 +#define SOCK_CLOEXEC 0
 +#endif
 +
- boost::shared_ptr<DBusServerCXX> DBusServerCXX::listen(const NewConnection_t &newConnection, DBusErrorCXX *)
+ std::shared_ptr<DBusServerCXX> DBusServerCXX::listen(const NewConnection_t &newConnection, DBusErrorCXX *)
  {
      // Create two fds connected via a two-way stream. The parent
-@@ -286,6 +290,21 @@
+@@ -295,6 +299,21 @@
      if (retval) {
          SE_THROW(StringPrintf("socketpair: %s", strerror(errno)));
      }

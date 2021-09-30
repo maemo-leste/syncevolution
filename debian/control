@@ -21,7 +21,7 @@ Build-Depends:
  libnotify-dev,
  libopenobex2-dev [linux-any],
  libsecret-1-dev,
- libsynthesis-dev (>=3.4.0.47.5),
+ libsynthesis-dev,
  python3-docutils,
  python3-pygments,
  xsltproc,

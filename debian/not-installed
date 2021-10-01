@@ -1,3 +1,14 @@
+# we provide no -dev package
+usr/include/*/*.h
+usr/lib/*/*.a
+usr/lib/*/*.la
+usr/lib/*/*/*/*.a
+usr/lib/*/*/*/*.la
+usr/lib/*/pkgconfig/*.pc
+
+# covered in debian/copyright
+usr/share/doc/syncevolution/COPYING
+
 # relates to unused options --enable-kwallet --enable-akonadi
 usr/lib/*/syncevolution/backends/platformkde.so
 usr/lib/*/syncevolution/backends/syncakonadi.so

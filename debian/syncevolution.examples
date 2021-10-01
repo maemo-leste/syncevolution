@@ -1,2 +1,5 @@
+debian/tmp/usr/share/doc/syncevolution/accounts
+debian/tmp/usr/share/doc/syncevolution/syncevo-http-server-logging.conf
 debian/tmp/usr/share/syncevolution/xml/update-samples.pl
+debian/tmp/usr/share/doc/syncevolution/accounts
 test/syncevo-phone-config.py

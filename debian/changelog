@@ -1,3 +1,56 @@
+syncevolution (2.0.0-1) UNRELEASED; urgency=medium
+
+   [ upstream ]
+  * new release
+
+  [ Jonas Smedegaard ]
+  * isolate kfreebsd FTBFS fix as patch 1001,
+    and track package source with patches unapplied
+  * add git-buildpackage config:
+    + use pristine-tar
+    + sign tags
+    + avoid any .git* files
+    + use DEP-14 branches debian/latest upstream/latest
+    + add usage comment
+  * drop obsolete *-dbg to *-dbgsym migration
+  * simplify rules;
+    stop explicitly build-depend on libtool automake pkg-config
+    (pulled in via autoreconf since debhelper compatibility level 10)
+  * use debhelper compatibility level 13 (not 11);
+    build-depend on debhelper-compat (not debhelper)
+  * relax to stop build-depend explicitly on g++:
+    required version satisfied by default
+    in all supported Debian releases
+  * drop ancient Breaks/Replaces hints
+  * stop link against KDE libraries (no longer supported upstream):
+    + drop binary package syncevolution-libs-kde
+    + stop build-depend on kdelibs5-dev kdepimlibs5-dev
+  * stop install library to support ActiveSync
+    (no longer supported upstream)
+  * use Python 3.x libraries:
+    + build-depend on python3-docutils (not python-docutils)
+    + have syncevolution-http depend on python3 python3-dbus
+      python3-gobject python3-openssl
+      python3-pygments python3-twisted-web
+      (not python python-dbus python-gobject
+      python-openssl python-twisted-web)
+  * stop build-depend on libpcre3-dev
+  * build-depend on libecal2.0-dev (not libecal1.2-dev)
+  * relax to build-depend unversioned on libsynthesis-dev:
+    required version satisfied in all supported Debian releases
+  * add patch 1002
+    to adjust whitespace as required for recent autotools
+  * fix install all pstream-provided gettext machine-object files
+  * install all upstream-provided README.* files
+  * install more example files
+  * improve install tracking with dh_missing:
+    package upstream-installed manpage (not source file)
+  * explicitly list files deliberately not installed
+  * stop install syncevolution-dbus example file dropped upstream
+  * update install paths
+
+ -- Jonas Smedegaard <dr@jones.dk>  Thu, 30 Sep 2021 11:16:51 +0200
+
 syncevolution (1.5.3-2) unstable; urgency=medium
 
   * Remove libgconf2-dev build-dep (Closes: #897258)

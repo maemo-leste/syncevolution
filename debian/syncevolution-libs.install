@@ -6,4 +6,4 @@ usr/lib/*/syncevolution/backends/syncmaemocal.so
 usr/lib/*/syncevolution/backends/syncqtcontacts.so
 usr/lib/*/syncevolution/backends/syncsqlite.so
 usr/lib/*/syncevolution/backends/syncxmlrpc.so
-usr/lib/*/syncevolution/syncevo-local-sync
+usr/libexec/syncevo-local-sync

@@ -1,4 +1,4 @@
-usr/lib/*/syncevolution/syncevo-dbus-helper
-usr/lib/*/syncevolution/syncevo-dbus-server
+usr/libexec/syncevo-dbus-helper
+usr/libexec/syncevo-dbus-server
 usr/lib/systemd/user/*.service
 usr/share/dbus-1/services/org.syncevolution.service

@@ -1,7 +1,7 @@
 Source: syncevolution
 Section: utils
 Priority: optional
-Maintainer: Tino Mettler <tino+debian@tikei.de>
+Maintainer: Jonas Smedegaard <dr@jones.dk>
 Build-Depends:
  debhelper-compat (= 13),
  intltool,

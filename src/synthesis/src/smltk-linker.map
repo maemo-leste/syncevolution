@@ -1,9 +1,0 @@
-VER_1.0 {
-    global:
-        sml*;
-        xltDecInit;
-        xltDecTerminate;
-        xltDecNext;
-    local:
-        *;
-};

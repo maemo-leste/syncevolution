@@ -1,5 +1,0 @@
-clientprovisioning_inc.cpp
-.*_tables_inc.cpp
-syncsessiondispatch.cpp
-enginestubs.c
-platform_adapters/macosx

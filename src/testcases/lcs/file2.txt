@@ -1,6 +1,0 @@
-begin
-item2
-end
-begin
-item1
-end

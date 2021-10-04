@@ -1,0 +1,27 @@
+Some of the advanced features of SyncEvolution depend on optional
+packages.  In addition to the more obvious dependencies of the
+backends there are more subtle dependencies:
+
+- for good time zone support, libsynthesis must have access to
+  either libical or libecal
+- direct sync with phones depends on bluez and openobex
+- GNOME Bluetooth Panel needs libgnome-bluetooth-dev *AND*
+  --enable-gnome-bluetooth-panel
+- either glib or libnss should be available, so that
+  SyncEvolution can use SHA-256 hashes instead of a
+  weaker built-in algorithm for hashes in the database dump
+  .ini files
+- libnotify is needed by the syncevo-dbus-server, although
+  --disable-notify can be used to avoid that.
+- Localization data is shared between sync-ui and syncevo-dbus-server
+  and thus needs to be packaged with the core SyncEvolution.
+- to enable CalDAV/CardDAV:
+  - use --enable-dav
+  - needs libneon[-gnutls].pc (use gnutls version, if available,
+    but make sure that it is >= 0.29.5, which has this patch:
+    http://lists.manyfish.co.uk/pipermail/neon/2010-November/001294.html)
+  - ensure that one of the following commands is available at runtime:
+    adnshost, host, nslookup
+- as of SyncEvolution >= 1.3 rst2html tool should be made as a build
+  requirement, because README.html is optionally generated during build instead
+  of being distributed.

@@ -1,0 +1,162 @@
+# ==21230== Conditional jump or move depends on uninitialised value(s)
+# ==21230==    at 0xB136BB1: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB136F3F: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB14625F: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB1466F7: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB17109A: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB17F6CD: gnutls_x509_ext_import_subject_alt_names (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB174649: gnutls_x509_crt_import (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB174AD3: gnutls_x509_crt_list_import (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB174D9F: gnutls_x509_crt_list_import2 (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB17E309: gnutls_x509_trust_list_add_trust_mem (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0xB17E7C1: gnutls_x509_trust_list_add_trust_file (in /usr/lib/x86_64-linux-gnu/libgnutls.so.30.25.0)
+# ==21230==    by 0x14AE5119: ??? (in /usr/lib/x86_64-linux-gnu/gio/modules/libgiognutls.so)
+# ==21230== 
+{
+   gnutls gnutls_x509_trust_list_add_trust_file
+   Memcheck:Cond
+   ...
+   fun:gnutls_x509_ext_import_subject_alt_names
+   fun:gnutls_x509_crt_import
+   fun:gnutls_x509_crt_list_import
+   fun:gnutls_x509_crt_list_import2
+   fun:gnutls_x509_trust_list_add_trust_mem
+   fun:gnutls_x509_trust_list_add_trust_file
+}
+
+# ==10804== 363 (120 direct, 243 indirect) bytes in 3 blocks are definitely lost in loss record 1,844 of 2,014
+# ==10804==    at 0x4C27673: malloc (vg_replace_malloc.c:263)
+# ==10804==    by 0x7FABC02: g_malloc (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x7FC0976: g_slice_alloc (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x7FDEEC9: ??? (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x7FDF02C: ??? (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x7FDC825: g_variant_builder_end (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x7672049: ??? (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
+# ==10804==    by 0x76736ED: g_dbus_message_new_from_blob (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
+# ==10804==    by 0x767F01D: ??? (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
+# ==10804==    by 0x7625D86: g_simple_async_result_complete (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
+# ==10804==    by 0x7625E98: ??? (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
+# ==10804==    by 0x7FA50CE: g_main_context_dispatch (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x7FA58C7: ??? (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x7FA5E01: g_main_loop_run (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x767CDC5: ??? (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.3000.2)
+# ==10804==    by 0x7FCA7E5: ??? (in /lib/x86_64-linux-gnu/libglib-2.0.so.0.3000.2)
+# ==10804==    by 0x5076B3F: start_thread (pthread_create.c:304)
+# ==10804==    by 0x8AC636C: clone (clone.S:112)
+# ==10804== 
+{
+   GIO thread leak
+   Memcheck:Leak
+   fun:malloc
+   fun:g_malloc
+   ...
+   obj:*libgio*
+   obj:*libglib*
+   ...
+   fun:start_thread
+}
+
+# ==4782== 2,048 bytes in 1 blocks are definitely lost in loss record 2,395 of 2,503
+# ==4782==    at 0x4C28BED: malloc (vg_replace_malloc.c:263)
+# ==4782==    by 0x4C28D6F: realloc (vg_replace_malloc.c:632)
+# ==4782==    by 0x10955415: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.26.22.4)
+# ==4782==    by 0x109480DD: ??? (in /usr/lib/x86_64-linux-gnu/libgnutls.so.26.22.4)
+# ==4782==    by 0x10944048: gnutls_session_get_data2 (in /usr/lib/x86_64-linux-gnu/libgnutls.so.26.22.4)
+# ==4782==    by 0x6E4D666: ne_sock_connect_ssl (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E572DE: ??? (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E454F9: ??? (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E45D1B: ne_begin_request (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E453AC: ne_request_dispatch (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x6E52BCC: ??? (in /usr/lib/libneon-gnutls.so.27.2.6)
+# ==4782==    by 0x8ECB01: SyncEvo::Neon::Session::propfindURI(std::string const&, int, ne_propname const*, std::function<void ()(SyncEvo::Neon::URI const&, ne_prop_result_set_s const*)> const&, SyncEvo::Timespec const&) (NeonCXX.cpp:426)
+# ==4782==    by 0x8ECE4E: SyncEvo::Neon::Session::propfindProp(std::string const&, int, ne_propname const*, std::function<void ()(SyncEvo::Neon::URI const&, ne_propname const*, char const*, ne_status const*)> const&, SyncEvo::Timespec const&) (NeonCXX.cpp:461)
+# ==4782==    by 0x8E1539: SyncEvo::WebDAVSource::databaseRevision() (WebDAVSource.cpp:1332)
+# ==4782==    by 0x8CF30C: SyncEvo::CalDAVSource::subDatabaseRevision() (CalDAVSource.h:37)
+# ==4782==    by 0xA56FCC: SyncEvo::MapSyncSource::endSync(bool) (MapSyncSource.cpp:252)
+# ==4782==    by 0x86FCEB: SyncEvo::TestingSyncSourcePtr::stopAccess() (ClientTest.cpp:349)
+# ==4782==    by 0x870424: SyncEvo::TestingSyncSourcePtr::reset(SyncEvo::TestingSyncSource*, SyncEvo::TestingSyncSourcePtr::Flags) (ClientTest.cpp:294)
+# ==4782==    by 0x7A3188: SyncEvo::LocalTests::testImport() (ClientTest.cpp:1473)
+# ==4782==    by 0x7546B50: CppUnit::TestCaseMethodFunctor::operator()() const (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x753CBB4: CppUnit::DefaultProtector::protect(CppUnit::Functor const&, CppUnit::ProtectorContext const&) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x7543B71: CppUnit::ProtectorChain::protect(CppUnit::Functor const&, CppUnit::ProtectorContext const&) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x754C6F4: CppUnit::TestResult::protect(CppUnit::Functor const&, CppUnit::Test*, std::string const&) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x754676E: CppUnit::TestCase::run(CppUnit::TestResult*) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x754C679: CppUnit::TestResult::runTest(CppUnit::Test*) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x754EB38: CppUnit::TestRunner::run(CppUnit::TestResult&, std::string const&) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x7550DA5: CppUnit::TextTestRunner::run(std::string, bool, bool, bool) (in /usr/lib/libcppunit-1.12.so.1.0.0)
+# ==4782==    by 0x6B921A: main (client-test-main.cpp:349)
+# ==4782== 
+#
+# Started to appear on testing-amd64 after switching Apple CalDAV testing to https.
+# FDO #61851
+# 
+{
+   neon + gnutls
+   Memcheck:Leak
+   ...
+   fun:gnutls_session_get_data2
+   fun:ne_sock_connect_ssl
+}
+
+# ==21426== 54 (24 direct, 30 indirect) bytes in 1 blocks are definitely lost in loss record 4,770 of 8,459
+# ==21426==    at 0x4C2B514: calloc (vg_replace_malloc.c:593)
+# ==21426==    by 0x8808998: g_malloc0 (gmem.c:189)
+# ==21426==    by 0x87E05A9: g_get_charset (gcharset.c:188)
+# ==21426==    by 0x882019E: g_strerror (gstrfuncs.c:1245)
+# ==21426==    by 0x8072961: g_pollable_input_stream_default_read_nonblocking (gpollableinputstream.c:152)
+# ==21426==    by 0x8064AD4: read_async_pollable (ginputstream.c:1118)
+# ==21426==    by 0x8064C4E: g_input_stream_real_read_async (ginputstream.c:1167)
+# ==21426==    by 0x806583A: g_input_stream_read_async (ginputstream.c:631)
+# ==21426==    by 0x80D4CD2: _g_dbus_worker_do_read_unlocked (gdbusprivate.c:850)
+# ==21426==    by 0x80D4CFC: _g_dbus_worker_do_initial_read (gdbusprivate.c:879)
+# ==21426==    by 0x8802EA5: g_main_context_dispatch (gmain.c:3054)
+# ==21426==    by 0x88031F7: g_main_context_iterate.isra.22 (gmain.c:3701)
+# ==21426==    by 0x88035F9: g_main_loop_run (gmain.c:3895)
+# ==21426==    by 0x80D4D25: gdbus_shared_thread_func (gdbusprivate.c:278)
+# ==21426==    by 0x88271D4: g_thread_proxy (gthread.c:798)
+# ==21426==    by 0x9A6BE0D: start_thread (pthread_create.c:311)
+# ==21426==    by 0xA5800FC: clone (clone.S:113)
+# ==21426==
+#
+# Seen with glib 2.36.4 on Debian Testing > Wheezy.
+# Can't be a real leak, the pointer is properly stored in a
+# GPrivate with destructor. Probably the thread doesn't terminate
+# normally and valgrind treats its thread-private data as leaked.
+{
+   glib GPrivate charset cache
+   Memcheck:Leak
+   fun:calloc
+   fun:g_malloc0
+   fun:g_get_charset
+}
+
+# ==30625== 120 bytes in 1 blocks are definitely lost in loss record 4,992 of 5,479
+# ==30625==    at 0x483577F: malloc (vg_replace_malloc.c:299)
+# ==30625==    by 0x5B36A50: __libc_alloc_buffer_allocate (alloc_buffer_allocate.c:26)
+# ==30625==    by 0x5BC9CB9: alloc_buffer_allocate (alloc_buffer.h:143)
+# ==30625==    by 0x5BC9CB9: __resolv_conf_allocate (resolv_conf.c:411)
+# ==30625==    by 0x5BC794B: __resolv_conf_load (res_init.c:592)
+# ==30625==    by 0x5BC99AA: __resolv_conf_get_current (resolv_conf.c:163)
+# ==30625==    by 0x5BC833C: __res_vinit (res_init.c:614)
+# ==30625==    by 0x5BC92AA: maybe_init (resolv_context.c:122)
+# ==30625==    by 0x5BC92AA: context_get.part.1 (resolv_context.c:184)
+# ==30625==    by 0x5BBA738: gethostbyname2_r@@GLIBC_2.2.5 (getXXbyYY_r.c:217)
+# ==30625==    by 0x5B92289: gaih_inet.constprop.7 (getaddrinfo.c:575)
+# ==30625==    by 0x5B92E36: getaddrinfo (getaddrinfo.c:2265)
+# ==30625==    by 0x506D91F: ??? (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.5800.3)
+# ==30625==    by 0x506A342: ??? (in /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.5800.3)
+# ==30625==    by 0x5251DB2: ??? (in /usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.5800.3)
+# ==30625==    by 0x5251414: ??? (in /usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.5800.3)
+# ==30625==    by 0x5772FA2: start_thread (pthread_create.c:486)
+# ==30625==    by 0x5BA84CE: clone (clone.S:95)
+# ==30625== 
+{
+   maybe init in gethostbyname
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   ...
+   fun:maybe_init
+   fun:context_get.part.1
+   fun:gethostbyname*
+}

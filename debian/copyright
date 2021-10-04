@@ -51,7 +51,14 @@ Files:
 Copyright:
   2009  David Bremner
   2021  Jonas Smedegaard <dr@jones.dk>
-License: same as upstream, LGPL2.1 or LGPL3
+License-Grant:
+ This packaging is free software;
+ you can redistribute it and/or modify it
+ under the terms of the GNU General Public License
+ as published by the Free Software Foundation;
+ version 3.
+License: GPL-3
+Reference: debian/copyright
 
 License: Artistic
 Reference: /usr/share/common-licenses/Artistic
@@ -61,6 +68,9 @@ Reference: /usr/share/common-licenses/GPL-1
 
 License: GPL-2
 Reference: /usr/share/common-licenses/GPL-2
+
+License: GPL-3
+Reference: /usr/share/common-licenses/GPL-3
 
 License: LGPL-2+
 Reference: /usr/share/common-licenses/LGPL-2

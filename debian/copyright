@@ -1,8 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: SyncEvolution
 Upstream-Contact: https://gitlab.freedesktop.org/SyncEvolution/syncevolution/-/issues
-Source: https://downloads.syncevolution.org/syncevolution/sources/
- https://gitlab.freedesktop.org/SyncEvolution/syncevolution/
+Source: https://gitlab.freedesktop.org/SyncEvolution/syncevolution/
 
 Files: *
 Copyright:

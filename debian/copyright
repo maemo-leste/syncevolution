@@ -124,7 +124,7 @@ License-Grant:
  either version 2 of the License, or (at your option) any later version.
 License: LGPL-2+
 
-File:
+Files:
  src/backends/evolution/e-cal-check-timezones.c
  src/backends/evolution/e-cal-check-timezones.h
 Copyright:

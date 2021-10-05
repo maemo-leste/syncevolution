@@ -3,6 +3,7 @@ missing-license-paragraph-in-dep5-copyright debian/copyright artistic *
 missing-license-paragraph-in-dep5-copyright debian/copyright gpl-1\+ *
 missing-license-paragraph-in-dep5-copyright debian/copyright gpl-2\+ *
 missing-license-paragraph-in-dep5-copyright debian/copyright gpl-3 *
+missing-license-paragraph-in-dep5-copyright debian/copyright lgpl-2 *
 missing-license-paragraph-in-dep5-copyright debian/copyright lgpl-2\+ *
 missing-license-paragraph-in-dep5-copyright debian/copyright lgpl-2\.1 *
 missing-license-paragraph-in-dep5-copyright debian/copyright lgpl-3 *
@@ -10,6 +11,7 @@ missing-license-text-in-dep5-copyright debian/copyright Artistic *
 missing-license-text-in-dep5-copyright debian/copyright GPL-1\+ *
 missing-license-text-in-dep5-copyright debian/copyright GPL-2\+ *
 missing-license-text-in-dep5-copyright debian/copyright GPL-3 *
-missing-license-text-in-dep5-copyright debian/copyright LGPL-2+ *
+missing-license-text-in-dep5-copyright debian/copyright LGPL-2 *
+missing-license-text-in-dep5-copyright debian/copyright LGPL-2\+ *
 missing-license-text-in-dep5-copyright debian/copyright LGPL-2\.1 *
 missing-license-text-in-dep5-copyright debian/copyright LGPL-3 *

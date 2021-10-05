@@ -1,6 +1,6 @@
-syncevolution (2.0.0-1) UNRELEASED; urgency=medium
+syncevolution (2.0.0-1) experimental; urgency=medium
 
-   [ upstream ]
+  [ upstream ]
   * new release
 
   [ Jonas Smedegaard ]
@@ -49,7 +49,7 @@ syncevolution (2.0.0-1) UNRELEASED; urgency=medium
   * stop install syncevolution-dbus example file dropped upstream
   * update install paths
 
- -- Jonas Smedegaard <dr@jones.dk>  Thu, 30 Sep 2021 11:16:51 +0200
+ -- Jonas Smedegaard <dr@jones.dk>  Tue, 05 Oct 2021 10:35:28 +0200
 
 syncevolution (1.5.3-2) unstable; urgency=medium
 

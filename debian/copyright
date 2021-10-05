@@ -5,10 +5,14 @@ Source: https://gitlab.freedesktop.org/SyncEvolution/syncevolution/
 
 Files: *
 Copyright:
-  2008       Funambol, Inc.
-  2009       Intel Corporation
-  2005-2009  Patrick Ohly <patrick.ohly@gmx.de>
-  2004-2008  Synthesis AG
+  2012             BMW Car IT GmbH.
+  2016             Emanoil Kotsev <emanoil.kotsev@fincom.at>
+  2008             Funambol, Inc.
+  2009, 2011-2012  Intel Corporation
+  2009             m-otion communications GmbH <knipp@m-otion.com>
+  2005-2009        Patrick Ohly <patrick.ohly@gmx.de>
+  2011             Symbio, Ville Nummela
+  2004-2008        Synthesis AG
 Grant:
  This library is free software;
  you can redistribute it and/or modify it
@@ -16,13 +20,109 @@ Grant:
  as published by the Free Software Foundation;
  either version 2.1 of the License, or (at your option) version 3.
 License: LGPL-2.1 or LGPL-3
+Comment:
+ Files below <src/backends/webdav/*> lack licensing.
+ Licensing of those files is assumed same as generally for the project.
+
+Files:
+ build/xsl/*
+Copyright:
+  2003       Jiří Kosek
+  1999-2007  Norman Walsh
+  2011-2012  O'Reilly Media
+  2004-2007  Steve Ball
+  2005-2008  The DocBook Project
+License: Expat~Docbook
+Reference: build/xsl/COPYING
+
+Files: m4-repo/*.m4
+Copyright:
+  2008       Benjamin Kosnik <bkoz@redhat.com>
+  2014-2015  Google Inc.
+  2008       John Darrington <j.darrington@elvis.murdoch.edu.au>
+  2016       Krzesimir Nowak <qdlacz@gmail.com>
+  2015       Moritz Klammler <moritz@klammler.eu>
+  2015       Paul Norman <penorman@mac.com>
+  2009       Peter Adolphs
+  2013       Roy Stogner <roystgnr@ices.utexas.edu>
+  2008       Thomas Porschberg <thomas@randspringer.de>
+  2012       Xiyue Deng <manphiz@gmail.com>
+  2012       Zack Weinberg <zackw@panix.com>
+License: FSFAP
+
+Files:
+ src/backends/akonadi/akonadisyncsource.cpp
+ src/backends/akonadi/akonadisyncsource.h
+ src/backends/akonadi/contactssyncsource.cpp
+ src/backends/akonadi/contactssyncsource.h
+ src/backends/akonadi/eventssyncsource.cpp
+ src/backends/akonadi/eventssyncsource.h
+ src/backends/akonadi/notessyncsource.cpp
+ src/backends/akonadi/notessyncsource.h
+ src/backends/akonadi/todossyncsource.cpp
+ src/backends/akonadi/todossyncsource.h
+Copyright:
+  2009  Sascha Peilicke <sasch.pe@gmx.de>
+License-Grant:
+ This application is free software;
+ you can redistribute it and/or modify it
+ under the terms of the GNU Library General Public License
+ as published by the Free Software Foundation;
+ either version 2 of the License, or (at your option) any later version.
+License: LGPL-2+
 
 Files:
  test/Algorith/Diff.pm
 Copyright:
   2000-2004  Ned Konz
   2000-2004  Tye McQueen
-License: GPL-1+ or Artistic
+License-Grant:
+ This program is free software;
+ you can redistribute it and/or modify it
+ under the same terms as Perl.
+License: Artistic or GPL-1+
+Comment:
+ Perl 5 is licensed under either the Artistic license
+ or the GNU General Public License version 1 or later.
+
+Files:
+ src/syncevo/icaltz-util.c
+ src/syncevo/icaltz-util.h
+Copyright:
+  2007  Novell, Inc.
+License-Grant:
+ This program is free software;
+ you can redistribute it and/or modify it
+ under the terms of version 2
+ of the GNU Lesser General Public License
+ as published by the Free Software Foundation.
+License: LGPL-2
+
+Files:
+ src/gtk-ui/gtkinfobar.c
+ src/gtk-ui/gtkinfobar.h
+Copyright:
+  2005  Paolo Maggi
+License-Grant:
+ This library is free software;
+ you can redistribute it and/or modify it
+ under the terms of the GNU Lesser General Public License
+ as published by the Free Software Foundation;
+ either version 2 of the License, or (at your option) any later version.
+License: LGPL-2+
+
+Files:
+ src/backends/tdepim/TDEPIMSyncSource.cpp
+ src/backends/tdepim/TDEPIMSyncSource.h
+Copyright:
+  2016  Emanoil Kotsev <emanoil.kotsev@fincom.at>
+License-Grant:
+ This application is free software;
+ you can redistribute it and/or modify it
+ under the terms of the GNU Library General Public License
+ as published by the Free Software Foundation;
+ either version 2 of the License, or (at your option) any later version.
+License: LGPL-2+
 
 File:
  src/backends/evolution/e-cal-check-timezones.c
@@ -30,20 +130,82 @@ File:
 Copyright:
   2008  Novell, Inc
   2009  Patrick Ohly <patrick.ohly@gmx.de>
+Grant:
+ This program is free software;
+ you can redistribute it and/or modify it
+ under the terms of the GNU Lesser General Public License
+ as published by the Free Software Foundation;
+ either version 2 of the License, or (at your option) any later version.
 License: LGPL-2+
+Comment:
+ The granted license does not exist at described version.
+ Licensing assumed to be GNU Library General Public License 2.0 or newer.
+
+Files: src/dbus/interfaces/spec-to-docbook.xsl
+Copyright: 2007, William Jon McCann
+Grant:
+ License: GPL
+License: GPL-1+
+
+Files:
+ m4-repo/dk-warn.m4
+Copyright:
+  2004-2007  Daniel Elstner <daniel.kitta@gmail.com>
+License-Grant:
+ danielk's Autostuff is free software;
+ you can redistribute it and/or modify it
+ under the terms of the GNU General Public License
+ as published by the Free Software Foundation;
+ either version 2 of the License, or (at your option) any later version.
+License: GPL-2+
+
+Files:
+ m4-repo/autotroll.m4
+ autotroll.am
+Copyright:
+  2006-2007, 2009-2010  Benoit Sigoure <benoit.sigoure@lrde.epita.fr>
+License-Grant:
+ AutoTroll is free software;
+ you can redistribute it and/or modify it
+ under the terms of the GNU General Public License
+ as published by the Free Software Foundation;
+ either version 2 of the License, or (at your option) any later version.
+License: GPL-2+ with Autoconf-2.0~AutoTroll exception
+ In addition, as a special exception,
+ the copyright holders of AutoTroll give you unlimited permission
+ to copy, distribute and modify the configure scripts
+ that are the output of Autoconf
+ when processing the macros of AutoTroll.
+ You need not follow the terms of the GNU General Public License
+ when using or distributing such scripts,
+ even though portions of the text of AutoTroll appear in them.
+ The GNU General Public License (GPL) does govern
+ all other use of the material that constitutes AutoTroll.
+ .
+ This special exception to the GPL applies
+ to versions of AutoTroll released
+ by the copyright holders of AutoTroll.
+ Note that people who make
+ modified versions of AutoTroll are not obligated
+ to grant this special exception for their modified versions;
+ it is their choice whether to do so.
+ The GNU General Public License gives permission
+ to release a modified version without this exception;
+ this exception also makes it possible to release
+ a modified version which carries forward this exception.
 
 Files:
  build/gen-changelog.pl
 Copyright:
-  2009  Emmanuele Bassi
+  2009  Emmanuele Bassi <ebassi@gnome.org>
+License-Grant:
+ This program is free software.
+ It can be distributed and/or modified
+ under the terms of Perl itself.
 License: GPL-1+ or Artistic
-
-Files:
- src/gdbus/test/example.cpp
- src/gdbusxx/test/example.cpp
-Copyright:
-  2009  Intel Corporation
-License: GPL-2
+Comment:
+ Perl 5 is licensed under either the Artistic license
+ or the GNU General Public License version 1 or later.
 
 Files:
  debian/*
@@ -62,10 +224,44 @@ Reference: debian/copyright
 License: Artistic
 Reference: /usr/share/common-licenses/Artistic
 
+License: Expat~Docbook
+ Permission is hereby granted, free of charge,
+ to any person obtaining a copy
+ of this software and associated documentation files (the "Software"),
+ to deal in the Software without restriction,
+ including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense,
+ and/or sell copies of the Software,
+ and to permit persons to whom the Software is furnished to do so,
+ subject to the following conditions:
+ .
+ The above copyright notice and this permission notice
+ shall be included in all copies or substantial portions of the Software.
+ .
+ Except as contained in this notice,
+ the names of individuals credited with contribution to this software
+ shall not be used in advertising or otherwise
+ to promote the sale, use or other dealings in this Software
+ without prior written authorization from the individuals in question.
+ .
+ Any stylesheet derived from this Software
+ that is publically distributed
+ will be identified with a different name
+ and the version strings in any derived Software will be changed
+ so that no possibility of confusion
+ between the derived package and this Software will exist.
+
+License: FSFAP
+ Copying and distribution of this file,
+ with or without modification,
+ are permitted in any medium without royalty
+ provided the copyright notice and this notice are preserved
+ This file is offered as-is, without any warranty.
+
 License: GPL-1+
 Reference: /usr/share/common-licenses/GPL-1
 
-License: GPL-2
+License: GPL-2+
 Reference: /usr/share/common-licenses/GPL-2
 
 License: GPL-3

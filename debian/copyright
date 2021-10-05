@@ -13,7 +13,7 @@ Copyright:
   2005-2009        Patrick Ohly <patrick.ohly@gmx.de>
   2011             Symbio, Ville Nummela
   2004-2008        Synthesis AG
-Grant:
+License-Grant:
  This library is free software;
  you can redistribute it and/or modify it
  under the terms of the GNU Lesser General Public License
@@ -130,7 +130,7 @@ File:
 Copyright:
   2008  Novell, Inc
   2009  Patrick Ohly <patrick.ohly@gmx.de>
-Grant:
+License-Grant:
  This program is free software;
  you can redistribute it and/or modify it
  under the terms of the GNU Lesser General Public License
@@ -143,7 +143,7 @@ Comment:
 
 Files: src/dbus/interfaces/spec-to-docbook.xsl
 Copyright: 2007, William Jon McCann
-Grant:
+License-Grant:
  License: GPL
 License: GPL-1+
 

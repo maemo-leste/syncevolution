@@ -21,7 +21,7 @@ override_dh_auto_configure:
 			--enable-oauth2
 
 execute_after_dh_auto_install:
-	install --mode=0755 --owner=root test/syncevo-http-server.py \
+	cp test/syncevo-http-server.py \
 		debian/tmp/usr/bin/syncevo-http-server
 
 override_dh_install:

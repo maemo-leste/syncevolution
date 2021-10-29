@@ -141,7 +141,7 @@ Depends:
  dbus-x11,
  python3,
  python3-dbus,
- python3-gobject,
+ python3-gi,
  python3-openssl,
  python3-twisted-core,
  syncevolution-dbus (>= ${source:Version}),

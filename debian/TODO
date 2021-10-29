@@ -1,3 +1,6 @@
   * add missing manpages for syncompare and syncevo-http-server
   * tighten dh-missing to stop just warn about filtes not installed:
     either fix install or list in "not_installed" with explanation
+  * Investigate: python3-gobject, python3-twisted-web listed as
+    dependencies of: syncevolution-http but they do not exist in
+    the Debian archive

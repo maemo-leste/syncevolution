@@ -1,3 +1,26 @@
+syncevolution (2.0.0-2) UNRELEASED; urgency=medium
+
+  [ Jonas Smedegaard ]
+  * update copyright info:
+    + fix consistently use field License-Grant (not Grant)
+    + fix consistently use field Files (not bogus File)
+    + fix add License section LGPL-2
+    + tighten license-related lintian overrides
+  * fix have syncevolution-http depend on python3-gi
+    (not bogus python3-gobject:
+    earlier transitional package python-gobject pulled in python-gi)
+  * fix drop depending on python3-twisted-web:
+    bogus (transitioned to python3-twisted-core)
+    and used only by exerimental unused script
+
+  [ Joao Azevedo ]
+  * update TODOs:
+    + list libraries installed upstream but not packaged
+  * explicitly list library syncactivesync.so as not installed
+    (to match upstream intent in unconventional build target)
+
+ -- Jonas Smedegaard <dr@jones.dk>  Fri, 29 Oct 2021 19:15:20 +0200
+
 syncevolution (2.0.0-1) experimental; urgency=medium
 
   [ upstream ]

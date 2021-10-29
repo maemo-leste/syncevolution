@@ -1154,15 +1154,17 @@ License: UNKNOWN
 Files: debian/source/lintian-overrides
 Copyright: debian/copyright Artistic
   debian/copyright GPL-1+
-  debian/copyright GPL-2
+  debian/copyright GPL-2+
   debian/copyright GPL-3
+  debian/copyright LGPL-2
   debian/copyright LGPL-2+
   debian/copyright LGPL-2.1
   debian/copyright LGPL-3
   debian/copyright artistic
   debian/copyright gpl-1+
-  debian/copyright gpl-2
+  debian/copyright gpl-2+
   debian/copyright gpl-3
+  debian/copyright lgpl-2
   debian/copyright lgpl-2+
   debian/copyright lgpl-2.1
   debian/copyright lgpl-3

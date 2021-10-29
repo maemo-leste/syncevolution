@@ -4,3 +4,11 @@
   * Investigate: python3-gobject, python3-twisted-web listed as
     dependencies of: syncevolution-http but they do not exist in
     the Debian archive
+  * The following libs do not install by default, we need to 
+    check if it is necessary: 
+    platformtde.so
+    providergoa.so
+    synctdepimabc.so
+    synctdepimcal.so
+    synctdepimnotes.so
+    syncpbap.so  

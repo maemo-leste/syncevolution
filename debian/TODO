@@ -9,3 +9,5 @@
     synctdepimcal.so
     synctdepimnotes.so
     syncpbap.so  
+  * fix FTPFS with g++-11;
+    see <https://gitlab.freedesktop.org/SyncEvolution/syncevolution/-/issues/167>

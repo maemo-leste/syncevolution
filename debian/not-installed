@@ -21,3 +21,5 @@ usr/lib/*/syncevolution/backends/synctdepimcal.so
 usr/lib/*/syncevolution/backends/synctdepimnotes.so
 usr/lib/*/syncevolution/backends/platformtde.so
 
+# helper script for testing
+usr/bin/synclog2html

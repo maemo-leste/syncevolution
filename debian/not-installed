@@ -21,5 +21,6 @@ usr/lib/*/syncevolution/backends/synctdepimcal.so
 usr/lib/*/syncevolution/backends/synctdepimnotes.so
 usr/lib/*/syncevolution/backends/platformtde.so
 
-# helper script for testing
+# helper scripts for testing
+usr/bin/syncevo-phone-config
 usr/bin/synclog2html

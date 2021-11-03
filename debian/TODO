@@ -1,13 +1,5 @@
   * add missing manpages for syncompare and syncevo-http-server
   * tighten dh-missing to stop just warn about filtes not installed:
     either fix install or list in "not_installed" with explanation
-  * The following libs do not install by default, we need to 
-    check if it is necessary: 
-    platformtde.so
-    providergoa.so
-    synctdepimabc.so
-    synctdepimcal.so
-    synctdepimnotes.so
-    syncpbap.so  
   * fix FTPFS with g++-11;
     see <https://gitlab.freedesktop.org/SyncEvolution/syncevolution/-/issues/167>

@@ -9,12 +9,12 @@ usr/lib/*/pkgconfig/*.pc
 # covered in debian/copyright
 usr/share/doc/syncevolution/COPYING
 
-# relates to unused options --enable-kwallet --enable-akonadi
+# relates to unsupported KDE options --enable-kwallet --enable-akonadi
 usr/lib/*/syncevolution/backends/platformkde.so
 usr/lib/*/syncevolution/backends/syncakonadi.so
 usr/lib/*/syncevolution/backends/syncactivesync.so
 
-# relates to TDEPIM which is used by trynity desktop enviornment
+# relates to unsupported KDE-derived Trinity Desktop Environment (TDE)
 usr/lib/*/syncevolution/backends/synctdepimabc.so
 usr/lib/*/syncevolution/backends/synctdepimcal.so
 usr/lib/*/syncevolution/backends/synctdepimnotes.so

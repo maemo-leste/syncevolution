@@ -13,3 +13,10 @@ usr/share/doc/syncevolution/COPYING
 usr/lib/*/syncevolution/backends/platformkde.so
 usr/lib/*/syncevolution/backends/syncakonadi.so
 usr/lib/*/syncevolution/backends/syncactivesync.so
+
+# relates to TDEPIM which is used by trynity desktop enviornment
+usr/lib/*/syncevolution/backends/synctdepimabc.so
+usr/lib/*/syncevolution/backends/synctdepimcal.so
+usr/lib/*/syncevolution/backends/synctdepimnotes.so
+usr/lib/*/syncevolution/backends/platformtde.so
+

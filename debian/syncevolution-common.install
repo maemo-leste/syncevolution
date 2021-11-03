@@ -1,3 +1,4 @@
 usr/bin/synccompare
+usr/bin/syncevo-webdav-lookup
 usr/share/locale/*/LC_MESSAGES/syncevolution.mo
 usr/share/syncevolution

@@ -74,6 +74,8 @@ Architecture: all
 Depends:
  libsynthesis0v5 (>= 3.4.0.47.5),
  ${misc:Depends},
+Recommends:
+ adns-tools | host | dnsutils,
 Description: Sync personal information data via SyncML/CalDAV/CardDAV (common files)
  SyncEvolution synchronizes contact, calendar and task items via SyncML and
  CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server
@@ -90,6 +92,8 @@ Depends:
  syncevolution-libs-gnome (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
+Recommends:
+ syncevolution-common (= ${source:Version}),
 Description: Sync personal information data via SyncML/CalDAV/CardDAV (backend libraries)
  SyncEvolution synchronizes contact, calendar and task items via SyncML and
  CalDAV/CardDAV with other servers or devices. It uses the Evolution Data Server

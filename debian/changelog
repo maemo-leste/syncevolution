@@ -1,4 +1,4 @@
-syncevolution (2.0.0-2) UNRELEASED; urgency=medium
+syncevolution (2.0.0-2) experimental; urgency=medium
 
   [ Jonas Smedegaard ]
   * update copyright info:
@@ -12,14 +12,23 @@ syncevolution (2.0.0-2) UNRELEASED; urgency=medium
   * fix drop depending on python3-twisted-web:
     bogus (transitioned to python3-twisted-core)
     and used only by exerimental unused script
+  * tighten dh-missing to fail (not only warn) on missed files
+    + list unversioned symlinks to shared objects as not-installed
+    + list helper scripts for testing as not-installed
+  * fix install XDG startup files in syncevolution-dbus
+  * fix install SRV resolver script in syncevolution-common,
+    recommend adns-utils (or simpler fallbacks),
+    and have syncevolution-libs recommend syncevolution-common
+  * work around FTPFS with g++ 11 by setting CXXFLAG -std=c++14
 
   [ Joao Azevedo ]
-  * update TODOs:
-    + list libraries installed upstream but not packaged
-  * explicitly list library syncactivesync.so as not installed
+  * list library syncactivesync.so as not installed
     (to match upstream intent in unconventional build target)
+  * list TDEPIM libraries as not installed
+    (we no longer link against KDE libraries so unlikely to be useful)
+  * fix install libraries syncpbap providergoa
 
- -- Jonas Smedegaard <dr@jones.dk>  Fri, 29 Oct 2021 19:15:20 +0200
+ -- Jonas Smedegaard <dr@jones.dk>  Wed, 03 Nov 2021 15:50:49 +0100
 
 syncevolution (2.0.0-1) experimental; urgency=medium
 

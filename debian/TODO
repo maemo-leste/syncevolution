@@ -1,5 +1,3 @@
   * add missing manpages for syncompare and syncevo-http-server
-  * tighten dh-missing to stop just warn about filtes not installed:
-    either fix install or list in "not_installed" with explanation
   * fix FTPFS with g++-11;
     see <https://gitlab.freedesktop.org/SyncEvolution/syncevolution/-/issues/167>

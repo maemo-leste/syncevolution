@@ -28,7 +28,7 @@ override_dh_install:
 	dh_install -X"*.pl"
 
 override_dh_missing:
-	dh_missing --list-missing
+	dh_missing
 
 override_dh_makeshlibs:
 	dh_makeshlibs -V'libsyncevolution0 (>= 1.5.2-3~)' -plibsyncevolution0

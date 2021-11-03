@@ -1,7 +1,7 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
 
-export DEB_CXXFLAGS_APPEND = -std=c++14
+export DEB_CXXFLAGS_MAINT_APPEND = -std=c++14
 
 export CONFIG_SHELL=/bin/bash
 

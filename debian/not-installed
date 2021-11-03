@@ -22,5 +22,6 @@ usr/lib/*/syncevolution/backends/synctdepimnotes.so
 usr/lib/*/syncevolution/backends/platformtde.so
 
 # helper scripts for testing
+usr/bin/synccompare
 usr/bin/syncevo-phone-config
 usr/bin/synclog2html

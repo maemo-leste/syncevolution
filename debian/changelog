@@ -1,3 +1,11 @@
+syncevolution (2.0.0-3) unstable; urgency=medium
+
+  * fix set DEB_CXXFLAGS_MAINT_APPEND
+    (not DEB_CXXFLAGS_APPEND intended for user overrides)
+  * stop install test-only script synccompare
+
+ -- Jonas Smedegaard <dr@jones.dk>  Fri, 19 Nov 2021 21:01:33 +0100
+
 syncevolution (2.0.0-2) experimental; urgency=medium
 
   [ Jonas Smedegaard ]

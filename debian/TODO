@@ -1,3 +1,4 @@
-  * add missing manpages for syncompare and syncevo-http-server
+  * fix shebang for syncevo-http-server
+  * add missing manpages for syncevo-http-server and syncevo-webdav-lookup
   * fix FTPFS with g++ 11 without CXXFLAG -std=c++14;
     see <https://gitlab.freedesktop.org/SyncEvolution/syncevolution/-/issues/167>

@@ -14,8 +14,8 @@ src_backends_maemo_src = \
   src/backends/maemo/MaemoCalendarSource.cpp
 
 src_backends_maemo_syncmaemocal_la_SOURCES = $(src_backends_maemo_src)
-src_backends_maemo_syncmaemocal_la_LIBADD = $(MCALB_LIBS) $(SYNCEVOLUTION_LIBS)
+src_backends_maemo_syncmaemocal_la_LIBADD = $(MCALB_LIBS) $(SYNCEVOLUTION_LIBS) $(DBUS_LIBS) $(DBUS_GLIB_LIBS)
 src_backends_maemo_syncmaemocal_la_LDFLAGS = -module -avoid-version
 src_backends_maemo_syncmaemocal_la_CXXFLAGS = $(SYNCEVOLUTION_CXXFLAGS) $(SYNCEVO_WFLAGS)
-src_backends_maemo_syncmaemocal_la_CPPFLAGS = $(SYNCEVOLUTION_CFLAGS) -I$(top_srcdir)/test $(BACKEND_CPPFLAGS)
+src_backends_maemo_syncmaemocal_la_CPPFLAGS = $(SYNCEVOLUTION_CFLAGS) -I$(top_srcdir)/test $(BACKEND_CPPFLAGS) $(DBUS_CFLAGS) $(DBUS_GLIB_CFLAGS)
 src_backends_maemo_syncmaemocal_la_DEPENDENCIES = src/syncevo/libsyncevolution.la

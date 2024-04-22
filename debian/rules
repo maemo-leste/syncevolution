@@ -20,7 +20,8 @@ override_dh_auto_configure:
 			--sysconfdir=/etc \
 			--enable-gui \
 			--with-rst2man --with-rst2html --enable-dav \
-			--enable-oauth2
+			--enable-oauth2 \
+			--enable-maemocal
 
 execute_after_dh_auto_install:
 	cp test/syncevo-http-server.py \
